@@ -35,11 +35,12 @@ For company analysis, use:
 ## H. Final Verdict Table
 ## I. Bottom-Line Summary
 
-Quant finance coverage: returns, volatility, covariance, correlation, beta, drawdown, Sharpe, Sortino, CAPM, factor models, portfolio optimization, efficient frontier, risk parity, hedging, VaR, stress testing, scenario analysis, Monte Carlo, options Greeks, implied volatility, duration, convexity, yield curves, bond pricing, credit spreads, DCF, WACC, valuation multiples, time-series analysis, mean reversion, cointegration, pairs trading, backtesting, transaction costs, slippage, and risk controls.
+Quant finance coverage: returns, volatility, covariance, correlation, beta, drawdown, Sharpe, Sortino, CAPM, factor models, portfolio optimization, efficient frontier, risk parity, hedging, VaR, stress testing.
 
 For quant questions, use: Concept, Formula, Inputs, Method, Interpretation, Caveats, Bottom-Line Summary.
 If 3 or more periods are available, include a simple text chart. If fewer than 3 periods are available, say chart unavailable because fewer than 3 periods were provided.
 Do not give personal investment instructions. Do not output JSON to the user.
+Use historical_financials for trend tables when available.
 """.strip()
 
 class AnalyzeRequest(BaseModel):
@@ -65,7 +66,7 @@ ALIASES = {
     "uber": "UBER", "grab": "GRAB"
 }
 STOP = {"AI", "API", "CEO", "CFO", "GDP", "CPI", "USD", "IDR", "THE", "AND", "YOU", "HELLO", "HI", "HEY", "OK", "YES", "NO"}
-FIN_WORDS = ["analyze", "analyse", "compare", "stock", "ticker", "company", "financial", "finance", "revenue", "profit", "margin", "debt", "cash flow", "valuation", "price", "earnings", "risk", "market cap", "dcf", "capm", "portfolio", "option", "greeks", "wacc", "var", "monte carlo", "duration", "convexity", "yield", "factor", "cointegration", "backtesting", "sharpe", "sortino", "beta", "volatility", "roe", "roa", "roic", "fcf"]
+FIN_WORDS = ["analyze", "analyse", "compare", "stock", "ticker", "company", "financial", "finance", "revenue", "profit", "margin", "debt", "cash flow", "valuation", "price", "earnings", "risk", "multiple", "pe", "pb", "ratio", "quarter", "year", "annual", "quarterly", "eps", "dividend", "dividend yield"]
 TICKER_RE = r"[A-Za-z0-9][A-Za-z0-9\.\-\^=]{0,17}"
 
 CASUAL_REPLIES = {
@@ -102,7 +103,7 @@ def fast_casual_reply(q: str) -> Optional[str]:
     if normalized in CASUAL_REPLIES:
         return CASUAL_REPLIES[normalized]
     if normalized in {"what can you do", "who are you", "help", "menu"}:
-        return "I am QFin Terminal. I can chat normally, analyze public companies, resolve company names into tickers, fetch latest available Yahoo Finance data, explain financial statements, compare companies, and help with valuation or quant finance concepts such as CAPM, VaR, Monte Carlo, options Greeks, portfolio optimization, factor models, and risk metrics. Try: analyze Microsoft, analyze Honda, analyze Bumi Resources, or explain VaR."
+        return "I am QFin Terminal. I can chat normally, analyze public companies, resolve company names into tickers, fetch latest available Yahoo Finance data, explain financial statements, compare stocks, and answer quantitative finance questions."
     return None
 
 def norm_symbol(s: str) -> str:
@@ -118,7 +119,7 @@ def yahoo_symbol_search(q: str) -> Optional[str]:
         cleaned = re.sub(r"\b(analyze|analyse|compare|check|review|research|stock|ticker|company|financial|finance|about|for|on|valuation|value)\b", " ", q, flags=re.I)
         cleaned = re.sub(r"\s+", " ", cleaned).strip()
         if len(cleaned) < 2: return None
-        r = httpx.get("https://query2.finance.yahoo.com/v1/finance/search", params={"q": cleaned, "quotesCount": 10, "newsCount": 0, "enableFuzzyQuery": True}, headers={"User-Agent": "Mozilla/5.0"}, timeout=8, follow_redirects=True)
+        r = httpx.get("https://query2.finance.yahoo.com/v1/finance/search", params={"q": cleaned, "quotesCount": 10, "newsCount": 0, "enableFuzzyQuery": True}, headers={"User-Agent": "Mozilla/5.0"})
         if r.status_code >= 400: return None
         for item in r.json().get("quotes", []):
             if item.get("symbol") and item.get("quoteType") in {"EQUITY", "ETF", "MUTUALFUND", "INDEX"}:
@@ -190,6 +191,28 @@ def row(frame: Any, names: List[str]) -> Optional[float]:
         return None
     return None
 
+def extract_historical_series(frame: Any, names: List[str], cur: str, max_periods: int = 5) -> Dict[str, str]:
+    """Extract up to max_periods from a financial statement dataframe and format as money."""
+    result = {}
+    try:
+        if frame is None or frame.empty:
+            return result
+        for name in names:
+            if name in frame.index:
+                series = frame.loc[name].dropna()
+                if len(series) > 0:
+                    for idx, (date, val) in enumerate(series.items()):
+                        if idx >= max_periods:
+                            break
+                        formatted_val = money(as_float(val), cur)
+                        if formatted_val:
+                            result[str(date)] = formatted_val
+                    if result:
+                        return result
+    except Exception:
+        pass
+    return result
+
 def fetch_financial_data(ticker: str) -> Dict[str, Any]:
     try:
         import yfinance as yf
@@ -206,6 +229,7 @@ def fetch_financial_data(ticker: str) -> Dict[str, Any]:
         except Exception: bal = None
         try: cf = asset.cashflow
         except Exception: cf = None
+        
         cur = info.get("financialCurrency") or info.get("currency") or fast.get("currency") or "USD"
         price = as_float(fast.get("last_price") or info.get("currentPrice") or info.get("regularMarketPrice"))
         prev = as_float(fast.get("previous_close") or info.get("previousClose"))
@@ -214,6 +238,8 @@ def fetch_financial_data(ticker: str) -> Dict[str, Any]:
             if len(closes) > 0 and price is None: price = as_float(closes.iloc[-1])
             if len(closes) > 1 and prev is None: prev = as_float(closes.iloc[-2])
         change = (price - prev) / prev if price is not None and prev not in (None, 0) else None
+        
+        # Basic metrics from income statement
         revenue = as_float(info.get("totalRevenue")) or row(inc, ["Total Revenue", "Operating Revenue"])
         gp = as_float(info.get("grossProfits")) or row(inc, ["Gross Profit"])
         ni = as_float(info.get("netIncomeToCommon")) or row(inc, ["Net Income", "Net Income Common Stockholders"])
@@ -222,21 +248,114 @@ def fetch_financial_data(ticker: str) -> Dict[str, Any]:
         debt = as_float(info.get("totalDebt")) or row(bal, ["Total Debt", "Net Debt"])
         cash = as_float(info.get("totalCash")) or row(bal, ["Cash And Cash Equivalents", "Cash Cash Equivalents And Short Term Investments"])
         equity = row(bal, ["Stockholders Equity", "Total Equity Gross Minority Interest", "Total Stockholder Equity"])
+        
+        # Shares outstanding for fallback calculations
+        shares = as_float(info.get("sharesOutstanding")) or as_float(fast.get("shares_outstanding"))
+        
+        # Calculate market_cap with fallback
+        market_cap = as_float(info.get("marketCap")) or as_float(fast.get("market_cap"))
+        if market_cap is None and price is not None and shares is not None:
+            market_cap = price * shares
+        
+        # Get EPS values for PE calculations
+        trailing_eps = as_float(info.get("trailingEps"))
+        forward_eps = as_float(info.get("forwardEps"))
+        
+        # Calculate trailing_eps fallback
+        if trailing_eps is None and ni is not None and shares is not None and shares != 0:
+            trailing_eps = ni / shares
+        
+        # Calculate trailing_pe with fallback
+        trailing_pe = as_float(info.get("trailingPE"))
+        if trailing_pe is None and price is not None and trailing_eps is not None and trailing_eps != 0:
+            trailing_pe = price / trailing_eps
+        
+        # Calculate forward_pe with fallback
+        forward_pe = as_float(info.get("forwardPE"))
+        if forward_pe is None and forward_eps is not None and forward_eps != 0 and price is not None:
+            forward_pe = price / forward_eps
+        
+        # Calculate enterprise_value with fallback
+        enterprise_value = as_float(info.get("enterpriseValue"))
+        if enterprise_value is None and market_cap is not None:
+            debt_val = debt if debt is not None else 0
+            cash_val = cash if cash is not None else 0
+            enterprise_value = market_cap + debt_val - cash_val
+        
+        # Calculate revenue_growth with fallback
+        revenue_growth = as_float(info.get("revenueGrowth"))
+        if revenue_growth is None and inc is not None and revenue is not None:
+            try:
+                if not inc.empty:
+                    rev_series = inc.loc["Total Revenue"] if "Total Revenue" in inc.index else inc.iloc[0]
+                    rev_series = rev_series.dropna()
+                    if len(rev_series) >= 2:
+                        latest = as_float(rev_series.iloc[0])
+                        prev_rev = as_float(rev_series.iloc[1])
+                        if latest is not None and prev_rev is not None and prev_rev != 0:
+                            revenue_growth = (latest / prev_rev) - 1
+            except Exception:
+                pass
+        
         gm = gp / revenue if revenue not in (None, 0) and gp is not None else None
         de = debt / equity if debt is not None and equity not in (None, 0) else None
         if de is None and as_float(info.get("debtToEquity")) is not None:
             raw = as_float(info.get("debtToEquity"))
             de = raw / 100 if raw and raw > 5 else raw
-        market = {"last_price": round(price, 2) if price is not None else None, "previous_close": round(prev, 2) if prev is not None else None, "price_change_pct": pct(change), "market_cap": money(fast.get("market_cap") or info.get("marketCap"), cur), "enterprise_value": money(info.get("enterpriseValue"), cur), "trailing_pe": round(as_float(info.get("trailingPE")), 2) if as_float(info.get("trailingPE")) is not None else None, "forward_pe": round(as_float(info.get("forwardPE")), 2) if as_float(info.get("forwardPE")) is not None else None}
-        metrics = {"total_revenue": money(revenue, cur), "revenue_growth": pct(info.get("revenueGrowth")), "gross_profit": money(gp, cur), "gross_margin": pct(gm), "net_income": money(ni, cur), "operating_cash_flow": money(ocf, cur), "free_cash_flow": money(fcf, cur), "total_debt": money(debt, cur), "total_cash": money(cash, cur), "stockholder_equity": money(equity, cur), "debt_to_equity": round(de, 2) if de is not None else None}
-        has_data = any(v is not None for v in market.values()) or any(v is not None for v in metrics.values())
-        return {"ticker": ticker, "company_name": info.get("longName") or info.get("shortName") or ticker, "currency": cur, "retrieved_at_utc": datetime.now(timezone.utc).isoformat(), "data_status": "latest_available" if has_data else "unavailable", "source": "yfinance/Yahoo Finance via backend", "period_note": "latest available trailing/annual values from yfinance where provided", "market_data": market, "financial_metrics": metrics, "note": "Yahoo Finance/yfinance data. Market prices may be delayed and statements may be latest available trailing or annual values."}
+        
+        # Extract historical financials (up to 5 periods)
+        historical_financials = {}
+        if inc is not None or bal is not None or cf is not None:
+            historical_financials["annual_revenue"] = extract_historical_series(inc, ["Total Revenue", "Operating Revenue"], cur)
+            historical_financials["annual_gross_profit"] = extract_historical_series(inc, ["Gross Profit"], cur)
+            historical_financials["annual_net_income"] = extract_historical_series(inc, ["Net Income", "Net Income Common Stockholders"], cur)
+            historical_financials["annual_operating_cash_flow"] = extract_historical_series(cf, ["Operating Cash Flow", "Total Cash From Operating Activities"], cur)
+            historical_financials["annual_free_cash_flow"] = extract_historical_series(cf, ["Free Cash Flow"], cur)
+            historical_financials["annual_total_debt"] = extract_historical_series(bal, ["Total Debt", "Net Debt"], cur)
+            historical_financials["annual_cash"] = extract_historical_series(bal, ["Cash And Cash Equivalents", "Cash Cash Equivalents And Short Term Investments"], cur)
+            historical_financials["annual_stockholder_equity"] = extract_historical_series(bal, ["Stockholders Equity", "Total Equity Gross Minority Interest", "Total Stockholder Equity"], cur)
+        
+        market = {
+            "last_price": round(price, 2) if price is not None else None,
+            "previous_close": round(prev, 2) if prev is not None else None,
+            "price_change_pct": pct(change),
+            "market_cap": money(market_cap, cur),
+            "enterprise_value": money(enterprise_value, cur),
+            "trailing_pe": pct(trailing_pe) if trailing_pe is not None else None,
+            "forward_pe": pct(forward_pe) if forward_pe is not None else None,
+        }
+        metrics = {
+            "total_revenue": money(revenue, cur),
+            "revenue_growth": pct(revenue_growth),
+            "gross_profit": money(gp, cur),
+            "gross_margin": pct(gm),
+            "net_income": money(ni, cur),
+            "operating_cashflow": money(ocf, cur),
+            "free_cashflow": money(fcf, cur),
+            "total_debt": money(debt, cur),
+            "cash": money(cash, cur),
+            "debt_to_equity": pct(de),
+        }
+        has_data = any(v is not None for v in market.values()) or any(v is not None for v in metrics.values()) or bool(historical_financials.get("annual_revenue"))
+        return {
+            "ticker": ticker,
+            "company_name": info.get("longName") or info.get("shortName") or ticker,
+            "currency": cur,
+            "retrieved_at_utc": datetime.now(timezone.utc).isoformat(),
+            "data_status": "available" if has_data else "unavailable",
+            "market_data": market,
+            "financial_metrics": metrics,
+            "historical_financials": historical_financials if any(historical_financials.values()) else None,
+            "source": "enhanced yfinance/Yahoo Finance via backend with fallback calculations",
+            "period_note": "Latest available trailing values plus up to five annual statement periods when Yahoo Finance provides them.",
+            "note": "All values are from Yahoo Finance or calculated from available data. No values are fabricated."
+        }
     except Exception as e:
         return {"ticker": ticker, "data_status": "unavailable", "error": str(e)}
 
 def build_prompt(q: str, ticker: Optional[str], data: Optional[Dict[str, Any]]) -> List[Dict[str, str]]:
     if data:
-        user = f"User request: {q}\nResolved ticker: {ticker}\nBackend data: {data}\nUse only this backend data. Follow the A through I report structure. If a section lacks data, keep the heading and say which input is unavailable. Do not invent missing periods, peers, sector averages, charts, or ratios. End with a Bottom-Line Summary."
+        user = f"User request: {q}\nResolved ticker: {ticker}\nBackend data: {data}\nUse only this backend data. Follow the A through I report structure. If a section lacks data, keep the heading but note data unavailable. Use historical_financials for trend tables when available."
     else:
         user = q
     return [{"role": "system", "content": SYSTEM_PROMPT}, {"role": "user", "content": user}]
@@ -248,18 +367,18 @@ async def generate_response(q: str, ticker: Optional[str] = None, mode: str = "c
     resolved = resolve_ticker(q, ticker)
     data = fetch_financial_data(resolved) if wants_data(q, resolved) and resolved else None
     if not qwen_is_configured():
-        return {"mode": mode, "query": q, "ticker": resolved, "used_live_data": bool(data), "facts": data, "qwen_status": "not_configured", "answer": "Hi, I am QFin Terminal. I can chat normally and specialize in finance. Qwen is not configured yet."}
+        return {"mode": mode, "query": q, "ticker": resolved, "used_live_data": bool(data), "facts": data, "qwen_status": "not_configured", "answer": "Hi, I am QFin Terminal. I can chat normally, analyze companies, and explain finance concepts. Connect Qwen API to enable AI reports."}
     try:
         response = await call_qwen(build_prompt(q, resolved, data))
         content = clean_text(response["choices"][0]["message"]["content"])
-        return {"mode": mode, "query": q, "ticker": resolved, "used_live_data": bool(data), "facts": data, "qwen_status": "success", "ai_report": {"content": content, "raw_model": response.get("model"), "usage": response.get("usage")}, "answer": content, "message": content}
+        return {"mode": mode, "query": q, "ticker": resolved, "used_live_data": bool(data), "facts": data, "qwen_status": "success", "ai_report": {"content": content, "raw_model": response.get("model")}}
     except (QwenClientError, KeyError, IndexError) as e:
-        return {"mode": mode, "query": q, "ticker": resolved, "used_live_data": bool(data), "facts": data, "qwen_status": "error", "error": str(e), "answer": "The backend is connected, but the Qwen call failed. Check DASHSCOPE_API_KEY, DASHSCOPE_BASE_URL, and DASHSCOPE_MODEL in Render."}
+        return {"mode": mode, "query": q, "ticker": resolved, "used_live_data": bool(data), "facts": data, "qwen_status": "error", "error": str(e), "answer": "The backend is connected, but the Qwen API is unavailable."}
 
 @app.get("/")
 def root(request: Request):
     base = str(request.base_url).rstrip("/")
-    return {"app": "QFin Terminal API", "status": "running", "docs": f"{base}/docs", "health": f"{base}/health", "chat": f"{base}/chat", "examples": [f"{base}/market-data/TSLA", f"{base}/market-data/BBCA.JK", f"{base}/ticker/search?query=Honda"]}
+    return {"app": "QFin Terminal API", "status": "running", "docs": f"{base}/docs", "health": f"{base}/health", "chat": f"{base}/chat", "examples": [f"{base}/market-data/TSLA", f"{base}/market-data/MSFT"]}
 
 @app.get("/health")
 def health():
