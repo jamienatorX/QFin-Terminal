@@ -1,7 +1,7 @@
 from dotenv import load_dotenv
 load_dotenv()
 
-from fastapi import FastAPI, UploadFile, File
+from fastapi import FastAPI, UploadFile, File, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Any, Dict, Optional
@@ -60,12 +60,13 @@ Write a concise financial analysis report using only the data above.
     ]
 
 @app.get("/")
-def root():
+def root(request: Request):
+    base_url = str(request.base_url).rstrip("/")
     return {
         "app": "QFin Terminal API",
         "status": "running",
-        "docs": "http://127.0.0.1:8000/docs",
-        "health": "http://127.0.0.1:8000/health"
+        "docs": f"{base_url}/docs",
+        "health": f"{base_url}/health"
     }
 
 @app.get("/health")
