@@ -4,18 +4,10 @@ import re
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
-import httpx
-
+from news_sources import CATEGORY_QUERIES, fetch_all_sources
 from qwen_client import QwenClientError, call_qwen, qwen_is_configured
 
 VALID_CATEGORIES = {"Crypto", "Stocks", "Bonds", "ETFs", "Other"}
-CATEGORY_QUERIES = {
-    "Crypto": "crypto bitcoin ethereum ETF regulation market",
-    "Stocks": "stock market earnings federal reserve major indexes",
-    "Bonds": "bond market treasury yields interest rates credit spreads",
-    "ETFs": "ETF inflows outflows fund market sector ETF",
-    "Other": "global markets commodities currencies macro economy",
-}
 
 NEWS_SYSTEM_PROMPT = """
 You are QFin News, the market news engine for QFin Terminal. Respond only with valid JSON.
@@ -30,12 +22,10 @@ Only include data when numeric information is clearly provided. Otherwise omit d
 Schema: {"category":"Crypto","generated_at":"ISO_TIME","news":[{"id":"1","headline":"...","sentiment":"positive","teaser":"...","explanation":{"what_happened":"...","why_it_matters":"...","market_reaction":"..."},"source":{"name":"...","url":"..."}}]}
 """.strip()
 
-
 def normalize_category(category: str) -> str:
     raw = (category or "Stocks").strip().lower()
     mapping = {"crypto": "Crypto", "stocks": "Stocks", "stock": "Stocks", "bonds": "Bonds", "bond": "Bonds", "etfs": "ETFs", "etf": "ETFs", "other": "Other"}
     return mapping.get(raw, "Stocks")
-
 
 def clean_json(raw: str) -> str:
     cleaned = raw.strip()
@@ -44,41 +34,16 @@ def clean_json(raw: str) -> str:
     cleaned = re.sub(r"```$", "", cleaned).strip()
     return cleaned
 
-
 def build_source(item: Dict[str, Any]) -> Dict[str, str]:
-    name = item.get("publisher") or item.get("source") or "Yahoo Finance"
+    name = item.get("publisher") or item.get("source") or "Aggregated market commentary"
     link = item.get("link") or item.get("url")
     source = {"name": str(name)}
     if link:
         source["url"] = str(link)
     return source
 
-
 async def fetch_news_candidates(category: str) -> List[Dict[str, Any]]:
-    query = CATEGORY_QUERIES.get(category, CATEGORY_QUERIES["Stocks"])
-    url = "https://query2.finance.yahoo.com/v1/finance/search"
-    params = {"q": query, "quotesCount": 0, "newsCount": 12, "enableFuzzyQuery": True}
-    headers = {"User-Agent": "Mozilla/5.0"}
-    try:
-        async with httpx.AsyncClient(timeout=10, follow_redirects=True) as client:
-            response = await client.get(url, params=params, headers=headers)
-        if response.status_code >= 400:
-            return []
-        news = response.json().get("news", [])
-        candidates = []
-        for item in news[:12]:
-            candidates.append({
-                "title": item.get("title"),
-                "summary": item.get("summary"),
-                "publisher": item.get("publisher"),
-                "link": item.get("link"),
-                "providerPublishTime": item.get("providerPublishTime"),
-                "source": "Yahoo Finance search",
-            })
-        return candidates
-    except Exception:
-        return []
-
+    return await fetch_all_sources(category)
 
 def fallback_news(category: str, candidates: Optional[List[Dict[str, Any]]] = None, parse_failure: bool = False) -> Dict[str, Any]:
     now = datetime.now(timezone.utc).isoformat()
@@ -96,7 +61,7 @@ def fallback_news(category: str, candidates: Optional[List[Dict[str, Any]]] = No
             summary = "Live news retrieval was limited, so QFin is showing a fallback market card."
             source = {"name": "Aggregated market commentary"}
             stale = True
-        item = {
+        items.append({
             "id": str(i + 1),
             "headline": headline,
             "sentiment": "neutral",
@@ -108,13 +73,11 @@ def fallback_news(category: str, candidates: Optional[List[Dict[str, Any]]] = No
             },
             "source": source,
             "stale": stale,
-        }
-        items.append(item)
+        })
     output = {"category": category, "generated_at": now, "news": items}
     if parse_failure:
         output["error"] = "parse_failure"
     return output
-
 
 def validate_news(parsed: Dict[str, Any], category: str) -> Dict[str, Any]:
     if not isinstance(parsed, dict):
@@ -138,7 +101,6 @@ def validate_news(parsed: Dict[str, Any], category: str) -> Dict[str, Any]:
         parsed["news"].append(fallback_news(category)["news"][len(parsed["news"])])
     return parsed
 
-
 async def generate_news(category: str) -> Dict[str, Any]:
     category = normalize_category(category)
     candidates = await fetch_news_candidates(category)
@@ -147,18 +109,10 @@ async def generate_news(category: str) -> Dict[str, Any]:
     model = os.getenv("DASHSCOPE_NEWS_MODEL", "qwen-plus")
     if "thinking" in model.lower():
         model = "qwen-plus"
-    user = {
-        "category": category,
-        "generated_at": datetime.now(timezone.utc).isoformat(),
-        "candidate_articles": candidates,
-        "instruction": "Generate the top 5 news items. Return only valid JSON matching the schema."
-    }
+    user = {"category": category, "generated_at": datetime.now(timezone.utc).isoformat(), "candidate_articles": candidates[:25], "instruction": "Generate the top 5 news items. Return only valid JSON matching the schema."}
     try:
         response = await call_qwen(
-            messages=[
-                {"role": "system", "content": NEWS_SYSTEM_PROMPT},
-                {"role": "user", "content": "JSON input: " + json.dumps(user, ensure_ascii=False)},
-            ],
+            messages=[{"role": "system", "content": NEWS_SYSTEM_PROMPT}, {"role": "user", "content": "JSON input: " + json.dumps(user, ensure_ascii=False)}],
             model=model,
             response_format={"type": "json_object"},
             temperature=0.1,
