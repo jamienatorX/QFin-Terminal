@@ -2,6 +2,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 import re
+from datetime import datetime, timezone
 from fastapi import FastAPI, UploadFile, File, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
@@ -10,7 +11,7 @@ from typing import Any, Dict, List, Optional
 
 from qwen_client import QwenClientError, call_qwen, qwen_is_configured
 
-app = FastAPI(title="QFin Terminal API", version="clean-local-1.3")
+app = FastAPI(title="QFin Terminal API", version="finance-chat-live-data-1.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -37,6 +38,18 @@ class ChatRequest(BaseModel):
     mode: Optional[str] = "chat"
     messages: Optional[List[ChatMessage]] = None
 
+COMPANY_ALIASES = {
+    "tesla": "TSLA", "tsla": "TSLA",
+    "alibaba": "BABA", "baba": "BABA",
+    "apple": "AAPL", "microsoft": "MSFT", "nvidia": "NVDA",
+    "amazon": "AMZN", "google": "GOOGL", "alphabet": "GOOGL",
+    "meta": "META", "netflix": "NFLX", "uber": "UBER", "grab": "GRAB",
+}
+
+STOP_WORDS = {"AI", "API", "CEO", "CFO", "GDP", "CPI", "USD", "THE", "AND", "YOU", "HELLO", "HI", "HEY", "OK"}
+FINANCE_WORDS = ["analyze", "analyse", "stock", "ticker", "company", "financial", "revenue", "profit", "margin", "debt", "cash flow", "valuation", "price", "earnings", "risk", "market cap"]
+
+
 def extract_chat_query(payload: ChatRequest) -> str:
     if payload.message:
         return payload.message
@@ -49,170 +62,243 @@ def extract_chat_query(payload: ChatRequest) -> str:
         if user_messages:
             return user_messages[-1]
         return payload.messages[-1].content
-    return "Analyze the selected company and explain key financial risks."
+    return "Hello"
+
 
 def clean_frontend_text(text: str) -> str:
     cleaned = text.replace("**", "").replace("*", "").replace("#", "")
     cleaned = cleaned.replace("\r\n", "\n").replace("\r", "\n")
     cleaned = re.sub(r"\n\s*\n+", "\n\n", cleaned)
     cleaned = re.sub(r"[ \t]+", " ", cleaned)
-    cleaned = re.sub(r"\n[ \t]+", "\n", cleaned)
-    cleaned = cleaned.strip()
-    cleaned = re.sub(r"(?<!\n)(Fact\.)", r"\n\n\1", cleaned)
-    cleaned = re.sub(r"(?<!\n)(Interpretation\.)", r"\n\n\1", cleaned)
-    cleaned = re.sub(r"(?<!\n)(Watch Items\.)", r"\n\n\1", cleaned)
-    cleaned = re.sub(r"(?<!\n)(Disclaimer\.)", r"\n\n\1", cleaned)
-    return cleaned.strip()
+    cleaned = re.sub(r"\n[ \t]+", "\n", cleaned).strip()
+    return cleaned
 
-def calculate_demo_metrics() -> Dict[str, Any]:
-    return {
-        "revenue_growth": 0.184,
-        "gross_margin": 0.421,
-        "debt_to_equity": 0.68,
-        "risk_flags": [
-            "Revenue quality should be checked against cash flow.",
-            "Margin expansion may depend on one-off cost reductions.",
-            "Leverage is moderate but should be compared with peers."
-        ]
-    }
 
-def build_grounded_prompt(payload: AnalyzeRequest, metrics: Dict[str, Any]):
-    system_message = (
-        "You are QFin Terminal, a careful financial analyst assistant. "
-        "You must not invent financial numbers. Use only the structured metrics provided by the backend. "
-        "Do not give buy, sell, or hold recommendations. "
-        "Write in plain text only. Do not use Markdown, asterisks, bullets, hashtags, tables, or JSON. "
-        "Use clear section labels exactly as: Fact. Interpretation. Watch Items. Disclaimer. "
-        "Keep the answer readable even if line breaks are removed by the frontend."
-    )
+def to_float(value: Any) -> Optional[float]:
+    try:
+        if value is None:
+            return None
+        if hasattr(value, "item"):
+            value = value.item()
+        number = float(value)
+        if number != number:
+            return None
+        return number
+    except Exception:
+        return None
 
-    user_message = f'''
-User request: {payload.query}
-Ticker: {payload.ticker or "Not provided"}
-Mode: {payload.mode}
 
-Backend-computed metrics:
-{metrics}
+def money(value: Any, currency: str = "USD") -> Optional[str]:
+    number = to_float(value)
+    if number is None:
+        return None
+    if abs(number) >= 1_000_000_000_000:
+        return f"{currency} {number / 1_000_000_000_000:.2f}T"
+    if abs(number) >= 1_000_000_000:
+        return f"{currency} {number / 1_000_000_000:.2f}B"
+    if abs(number) >= 1_000_000:
+        return f"{currency} {number / 1_000_000:.2f}M"
+    return f"{currency} {number:,.2f}"
 
-Write a concise financial analysis report using only the data above.
-Use this plain text format:
-Fact. Revenue Growth: ... Gross Margin: ... Debt-to-Equity Ratio: ...
 
-Interpretation. ...
+def percent(value: Any) -> Optional[str]:
+    number = to_float(value)
+    if number is None:
+        return None
+    if abs(number) <= 3:
+        number *= 100
+    return f"{number:.2f}%"
 
-Watch Items. 1. Revenue Quality: ... 2. Margin Sustainability: ... 3. Relative Leverage: ...
 
-Disclaimer. ...
-'''
+def row_value(frame: Any, names: List[str]) -> Optional[float]:
+    try:
+        if frame is None or frame.empty:
+            return None
+        for name in names:
+            if name in frame.index:
+                series = frame.loc[name].dropna()
+                if len(series) > 0:
+                    return to_float(series.iloc[0])
+    except Exception:
+        return None
+    return None
 
-    return [
-        {"role": "system", "content": system_message},
-        {"role": "user", "content": user_message}
-    ]
+
+def resolve_ticker(query: str, provided: Optional[str] = None) -> Optional[str]:
+    if provided:
+        return provided.strip().upper().replace(".", "-")
+    lower = query.lower()
+    for name, ticker in COMPANY_ALIASES.items():
+        if re.search(rf"\b{re.escape(name)}\b", lower):
+            return ticker
+    cashtag = re.search(r"\$([A-Za-z][A-Za-z\.\-]{0,8})\b", query)
+    if cashtag:
+        return cashtag.group(1).upper().replace(".", "-")
+    after_word = re.search(r"\b(?:analyze|analyse|check|review|about|stock|ticker)\s+([A-Za-z][A-Za-z\.\-]{0,8})\b", query, re.I)
+    if after_word:
+        candidate = after_word.group(1).upper().replace(".", "-")
+        if candidate not in STOP_WORDS:
+            return candidate
+    for token in re.findall(r"\b[A-Z]{1,5}(?:[\.-][A-Z])?\b", query):
+        candidate = token.upper().replace(".", "-")
+        if candidate not in STOP_WORDS:
+            return candidate
+    return None
+
+
+def wants_finance_data(query: str, ticker: Optional[str]) -> bool:
+    if not ticker:
+        return False
+    lower = query.lower()
+    return any(word in lower for word in FINANCE_WORDS) or ticker.lower() in lower or ticker.upper() in query
+
+
+def fetch_financial_data(ticker: str) -> Dict[str, Any]:
+    try:
+        import yfinance as yf
+        asset = yf.Ticker(ticker)
+        info = {}
+        fast = {}
+        try:
+            info = asset.get_info() or {}
+        except Exception:
+            info = {}
+        try:
+            fast = dict(asset.fast_info or {})
+        except Exception:
+            fast = {}
+        try:
+            hist = asset.history(period="5d", interval="1d", auto_adjust=False)
+        except Exception:
+            hist = None
+        try:
+            income = asset.financials
+        except Exception:
+            income = None
+        try:
+            balance = asset.balance_sheet
+        except Exception:
+            balance = None
+        try:
+            cashflow = asset.cashflow
+        except Exception:
+            cashflow = None
+
+        currency = info.get("financialCurrency") or info.get("currency") or fast.get("currency") or "USD"
+        price = to_float(fast.get("last_price") or info.get("currentPrice") or info.get("regularMarketPrice"))
+        previous_close = to_float(fast.get("previous_close") or info.get("previousClose"))
+        if hist is not None and not hist.empty and "Close" in hist:
+            closes = hist["Close"].dropna()
+            if len(closes) > 0 and price is None:
+                price = to_float(closes.iloc[-1])
+            if len(closes) > 1 and previous_close is None:
+                previous_close = to_float(closes.iloc[-2])
+        price_change = None
+        if price is not None and previous_close not in (None, 0):
+            price_change = (price - previous_close) / previous_close
+
+        revenue = to_float(info.get("totalRevenue")) or row_value(income, ["Total Revenue", "Operating Revenue"])
+        gross_profit = to_float(info.get("grossProfits")) or row_value(income, ["Gross Profit"])
+        net_income = to_float(info.get("netIncomeToCommon")) or row_value(income, ["Net Income", "Net Income Common Stockholders"])
+        operating_cash_flow = to_float(info.get("operatingCashflow")) or row_value(cashflow, ["Operating Cash Flow", "Total Cash From Operating Activities"])
+        free_cash_flow = to_float(info.get("freeCashflow")) or row_value(cashflow, ["Free Cash Flow"])
+        debt = to_float(info.get("totalDebt")) or row_value(balance, ["Total Debt", "Net Debt"])
+        cash = to_float(info.get("totalCash")) or row_value(balance, ["Cash And Cash Equivalents", "Cash Cash Equivalents And Short Term Investments"])
+        equity = row_value(balance, ["Stockholders Equity", "Total Equity Gross Minority Interest", "Total Stockholder Equity"])
+        gross_margin = gross_profit / revenue if revenue not in (None, 0) and gross_profit is not None else None
+        debt_to_equity = debt / equity if debt is not None and equity not in (None, 0) else None
+        if debt_to_equity is None and to_float(info.get("debtToEquity")) is not None:
+            raw = to_float(info.get("debtToEquity"))
+            debt_to_equity = raw / 100 if raw and raw > 5 else raw
+
+        return {
+            "ticker": ticker,
+            "company_name": info.get("longName") or info.get("shortName") or ticker,
+            "currency": currency,
+            "retrieved_at_utc": datetime.now(timezone.utc).isoformat(),
+            "data_status": "latest_available",
+            "source": "yfinance/Yahoo Finance via backend",
+            "market_data": {
+                "last_price": round(price, 2) if price is not None else None,
+                "previous_close": round(previous_close, 2) if previous_close is not None else None,
+                "price_change_pct": percent(price_change),
+                "market_cap": money(fast.get("market_cap") or info.get("marketCap"), currency),
+                "enterprise_value": money(info.get("enterpriseValue"), currency),
+                "trailing_pe": round(to_float(info.get("trailingPE")), 2) if to_float(info.get("trailingPE")) is not None else None,
+                "forward_pe": round(to_float(info.get("forwardPE")), 2) if to_float(info.get("forwardPE")) is not None else None,
+                "fifty_two_week_high": round(to_float(info.get("fiftyTwoWeekHigh") or fast.get("year_high")), 2) if to_float(info.get("fiftyTwoWeekHigh") or fast.get("year_high")) is not None else None,
+                "fifty_two_week_low": round(to_float(info.get("fiftyTwoWeekLow") or fast.get("year_low")), 2) if to_float(info.get("fiftyTwoWeekLow") or fast.get("year_low")) is not None else None,
+            },
+            "financial_metrics": {
+                "total_revenue": money(revenue, currency),
+                "revenue_growth": percent(info.get("revenueGrowth")),
+                "gross_profit": money(gross_profit, currency),
+                "gross_margin": percent(gross_margin),
+                "net_income": money(net_income, currency),
+                "operating_cash_flow": money(operating_cash_flow, currency),
+                "free_cash_flow": money(free_cash_flow, currency),
+                "total_debt": money(debt, currency),
+                "total_cash": money(cash, currency),
+                "stockholder_equity": money(equity, currency),
+                "debt_to_equity": round(debt_to_equity, 2) if debt_to_equity is not None else None,
+            },
+            "note": "Data is latest available from the backend provider. Market prices may be delayed and financial statements may be latest available annual/trailing values."
+        }
+    except Exception as error:
+        return {"ticker": ticker, "data_status": "unavailable", "error": str(error)}
+
+
+def build_prompt(query: str, ticker: Optional[str], data: Optional[Dict[str, Any]]) -> List[Dict[str, str]]:
+    if data:
+        system = "You are QFin Terminal, an AI chat assistant specialized in finance. Analyze only the provided backend data. Do not invent missing numbers. Use plain text only, no markdown, no JSON. Structure the response as: Fact. Interpretation. Watch Items. Disclaimer."
+        user = f"User request: {query}\nResolved ticker: {ticker}\nBackend data: {data}\nWrite a clear analyst-style response using the provided data. Mention that the data is latest available from the backend provider."
+    else:
+        system = "You are QFin Terminal, a normal friendly AI chatbot specialized in finance. You can answer daily conversation normally, like greetings and general questions. When the user asks finance, accounting, economics, company, or stock questions, answer like a careful finance assistant. Use plain text only, no markdown, no JSON."
+        user = query
+    return [{"role": "system", "content": system}, {"role": "user", "content": user}]
+
+
+async def generate_response(query: str, ticker: Optional[str] = None, mode: str = "chat") -> Dict[str, Any]:
+    resolved = resolve_ticker(query, ticker)
+    live_data = fetch_financial_data(resolved) if wants_finance_data(query, resolved) and resolved else None
+    messages = build_prompt(query, resolved, live_data)
+
+    if not qwen_is_configured():
+        fallback = "Hi, I am QFin Terminal. I can chat normally and I specialize in finance. Qwen is not configured yet, so add DASHSCOPE_API_KEY in Render to enable full AI replies."
+        return {"mode": mode, "query": query, "ticker": resolved, "used_live_data": bool(live_data), "facts": live_data, "qwen_status": "not_configured", "answer": fallback}
+
+    try:
+        qwen_response = await call_qwen(messages)
+        content = clean_frontend_text(qwen_response["choices"][0]["message"]["content"])
+        return {"mode": mode, "query": query, "ticker": resolved, "used_live_data": bool(live_data), "facts": live_data, "qwen_status": "success", "ai_report": {"content": content, "raw_model": qwen_response.get("model"), "usage": qwen_response.get("usage")}, "answer": content, "message": content}
+    except (QwenClientError, KeyError, IndexError) as error:
+        fallback = "The backend is connected, but the Qwen call failed. Check DASHSCOPE_API_KEY, DASHSCOPE_BASE_URL, and DASHSCOPE_MODEL in Render."
+        return {"mode": mode, "query": query, "ticker": resolved, "used_live_data": bool(live_data), "facts": live_data, "qwen_status": "error", "error": str(error), "answer": fallback}
 
 @app.get("/")
 def root(request: Request):
     base_url = str(request.base_url).rstrip("/")
-    return {
-        "app": "QFin Terminal API",
-        "status": "running",
-        "docs": f"{base_url}/docs",
-        "health": f"{base_url}/health",
-        "chat": f"{base_url}/chat",
-        "chat_stream": f"{base_url}/chat/stream"
-    }
+    return {"app": "QFin Terminal API", "status": "running", "docs": f"{base_url}/docs", "health": f"{base_url}/health", "chat": f"{base_url}/chat", "market_data": f"{base_url}/market-data/TSLA"}
 
 @app.get("/health")
 def health():
-    return {
-        "status": "ok",
-        "service": "qfin-terminal-api",
-        "qwen_configured": qwen_is_configured()
-    }
+    return {"status": "ok", "service": "qfin-terminal-api", "version": "finance-chat-live-data-1.0", "qwen_configured": qwen_is_configured()}
 
 @app.post("/analyze")
 async def analyze(payload: AnalyzeRequest):
-    metrics = calculate_demo_metrics()
-    messages = build_grounded_prompt(payload, metrics)
-
-    if not qwen_is_configured():
-        fallback = "Fact. Demo mode is active because DASHSCOPE_API_KEY is not configured. Interpretation. The backend is connected successfully, but Qwen is not enabled yet. Watch Items. 1. Add DASHSCOPE_API_KEY in Render environment variables. 2. Confirm DASHSCOPE_MODEL is set correctly. Disclaimer. This is for educational and analytical use only, not financial advice."
-        return {
-            "mode": payload.mode,
-            "query": payload.query,
-            "ticker": payload.ticker,
-            "facts": metrics,
-            "qwen_status": "not_configured",
-            "ai_report": {
-                "summary": fallback,
-                "interpretation": "The backend is ready to send computed metrics to Qwen for grounded narration.",
-                "watch_items": metrics["risk_flags"]
-            },
-            "answer": fallback,
-            "disclaimer": "For educational and analytical use only. Not financial advice."
-        }
-
-    try:
-        qwen_response = await call_qwen(messages)
-        raw_content = qwen_response["choices"][0]["message"]["content"]
-        content = clean_frontend_text(raw_content)
-        return {
-            "mode": payload.mode,
-            "query": payload.query,
-            "ticker": payload.ticker,
-            "facts": metrics,
-            "qwen_status": "success",
-            "ai_report": {
-                "content": content,
-                "raw_model": qwen_response.get("model"),
-                "usage": qwen_response.get("usage")
-            },
-            "answer": content,
-            "message": content,
-            "disclaimer": "For educational and analytical use only. Not financial advice."
-        }
-    except (QwenClientError, KeyError, IndexError) as error:
-        fallback = "Fact. The Render backend is connected, but the Qwen call failed. Interpretation. This usually means the DASHSCOPE_API_KEY, model name, or base URL needs to be checked. Watch Items. 1. Check DASHSCOPE_API_KEY in Render. 2. Check DASHSCOPE_BASE_URL. 3. Check DASHSCOPE_MODEL. Disclaimer. This is for educational and analytical use only, not financial advice."
-        return {
-            "mode": payload.mode,
-            "query": payload.query,
-            "ticker": payload.ticker,
-            "facts": metrics,
-            "qwen_status": "error",
-            "error": str(error),
-            "ai_report": {
-                "summary": fallback,
-                "watch_items": metrics["risk_flags"]
-            },
-            "answer": fallback,
-            "disclaimer": "For educational and analytical use only. Not financial advice."
-        }
+    return await generate_response(payload.query, payload.ticker, payload.mode)
 
 @app.post("/chat")
 async def chat(payload: ChatRequest):
     query = extract_chat_query(payload)
-    result = await analyze(
-        AnalyzeRequest(
-            query=query,
-            ticker=payload.ticker,
-            mode=payload.mode or "chat"
-        )
-    )
-    return {
-        "id": "qfin-chat-response",
-        "role": "assistant",
-        "content": result.get("answer") or result.get("ai_report", {}).get("content") or result.get("ai_report", {}).get("summary"),
-        "answer": result.get("answer"),
-        "data": result
-    }
+    result = await generate_response(query, payload.ticker, payload.mode or "chat")
+    return {"id": "qfin-chat-response", "role": "assistant", "content": result.get("answer"), "answer": result.get("answer"), "data": result}
 
 @app.post("/chat/stream")
 async def chat_stream(payload: ChatRequest):
     async def text_generator():
         result = await chat(payload)
-        content = result.get("content") or "No response generated."
-        yield content
-
+        yield result.get("content") or "No response generated."
     return StreamingResponse(text_generator(), media_type="text/plain; charset=utf-8")
 
 @app.post("/chat/upload")
@@ -220,20 +306,15 @@ async def chat_upload(file: UploadFile = File(...)):
     return await upload_statement(file)
 
 @app.get("/ticker/resolve")
-def resolve_ticker(symbol: Optional[str] = None, query: Optional[str] = None):
-    raw = symbol or query or "BABA"
-    normalized = raw.strip().upper()
-    return {
-        "symbol": normalized,
-        "ticker": normalized,
-        "name": normalized,
-        "status": "resolved"
-    }
+def resolve_ticker_route(symbol: Optional[str] = None, query: Optional[str] = None):
+    raw = symbol or query or ""
+    resolved = resolve_ticker(raw, symbol)
+    return {"symbol": resolved, "ticker": resolved, "status": "resolved" if resolved else "not_found"}
+
+@app.get("/market-data/{ticker}")
+def market_data_route(ticker: str):
+    return fetch_financial_data(ticker.strip().upper())
 
 @app.post("/upload")
 async def upload_statement(file: UploadFile = File(...)):
-    return {
-        "filename": file.filename,
-        "status": "received",
-        "next_step": "Parse CSV or Excel, normalize financial statement rows, then call /analyze."
-    }
+    return {"filename": file.filename, "status": "received", "next_step": "Parse CSV or Excel, normalize financial statement rows, then call /analyze."}
