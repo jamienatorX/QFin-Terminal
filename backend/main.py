@@ -11,7 +11,7 @@ from typing import Any, Dict, List, Optional
 
 from qwen_client import QwenClientError, call_qwen, qwen_is_configured
 
-app = FastAPI(title="QFin Terminal API", version="finance-chat-live-data-1.0")
+app = FastAPI(title="QFin Terminal API", version="global-ticker-chat-1.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -46,8 +46,19 @@ COMPANY_ALIASES = {
     "meta": "META", "netflix": "NFLX", "uber": "UBER", "grab": "GRAB",
 }
 
-STOP_WORDS = {"AI", "API", "CEO", "CFO", "GDP", "CPI", "USD", "THE", "AND", "YOU", "HELLO", "HI", "HEY", "OK"}
-FINANCE_WORDS = ["analyze", "analyse", "stock", "ticker", "company", "financial", "revenue", "profit", "margin", "debt", "cash flow", "valuation", "price", "earnings", "risk", "market cap"]
+STOP_WORDS = {
+    "AI", "API", "APP", "CEO", "CFO", "COO", "GDP", "CPI", "USD", "IDR", "AUD", "SGD", "EUR",
+    "THE", "AND", "YOU", "ARE", "CAN", "HOW", "WHAT", "WHY", "PLEASE", "THANK", "THANKS",
+    "HELLO", "HI", "HEY", "OK", "YES", "NO", "THIS", "THAT", "A", "AN", "TO", "FOR", "OF", "IN", "ON"
+}
+
+FINANCE_WORDS = [
+    "analyze", "analyse", "analysis", "stock", "ticker", "company", "financial", "finance",
+    "revenue", "profit", "margin", "debt", "cash flow", "valuation", "price", "earnings",
+    "risk", "market cap", "fundamental", "ratio", "income statement", "balance sheet", "cashflow",
+]
+
+TICKER_PATTERN = r"[A-Za-z0-9][A-Za-z0-9\.\-\^=]{0,17}"
 
 
 def extract_chat_query(payload: ChatRequest) -> str:
@@ -72,6 +83,13 @@ def clean_frontend_text(text: str) -> str:
     cleaned = re.sub(r"[ \t]+", " ", cleaned)
     cleaned = re.sub(r"\n[ \t]+", "\n", cleaned).strip()
     return cleaned
+
+
+def normalize_symbol(symbol: str) -> str:
+    symbol = symbol.strip().upper().strip(".,;:!?()[]{}\"'")
+    if symbol == "BRK.B":
+        return "BRK-B"
+    return symbol
 
 
 def to_float(value: Any) -> Optional[float]:
@@ -124,33 +142,54 @@ def row_value(frame: Any, names: List[str]) -> Optional[float]:
     return None
 
 
+def has_finance_intent(query: str) -> bool:
+    lower = query.lower()
+    return any(word in lower for word in FINANCE_WORDS)
+
+
 def resolve_ticker(query: str, provided: Optional[str] = None) -> Optional[str]:
     if provided:
-        return provided.strip().upper().replace(".", "-")
+        return normalize_symbol(provided)
+
     lower = query.lower()
     for name, ticker in COMPANY_ALIASES.items():
         if re.search(rf"\b{re.escape(name)}\b", lower):
             return ticker
-    cashtag = re.search(r"\$([A-Za-z][A-Za-z\.\-]{0,8})\b", query)
+
+    cashtag = re.search(rf"\$({TICKER_PATTERN})\b", query)
     if cashtag:
-        return cashtag.group(1).upper().replace(".", "-")
-    after_word = re.search(r"\b(?:analyze|analyse|check|review|about|stock|ticker)\s+([A-Za-z][A-Za-z\.\-]{0,8})\b", query, re.I)
+        candidate = normalize_symbol(cashtag.group(1))
+        if candidate not in STOP_WORDS:
+            return candidate
+
+    after_word = re.search(rf"\b(?:analyze|analyse|check|review|research|about|stock|ticker|company|financials?|value|valuation)\s+({TICKER_PATTERN})\b", query, re.I)
     if after_word:
-        candidate = after_word.group(1).upper().replace(".", "-")
+        candidate = normalize_symbol(after_word.group(1))
         if candidate not in STOP_WORDS:
             return candidate
-    for token in re.findall(r"\b[A-Z]{1,5}(?:[\.-][A-Z])?\b", query):
-        candidate = token.upper().replace(".", "-")
+
+    global_tickers = re.findall(r"\b(?:[0-9]{1,6}|[A-Z]{1,6})(?:[\.\-][A-Z0-9]{1,6}){1,2}\b", query)
+    for token in global_tickers:
+        candidate = normalize_symbol(token)
         if candidate not in STOP_WORDS:
             return candidate
+
+    uppercase_tickers = re.findall(r"\b[A-Z]{1,5}(?:[\.-][A-Z])?\b", query)
+    for token in uppercase_tickers:
+        candidate = normalize_symbol(token)
+        if candidate not in STOP_WORDS:
+            return candidate
+
     return None
 
 
 def wants_finance_data(query: str, ticker: Optional[str]) -> bool:
     if not ticker:
         return False
-    lower = query.lower()
-    return any(word in lower for word in FINANCE_WORDS) or ticker.lower() in lower or ticker.upper() in query
+    compact_query = re.sub(r"[^A-Za-z0-9\.\-\^=]", "", query).upper()
+    if compact_query == ticker.upper():
+        return True
+    return has_finance_intent(query) or ticker.lower() in query.lower() or ticker.upper() in query.upper()
 
 
 def fetch_financial_data(ticker: str) -> Dict[str, Any]:
@@ -211,38 +250,41 @@ def fetch_financial_data(ticker: str) -> Dict[str, Any]:
             raw = to_float(info.get("debtToEquity"))
             debt_to_equity = raw / 100 if raw and raw > 5 else raw
 
+        market_data = {
+            "last_price": round(price, 2) if price is not None else None,
+            "previous_close": round(previous_close, 2) if previous_close is not None else None,
+            "price_change_pct": percent(price_change),
+            "market_cap": money(fast.get("market_cap") or info.get("marketCap"), currency),
+            "enterprise_value": money(info.get("enterpriseValue"), currency),
+            "trailing_pe": round(to_float(info.get("trailingPE")), 2) if to_float(info.get("trailingPE")) is not None else None,
+            "forward_pe": round(to_float(info.get("forwardPE")), 2) if to_float(info.get("forwardPE")) is not None else None,
+            "fifty_two_week_high": round(to_float(info.get("fiftyTwoWeekHigh") or fast.get("year_high")), 2) if to_float(info.get("fiftyTwoWeekHigh") or fast.get("year_high")) is not None else None,
+            "fifty_two_week_low": round(to_float(info.get("fiftyTwoWeekLow") or fast.get("year_low")), 2) if to_float(info.get("fiftyTwoWeekLow") or fast.get("year_low")) is not None else None,
+        }
+        financial_metrics = {
+            "total_revenue": money(revenue, currency),
+            "revenue_growth": percent(info.get("revenueGrowth")),
+            "gross_profit": money(gross_profit, currency),
+            "gross_margin": percent(gross_margin),
+            "net_income": money(net_income, currency),
+            "operating_cash_flow": money(operating_cash_flow, currency),
+            "free_cash_flow": money(free_cash_flow, currency),
+            "total_debt": money(debt, currency),
+            "total_cash": money(cash, currency),
+            "stockholder_equity": money(equity, currency),
+            "debt_to_equity": round(debt_to_equity, 2) if debt_to_equity is not None else None,
+        }
+        has_data = any(v is not None for v in market_data.values()) or any(v is not None for v in financial_metrics.values())
         return {
             "ticker": ticker,
             "company_name": info.get("longName") or info.get("shortName") or ticker,
             "currency": currency,
             "retrieved_at_utc": datetime.now(timezone.utc).isoformat(),
-            "data_status": "latest_available",
+            "data_status": "latest_available" if has_data else "unavailable",
             "source": "yfinance/Yahoo Finance via backend",
-            "market_data": {
-                "last_price": round(price, 2) if price is not None else None,
-                "previous_close": round(previous_close, 2) if previous_close is not None else None,
-                "price_change_pct": percent(price_change),
-                "market_cap": money(fast.get("market_cap") or info.get("marketCap"), currency),
-                "enterprise_value": money(info.get("enterpriseValue"), currency),
-                "trailing_pe": round(to_float(info.get("trailingPE")), 2) if to_float(info.get("trailingPE")) is not None else None,
-                "forward_pe": round(to_float(info.get("forwardPE")), 2) if to_float(info.get("forwardPE")) is not None else None,
-                "fifty_two_week_high": round(to_float(info.get("fiftyTwoWeekHigh") or fast.get("year_high")), 2) if to_float(info.get("fiftyTwoWeekHigh") or fast.get("year_high")) is not None else None,
-                "fifty_two_week_low": round(to_float(info.get("fiftyTwoWeekLow") or fast.get("year_low")), 2) if to_float(info.get("fiftyTwoWeekLow") or fast.get("year_low")) is not None else None,
-            },
-            "financial_metrics": {
-                "total_revenue": money(revenue, currency),
-                "revenue_growth": percent(info.get("revenueGrowth")),
-                "gross_profit": money(gross_profit, currency),
-                "gross_margin": percent(gross_margin),
-                "net_income": money(net_income, currency),
-                "operating_cash_flow": money(operating_cash_flow, currency),
-                "free_cash_flow": money(free_cash_flow, currency),
-                "total_debt": money(debt, currency),
-                "total_cash": money(cash, currency),
-                "stockholder_equity": money(equity, currency),
-                "debt_to_equity": round(debt_to_equity, 2) if debt_to_equity is not None else None,
-            },
-            "note": "Data is latest available from the backend provider. Market prices may be delayed and financial statements may be latest available annual/trailing values."
+            "market_data": market_data,
+            "financial_metrics": financial_metrics,
+            "note": "Supports any ticker recognized by Yahoo Finance/yfinance, including international suffixes like .HK, .JK, .T, .KS, .NS, .AX, .L, .PA, .DE and others. Market prices may be delayed and statements may be latest available trailing or annual values."
         }
     except Exception as error:
         return {"ticker": ticker, "data_status": "unavailable", "error": str(error)}
@@ -251,7 +293,7 @@ def fetch_financial_data(ticker: str) -> Dict[str, Any]:
 def build_prompt(query: str, ticker: Optional[str], data: Optional[Dict[str, Any]]) -> List[Dict[str, str]]:
     if data:
         system = "You are QFin Terminal, an AI chat assistant specialized in finance. Analyze only the provided backend data. Do not invent missing numbers. Use plain text only, no markdown, no JSON. Structure the response as: Fact. Interpretation. Watch Items. Disclaimer."
-        user = f"User request: {query}\nResolved ticker: {ticker}\nBackend data: {data}\nWrite a clear analyst-style response using the provided data. Mention that the data is latest available from the backend provider."
+        user = f"User request: {query}\nResolved ticker: {ticker}\nBackend data: {data}\nWrite a clear analyst-style response using the provided data. Mention that the data is latest available from the backend provider. If data_status is unavailable, tell the user the ticker may be unsupported or needs the correct Yahoo Finance ticker suffix."
     else:
         system = "You are QFin Terminal, a normal friendly AI chatbot specialized in finance. You can answer daily conversation normally, like greetings and general questions. When the user asks finance, accounting, economics, company, or stock questions, answer like a careful finance assistant. Use plain text only, no markdown, no JSON."
         user = query
@@ -278,11 +320,11 @@ async def generate_response(query: str, ticker: Optional[str] = None, mode: str 
 @app.get("/")
 def root(request: Request):
     base_url = str(request.base_url).rstrip("/")
-    return {"app": "QFin Terminal API", "status": "running", "docs": f"{base_url}/docs", "health": f"{base_url}/health", "chat": f"{base_url}/chat", "market_data": f"{base_url}/market-data/TSLA"}
+    return {"app": "QFin Terminal API", "status": "running", "docs": f"{base_url}/docs", "health": f"{base_url}/health", "chat": f"{base_url}/chat", "market_data_examples": [f"{base_url}/market-data/TSLA", f"{base_url}/market-data/9988.HK", f"{base_url}/market-data/BBCA.JK"]}
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "service": "qfin-terminal-api", "version": "finance-chat-live-data-1.0", "qwen_configured": qwen_is_configured()}
+    return {"status": "ok", "service": "qfin-terminal-api", "version": "global-ticker-chat-1.0", "qwen_configured": qwen_is_configured()}
 
 @app.post("/analyze")
 async def analyze(payload: AnalyzeRequest):
