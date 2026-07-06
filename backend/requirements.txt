@@ -4,3 +4,5 @@ python-dotenv
 pydantic
 httpx
 python-multipart
+yfinance
+pandas
