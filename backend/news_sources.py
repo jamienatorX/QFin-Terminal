@@ -1,3 +1,4 @@
+import os
 import re
 import xml.etree.ElementTree as ET
 from email.utils import parsedate_to_datetime
@@ -83,6 +84,19 @@ async def fetch_rss(client: httpx.AsyncClient, category: str) -> List[Dict[str, 
             continue
     return output
 
+async def fetch_newsapi(client: httpx.AsyncClient, category: str) -> List[Dict[str, Any]]:
+    key = os.getenv("NEWSAPI_KEY") or os.getenv("NEWS_API_KEY")
+    if not key:
+        return []
+    q = CATEGORY_QUERIES.get(category, CATEGORY_QUERIES["Stocks"])
+    try:
+        r = await client.get("https://newsapi.org/v2/everything", params={"q": q, "language": "en", "sortBy": "publishedAt", "pageSize": 12, "apiKey": key})
+        if r.status_code >= 400:
+            return []
+        return [{"title": x.get("title"), "summary": x.get("description"), "publisher": (x.get("source") or {}).get("name") or "NewsAPI", "link": x.get("url"), "providerPublishTime": x.get("publishedAt"), "source": "NewsAPI"} for x in r.json().get("articles", [])]
+    except Exception:
+        return []
+
 async def fetch_all_sources(category: str) -> List[Dict[str, Any]]:
     headers = {"User-Agent": "Mozilla/5.0 QFinTerminal/1.0"}
     async with httpx.AsyncClient(timeout=12, follow_redirects=True, headers=headers) as client:
@@ -90,4 +104,5 @@ async def fetch_all_sources(category: str) -> List[Dict[str, Any]]:
         items.extend(await fetch_yahoo(client, category))
         items.extend(await fetch_gdelt(client, category))
         items.extend(await fetch_rss(client, category))
+        items.extend(await fetch_newsapi(client, category))
     return _dedupe(items)
