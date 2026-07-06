@@ -1,6 +1,7 @@
 from dotenv import load_dotenv
 load_dotenv()
 
+import re
 from fastapi import FastAPI, UploadFile, File, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
@@ -9,7 +10,7 @@ from typing import Any, Dict, List, Optional
 
 from qwen_client import QwenClientError, call_qwen, qwen_is_configured
 
-app = FastAPI(title="QFin Terminal API", version="clean-local-1.2")
+app = FastAPI(title="QFin Terminal API", version="clean-local-1.3")
 
 app.add_middleware(
     CORSMiddleware,
@@ -50,6 +51,19 @@ def extract_chat_query(payload: ChatRequest) -> str:
         return payload.messages[-1].content
     return "Analyze the selected company and explain key financial risks."
 
+def clean_frontend_text(text: str) -> str:
+    cleaned = text.replace("**", "").replace("*", "").replace("#", "")
+    cleaned = cleaned.replace("\r\n", "\n").replace("\r", "\n")
+    cleaned = re.sub(r"\n\s*\n+", "\n\n", cleaned)
+    cleaned = re.sub(r"[ \t]+", " ", cleaned)
+    cleaned = re.sub(r"\n[ \t]+", "\n", cleaned)
+    cleaned = cleaned.strip()
+    cleaned = re.sub(r"(?<!\n)(Fact\.)", r"\n\n\1", cleaned)
+    cleaned = re.sub(r"(?<!\n)(Interpretation\.)", r"\n\n\1", cleaned)
+    cleaned = re.sub(r"(?<!\n)(Watch Items\.)", r"\n\n\1", cleaned)
+    cleaned = re.sub(r"(?<!\n)(Disclaimer\.)", r"\n\n\1", cleaned)
+    return cleaned.strip()
+
 def calculate_demo_metrics() -> Dict[str, Any]:
     return {
         "revenue_growth": 0.184,
@@ -66,8 +80,10 @@ def build_grounded_prompt(payload: AnalyzeRequest, metrics: Dict[str, Any]):
     system_message = (
         "You are QFin Terminal, a careful financial analyst assistant. "
         "You must not invent financial numbers. Use only the structured metrics provided by the backend. "
-        "Separate your answer into Fact, Interpretation, Watch Items, and Disclaimer. "
-        "Do not give buy, sell, or hold recommendations."
+        "Do not give buy, sell, or hold recommendations. "
+        "Write in plain text only. Do not use Markdown, asterisks, bullets, hashtags, tables, or JSON. "
+        "Use clear section labels exactly as: Fact. Interpretation. Watch Items. Disclaimer. "
+        "Keep the answer readable even if line breaks are removed by the frontend."
     )
 
     user_message = f'''
@@ -79,6 +95,14 @@ Backend-computed metrics:
 {metrics}
 
 Write a concise financial analysis report using only the data above.
+Use this plain text format:
+Fact. Revenue Growth: ... Gross Margin: ... Debt-to-Equity Ratio: ...
+
+Interpretation. ...
+
+Watch Items. 1. Revenue Quality: ... 2. Margin Sustainability: ... 3. Relative Leverage: ...
+
+Disclaimer. ...
 '''
 
     return [
@@ -112,6 +136,7 @@ async def analyze(payload: AnalyzeRequest):
     messages = build_grounded_prompt(payload, metrics)
 
     if not qwen_is_configured():
+        fallback = "Fact. Demo mode is active because DASHSCOPE_API_KEY is not configured. Interpretation. The backend is connected successfully, but Qwen is not enabled yet. Watch Items. 1. Add DASHSCOPE_API_KEY in Render environment variables. 2. Confirm DASHSCOPE_MODEL is set correctly. Disclaimer. This is for educational and analytical use only, not financial advice."
         return {
             "mode": payload.mode,
             "query": payload.query,
@@ -119,17 +144,18 @@ async def analyze(payload: AnalyzeRequest):
             "facts": metrics,
             "qwen_status": "not_configured",
             "ai_report": {
-                "summary": "Demo mode only. Add DASHSCOPE_API_KEY in backend/.env or Render environment variables to enable Qwen.",
+                "summary": fallback,
                 "interpretation": "The backend is ready to send computed metrics to Qwen for grounded narration.",
                 "watch_items": metrics["risk_flags"]
             },
-            "answer": "Demo mode only. Add DASHSCOPE_API_KEY to enable Qwen. Backend is connected successfully.",
+            "answer": fallback,
             "disclaimer": "For educational and analytical use only. Not financial advice."
         }
 
     try:
         qwen_response = await call_qwen(messages)
-        content = qwen_response["choices"][0]["message"]["content"]
+        raw_content = qwen_response["choices"][0]["message"]["content"]
+        content = clean_frontend_text(raw_content)
         return {
             "mode": payload.mode,
             "query": payload.query,
@@ -146,6 +172,7 @@ async def analyze(payload: AnalyzeRequest):
             "disclaimer": "For educational and analytical use only. Not financial advice."
         }
     except (QwenClientError, KeyError, IndexError) as error:
+        fallback = "Fact. The Render backend is connected, but the Qwen call failed. Interpretation. This usually means the DASHSCOPE_API_KEY, model name, or base URL needs to be checked. Watch Items. 1. Check DASHSCOPE_API_KEY in Render. 2. Check DASHSCOPE_BASE_URL. 3. Check DASHSCOPE_MODEL. Disclaimer. This is for educational and analytical use only, not financial advice."
         return {
             "mode": payload.mode,
             "query": payload.query,
@@ -154,10 +181,10 @@ async def analyze(payload: AnalyzeRequest):
             "qwen_status": "error",
             "error": str(error),
             "ai_report": {
-                "summary": "Qwen call failed, so the backend returned a safe fallback response.",
+                "summary": fallback,
                 "watch_items": metrics["risk_flags"]
             },
-            "answer": "Qwen call failed, but the Render backend is connected. Check your DASHSCOPE_API_KEY and model/base URL settings.",
+            "answer": fallback,
             "disclaimer": "For educational and analytical use only. Not financial advice."
         }
 
