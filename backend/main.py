@@ -1,14 +1,16 @@
 from dotenv import load_dotenv
 load_dotenv()
 
+import json
 from fastapi import FastAPI, UploadFile, File, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from qwen_client import QwenClientError, call_qwen, qwen_is_configured
 
-app = FastAPI(title="QFin Terminal API", version="clean-local-1.0")
+app = FastAPI(title="QFin Terminal API", version="clean-local-1.1")
 
 app.add_middleware(
     CORSMiddleware,
@@ -22,6 +24,32 @@ class AnalyzeRequest(BaseModel):
     query: str
     ticker: Optional[str] = None
     mode: str = "full_report"
+
+class ChatMessage(BaseModel):
+    role: Optional[str] = "user"
+    content: str
+
+class ChatRequest(BaseModel):
+    message: Optional[str] = None
+    query: Optional[str] = None
+    prompt: Optional[str] = None
+    ticker: Optional[str] = None
+    mode: Optional[str] = "chat"
+    messages: Optional[List[ChatMessage]] = None
+
+def extract_chat_query(payload: ChatRequest) -> str:
+    if payload.message:
+        return payload.message
+    if payload.query:
+        return payload.query
+    if payload.prompt:
+        return payload.prompt
+    if payload.messages:
+        user_messages = [m.content for m in payload.messages if (m.role or "user") == "user"]
+        if user_messages:
+            return user_messages[-1]
+        return payload.messages[-1].content
+    return "Analyze the selected company and explain key financial risks."
 
 def calculate_demo_metrics() -> Dict[str, Any]:
     return {
@@ -66,7 +94,9 @@ def root(request: Request):
         "app": "QFin Terminal API",
         "status": "running",
         "docs": f"{base_url}/docs",
-        "health": f"{base_url}/health"
+        "health": f"{base_url}/health",
+        "chat": f"{base_url}/chat",
+        "chat_stream": f"{base_url}/chat/stream"
     }
 
 @app.get("/health")
@@ -90,10 +120,11 @@ async def analyze(payload: AnalyzeRequest):
             "facts": metrics,
             "qwen_status": "not_configured",
             "ai_report": {
-                "summary": "Demo mode only. Add DASHSCOPE_API_KEY in backend/.env to enable Qwen.",
+                "summary": "Demo mode only. Add DASHSCOPE_API_KEY in backend/.env or Render environment variables to enable Qwen.",
                 "interpretation": "The backend is ready to send computed metrics to Qwen for grounded narration.",
                 "watch_items": metrics["risk_flags"]
             },
+            "answer": "Demo mode only. Add DASHSCOPE_API_KEY to enable Qwen. Backend is connected successfully.",
             "disclaimer": "For educational and analytical use only. Not financial advice."
         }
 
@@ -111,6 +142,8 @@ async def analyze(payload: AnalyzeRequest):
                 "raw_model": qwen_response.get("model"),
                 "usage": qwen_response.get("usage")
             },
+            "answer": content,
+            "message": content,
             "disclaimer": "For educational and analytical use only. Not financial advice."
         }
     except (QwenClientError, KeyError, IndexError) as error:
@@ -125,8 +158,52 @@ async def analyze(payload: AnalyzeRequest):
                 "summary": "Qwen call failed, so the backend returned a safe fallback response.",
                 "watch_items": metrics["risk_flags"]
             },
+            "answer": "Qwen call failed, but the Render backend is connected. Check your DASHSCOPE_API_KEY and model/base URL settings.",
             "disclaimer": "For educational and analytical use only. Not financial advice."
         }
+
+@app.post("/chat")
+async def chat(payload: ChatRequest):
+    query = extract_chat_query(payload)
+    result = await analyze(
+        AnalyzeRequest(
+            query=query,
+            ticker=payload.ticker,
+            mode=payload.mode or "chat"
+        )
+    )
+    return {
+        "id": "qfin-chat-response",
+        "role": "assistant",
+        "content": result.get("answer") or result.get("ai_report", {}).get("content") or result.get("ai_report", {}).get("summary"),
+        "answer": result.get("answer"),
+        "data": result
+    }
+
+@app.post("/chat/stream")
+async def chat_stream(payload: ChatRequest):
+    async def event_generator():
+        result = await chat(payload)
+        content = result.get("content") or "No response generated."
+        yield f"data: {json.dumps({'type': 'message', 'content': content})}\n\n"
+        yield f"data: {json.dumps({'type': 'done'})}\n\n"
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+@app.post("/chat/upload")
+async def chat_upload(file: UploadFile = File(...)):
+    return await upload_statement(file)
+
+@app.get("/ticker/resolve")
+def resolve_ticker(symbol: Optional[str] = None, query: Optional[str] = None):
+    raw = symbol or query or "BABA"
+    normalized = raw.strip().upper()
+    return {
+        "symbol": normalized,
+        "ticker": normalized,
+        "name": normalized,
+        "status": "resolved"
+    }
 
 @app.post("/upload")
 async def upload_statement(file: UploadFile = File(...)):
