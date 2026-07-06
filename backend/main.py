@@ -13,11 +13,29 @@ from pydantic import BaseModel
 
 from qwen_client import QwenClientError, call_qwen, qwen_is_configured
 
-app = FastAPI(title="QFin Terminal API", version="qfin-fast-chat-1.1")
+app = FastAPI(title="QFin Terminal API", version="qfin-structured-report-1.2")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
 SYSTEM_PROMPT = """
-You are QFin Terminal, a finance research assistant. You can chat normally, but you specialize in company analysis, financial statements, valuation, portfolio math, risk, derivatives, statistics, CAPM, DCF, VaR, factor models, options Greeks, and quantitative finance. Never invent company figures. Use backend data, user data, or clearly stated assumptions only. When data is missing, say it is missing. For company analysis, cover profitability, cash flow quality, balance sheet health, growth or efficiency, and key risks. For comparisons, compare side by side and explain structural differences. Do not give personal investment instructions. Use clear plain text and do not output JSON to the user.
+You are QFin, a financial statement analysis engine inside QFin Terminal.
+Never write one long paragraph. Use markdown headers and short labeled sections.
+Never fabricate figures. Use only backend data, user data, or clearly stated assumptions.
+Every quantitative claim must include a number, source, currency, and period when available.
+Every trend needs a verdict: Positive, Neutral-Watch, or Negative, with one reason.
+Show formulas and inputs when computing ratios.
+
+For full company analysis, use this order:
+## A. Executive Summary
+## B. Revenue & Growth
+## C. Profitability
+## D. Liquidity & Solvency
+## E. Cash Flow Quality
+## F. Valuation Snapshot
+## G. Key Risks / Red Flags
+## H. Final Verdict Table
+
+Use markdown tables for metrics. If 3 or more periods are available, include a simple text chart. If fewer than 3 periods are available, say the chart is unavailable because there are fewer than 3 periods.
+Do not give personal investment instructions. Do not output JSON to the user.
 """.strip()
 
 class AnalyzeRequest(BaseModel):
@@ -66,7 +84,6 @@ def extract_chat_query(payload: ChatRequest) -> str:
     return "Hello"
 
 def clean_text(text: str) -> str:
-    text = text.replace("**", "").replace("*", "").replace("#", "")
     text = text.replace("\r\n", "\n").replace("\r", "\n")
     text = re.sub(r"\n\s*\n+", "\n\n", text)
     text = re.sub(r"[ \t]+", " ", text)
@@ -209,13 +226,13 @@ def fetch_financial_data(ticker: str) -> Dict[str, Any]:
         market = {"last_price": round(price, 2) if price is not None else None, "previous_close": round(prev, 2) if prev is not None else None, "price_change_pct": pct(change), "market_cap": money(fast.get("market_cap") or info.get("marketCap"), cur), "enterprise_value": money(info.get("enterpriseValue"), cur), "trailing_pe": round(as_float(info.get("trailingPE")), 2) if as_float(info.get("trailingPE")) is not None else None, "forward_pe": round(as_float(info.get("forwardPE")), 2) if as_float(info.get("forwardPE")) is not None else None}
         metrics = {"total_revenue": money(revenue, cur), "revenue_growth": pct(info.get("revenueGrowth")), "gross_profit": money(gp, cur), "gross_margin": pct(gm), "net_income": money(ni, cur), "operating_cash_flow": money(ocf, cur), "free_cash_flow": money(fcf, cur), "total_debt": money(debt, cur), "total_cash": money(cash, cur), "stockholder_equity": money(equity, cur), "debt_to_equity": round(de, 2) if de is not None else None}
         has_data = any(v is not None for v in market.values()) or any(v is not None for v in metrics.values())
-        return {"ticker": ticker, "company_name": info.get("longName") or info.get("shortName") or ticker, "currency": cur, "retrieved_at_utc": datetime.now(timezone.utc).isoformat(), "data_status": "latest_available" if has_data else "unavailable", "source": "yfinance/Yahoo Finance via backend", "market_data": market, "financial_metrics": metrics, "note": "Yahoo Finance/yfinance data. Market prices may be delayed and statements may be latest available trailing or annual values."}
+        return {"ticker": ticker, "company_name": info.get("longName") or info.get("shortName") or ticker, "currency": cur, "retrieved_at_utc": datetime.now(timezone.utc).isoformat(), "data_status": "latest_available" if has_data else "unavailable", "source": "yfinance/Yahoo Finance via backend", "period_note": "latest available trailing/annual values from yfinance where provided", "market_data": market, "financial_metrics": metrics, "note": "Yahoo Finance/yfinance data. Market prices may be delayed and statements may be latest available trailing or annual values."}
     except Exception as e:
         return {"ticker": ticker, "data_status": "unavailable", "error": str(e)}
 
 def build_prompt(q: str, ticker: Optional[str], data: Optional[Dict[str, Any]]) -> List[Dict[str, str]]:
     if data:
-        user = f"User request: {q}\nResolved ticker: {ticker}\nBackend data: {data}\nUse only this backend data. If data_status is unavailable, explain that the company name or Yahoo Finance ticker may need correction."
+        user = f"User request: {q}\nResolved ticker: {ticker}\nBackend data: {data}\nUse only this backend data. Follow the A through H report structure. If a section lacks data, keep the heading and say which input is unavailable. Do not invent missing periods, peers, sector averages, charts, or ratios."
     else:
         user = q
     return [{"role": "system", "content": SYSTEM_PROMPT}, {"role": "user", "content": user}]
@@ -242,7 +259,7 @@ def root(request: Request):
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "service": "qfin-terminal-api", "version": "qfin-fast-chat-1.1", "qwen_configured": qwen_is_configured()}
+    return {"status": "ok", "service": "qfin-terminal-api", "version": "qfin-structured-report-1.2", "qwen_configured": qwen_is_configured()}
 
 @app.post("/analyze")
 async def analyze(payload: AnalyzeRequest):
