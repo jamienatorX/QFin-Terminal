@@ -4,7 +4,7 @@ services:
     env: python
     rootDir: backend
     buildCommand: pip install -r requirements.txt
-    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    startCommand: uvicorn server:app --host 0.0.0.0 --port $PORT
     envVars:
       - key: DASHSCOPE_API_KEY
         sync: false
@@ -12,6 +12,8 @@ services:
         value: https://dashscope-intl.aliyuncs.com/compatible-mode/v1
       - key: DASHSCOPE_MODEL
         value: qwen3.7-plus
+      - key: DASHSCOPE_NEWS_MODEL
+        value: qwen-plus
       - key: SUPABASE_URL
         sync: false
       - key: SUPABASE_SERVICE_ROLE_KEY
