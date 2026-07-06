@@ -13,18 +13,18 @@ from pydantic import BaseModel
 
 from qwen_client import QwenClientError, call_qwen, qwen_is_configured
 
-app = FastAPI(title="QFin Terminal API", version="qfin-structured-report-1.2")
+app = FastAPI(title="QFin Terminal API", version="qfin-quant-ready-1.3")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
 SYSTEM_PROMPT = """
-You are QFin, a financial statement analysis engine inside QFin Terminal.
-Never write one long paragraph. Use markdown headers and short labeled sections.
-Never fabricate figures. Use only backend data, user data, or clearly stated assumptions.
+You are QFin, a financial statement analysis and quantitative finance engine inside QFin Terminal.
+Never write one long paragraph. Use markdown headers, short labeled sections, tables for numbers, and a final summary.
+Never fabricate figures. Use backend data, user data, or clearly stated assumptions only.
 Every quantitative claim must include a number, source, currency, and period when available.
 Every trend needs a verdict: Positive, Neutral-Watch, or Negative, with one reason.
-Show formulas and inputs when computing ratios.
+Show formulas and inputs when computing ratios or quantitative outputs.
 
-For full company analysis, use this order:
+For company analysis, use:
 ## A. Executive Summary
 ## B. Revenue & Growth
 ## C. Profitability
@@ -33,8 +33,12 @@ For full company analysis, use this order:
 ## F. Valuation Snapshot
 ## G. Key Risks / Red Flags
 ## H. Final Verdict Table
+## I. Bottom-Line Summary
 
-Use markdown tables for metrics. If 3 or more periods are available, include a simple text chart. If fewer than 3 periods are available, say the chart is unavailable because there are fewer than 3 periods.
+Quant finance coverage: returns, volatility, covariance, correlation, beta, drawdown, Sharpe, Sortino, CAPM, factor models, portfolio optimization, efficient frontier, risk parity, hedging, VaR, stress testing, scenario analysis, Monte Carlo, options Greeks, implied volatility, duration, convexity, yield curves, bond pricing, credit spreads, DCF, WACC, valuation multiples, time-series analysis, mean reversion, cointegration, pairs trading, backtesting, transaction costs, slippage, and risk controls.
+
+For quant questions, use: Concept, Formula, Inputs, Method, Interpretation, Caveats, Bottom-Line Summary.
+If 3 or more periods are available, include a simple text chart. If fewer than 3 periods are available, say chart unavailable because fewer than 3 periods were provided.
 Do not give personal investment instructions. Do not output JSON to the user.
 """.strip()
 
@@ -61,7 +65,7 @@ ALIASES = {
     "uber": "UBER", "grab": "GRAB"
 }
 STOP = {"AI", "API", "CEO", "CFO", "GDP", "CPI", "USD", "IDR", "THE", "AND", "YOU", "HELLO", "HI", "HEY", "OK", "YES", "NO"}
-FIN_WORDS = ["analyze", "analyse", "compare", "stock", "ticker", "company", "financial", "finance", "revenue", "profit", "margin", "debt", "cash flow", "valuation", "price", "earnings", "risk", "market cap", "dcf", "capm", "portfolio", "option", "roe", "roa", "roic", "fcf"]
+FIN_WORDS = ["analyze", "analyse", "compare", "stock", "ticker", "company", "financial", "finance", "revenue", "profit", "margin", "debt", "cash flow", "valuation", "price", "earnings", "risk", "market cap", "dcf", "capm", "portfolio", "option", "greeks", "wacc", "var", "monte carlo", "duration", "convexity", "yield", "factor", "cointegration", "backtesting", "sharpe", "sortino", "beta", "volatility", "roe", "roa", "roic", "fcf"]
 TICKER_RE = r"[A-Za-z0-9][A-Za-z0-9\.\-\^=]{0,17}"
 
 CASUAL_REPLIES = {
@@ -98,7 +102,7 @@ def fast_casual_reply(q: str) -> Optional[str]:
     if normalized in CASUAL_REPLIES:
         return CASUAL_REPLIES[normalized]
     if normalized in {"what can you do", "who are you", "help", "menu"}:
-        return "I am QFin Terminal. I can chat normally, analyze public companies, resolve company names into tickers, fetch latest available Yahoo Finance data, explain financial statements, compare companies, and help with valuation or quant finance concepts. Try: analyze Microsoft, analyze Honda, analyze Bumi Resources, or compare TSLA and BYD."
+        return "I am QFin Terminal. I can chat normally, analyze public companies, resolve company names into tickers, fetch latest available Yahoo Finance data, explain financial statements, compare companies, and help with valuation or quant finance concepts such as CAPM, VaR, Monte Carlo, options Greeks, portfolio optimization, factor models, and risk metrics. Try: analyze Microsoft, analyze Honda, analyze Bumi Resources, or explain VaR."
     return None
 
 def norm_symbol(s: str) -> str:
@@ -232,7 +236,7 @@ def fetch_financial_data(ticker: str) -> Dict[str, Any]:
 
 def build_prompt(q: str, ticker: Optional[str], data: Optional[Dict[str, Any]]) -> List[Dict[str, str]]:
     if data:
-        user = f"User request: {q}\nResolved ticker: {ticker}\nBackend data: {data}\nUse only this backend data. Follow the A through H report structure. If a section lacks data, keep the heading and say which input is unavailable. Do not invent missing periods, peers, sector averages, charts, or ratios."
+        user = f"User request: {q}\nResolved ticker: {ticker}\nBackend data: {data}\nUse only this backend data. Follow the A through I report structure. If a section lacks data, keep the heading and say which input is unavailable. Do not invent missing periods, peers, sector averages, charts, or ratios. End with a Bottom-Line Summary."
     else:
         user = q
     return [{"role": "system", "content": SYSTEM_PROMPT}, {"role": "user", "content": user}]
@@ -259,7 +263,7 @@ def root(request: Request):
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "service": "qfin-terminal-api", "version": "qfin-structured-report-1.2", "qwen_configured": qwen_is_configured()}
+    return {"status": "ok", "service": "qfin-terminal-api", "version": "qfin-quant-ready-1.3", "qwen_configured": qwen_is_configured()}
 
 @app.post("/analyze")
 async def analyze(payload: AnalyzeRequest):
