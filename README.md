@@ -11,20 +11,17 @@ AI: Qwen Cloud / DashScope API
 Database: Supabase Postgres
 ```
 
-## Current repository structure
-
-The uploaded project is currently nested inside this path:
+## Repository structure
 
 ```text
-qfin-terminal/qfin-terminal
-```
-
-Important folders:
-
-```text
-qfin-terminal/qfin-terminal/backend
-qfin-terminal/qfin-terminal/frontend
-qfin-terminal/qfin-terminal/supabase
+QFin-Terminal
+├── backend
+├── frontend
+├── supabase
+├── README.md
+├── render.yaml
+├── .gitignore
+└── LICENSE
 ```
 
 ## What works
@@ -41,7 +38,7 @@ qfin-terminal/qfin-terminal/supabase
 ## Local backend setup
 
 ```powershell
-cd qfin-terminal/qfin-terminal/backend
+cd backend
 python -m venv .venv
 .\.venv\Scripts\activate
 pip install -r requirements.txt
@@ -60,7 +57,7 @@ http://127.0.0.1:8000/docs
 Create this file locally:
 
 ```text
-qfin-terminal/qfin-terminal/backend/.env
+backend/.env
 ```
 
 Add:
@@ -78,7 +75,7 @@ Do not commit `.env` to GitHub.
 ## Local frontend setup
 
 ```powershell
-cd qfin-terminal/qfin-terminal/frontend
+cd frontend
 npm install
 npm run dev
 ```
@@ -92,7 +89,7 @@ http://localhost:5173
 To connect the frontend to a deployed backend, create:
 
 ```text
-qfin-terminal/qfin-terminal/frontend/.env.local
+frontend/.env.local
 ```
 
 Add:
@@ -110,7 +107,7 @@ This repo includes `render.yaml`.
 For manual Render setup, use:
 
 ```text
-Root Directory: qfin-terminal/qfin-terminal/backend
+Root Directory: backend
 Build Command: pip install -r requirements.txt
 Start Command: uvicorn main:app --host 0.0.0.0 --port $PORT
 ```
