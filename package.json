@@ -1,0 +1,18 @@
+{
+  "name": "qfin-terminal-workspace",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Workspace helper scripts for QFin Terminal frontend design tooling.",
+  "scripts": {
+    "uiux:versions": "uipro versions",
+    "uiux:init:all": "uipro init --ai all",
+    "uiux:init:codex": "uipro init --ai codex",
+    "uiux:init:claude": "uipro init --ai claude",
+    "uiux:init:cursor": "uipro init --ai cursor",
+    "uiux:update": "uipro update",
+    "uiux:uninstall": "uipro uninstall"
+  },
+  "devDependencies": {
+    "ui-ux-pro-max-cli": "latest"
+  }
+}
