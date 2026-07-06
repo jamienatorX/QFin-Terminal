@@ -97,6 +97,19 @@ async def fetch_newsapi(client: httpx.AsyncClient, category: str) -> List[Dict[s
     except Exception:
         return []
 
+async def fetch_finnhub(client: httpx.AsyncClient, category: str) -> List[Dict[str, Any]]:
+    key = os.getenv("FINNHUB_API_KEY")
+    if not key:
+        return []
+    finnhub_category = "crypto" if category == "Crypto" else "general"
+    try:
+        r = await client.get("https://finnhub.io/api/v1/news", params={"category": finnhub_category, "token": key})
+        if r.status_code >= 400:
+            return []
+        return [{"title": x.get("headline"), "summary": x.get("summary"), "publisher": x.get("source") or "Finnhub", "link": x.get("url"), "providerPublishTime": x.get("datetime"), "source": "Finnhub"} for x in r.json()[:12]]
+    except Exception:
+        return []
+
 async def fetch_all_sources(category: str) -> List[Dict[str, Any]]:
     headers = {"User-Agent": "Mozilla/5.0 QFinTerminal/1.0"}
     async with httpx.AsyncClient(timeout=12, follow_redirects=True, headers=headers) as client:
@@ -105,4 +118,5 @@ async def fetch_all_sources(category: str) -> List[Dict[str, Any]]:
         items.extend(await fetch_gdelt(client, category))
         items.extend(await fetch_rss(client, category))
         items.extend(await fetch_newsapi(client, category))
+        items.extend(await fetch_finnhub(client, category))
     return _dedupe(items)
