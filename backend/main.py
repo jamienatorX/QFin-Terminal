@@ -1,7 +1,6 @@
 from dotenv import load_dotenv
 load_dotenv()
 
-import json
 from fastapi import FastAPI, UploadFile, File, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
@@ -10,7 +9,7 @@ from typing import Any, Dict, List, Optional
 
 from qwen_client import QwenClientError, call_qwen, qwen_is_configured
 
-app = FastAPI(title="QFin Terminal API", version="clean-local-1.1")
+app = FastAPI(title="QFin Terminal API", version="clean-local-1.2")
 
 app.add_middleware(
     CORSMiddleware,
@@ -182,13 +181,12 @@ async def chat(payload: ChatRequest):
 
 @app.post("/chat/stream")
 async def chat_stream(payload: ChatRequest):
-    async def event_generator():
+    async def text_generator():
         result = await chat(payload)
         content = result.get("content") or "No response generated."
-        yield f"data: {json.dumps({'type': 'message', 'content': content})}\n\n"
-        yield f"data: {json.dumps({'type': 'done'})}\n\n"
+        yield content
 
-    return StreamingResponse(event_generator(), media_type="text/event-stream")
+    return StreamingResponse(text_generator(), media_type="text/plain; charset=utf-8")
 
 @app.post("/chat/upload")
 async def chat_upload(file: UploadFile = File(...)):
