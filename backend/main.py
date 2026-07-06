@@ -197,23 +197,9 @@ def resolve_ticker(query: str, provided: Optional[str] = None) -> Optional[str]:
 
     lower = query.lower()
 
-    for name, ticker in COMPANY_ALIASES.items():
-        if re.search(rf"\b{re.escape(name)}\b", lower):
-            return ticker
-
     cashtag = re.search(rf"\$({TICKER_PATTERN})\b", query)
     if cashtag:
         candidate = normalize_symbol(cashtag.group(1))
-        if candidate not in STOP_WORDS:
-            return candidate
-
-    after_word = re.search(
-        rf"\b(?:analyze|analyse|check|review|research|about|stock|ticker|company|financials?|value|valuation)\s+({TICKER_PATTERN})\b",
-        query,
-        re.I,
-    )
-    if after_word:
-        candidate = normalize_symbol(after_word.group(1))
         if candidate not in STOP_WORDS:
             return candidate
 
@@ -226,14 +212,30 @@ def resolve_ticker(query: str, provided: Optional[str] = None) -> Optional[str]:
         if candidate not in STOP_WORDS:
             return candidate
 
+    for name, ticker in COMPANY_ALIASES.items():
+        if re.search(rf"\b{re.escape(name)}\b", lower):
+            return ticker
+
+    if has_finance_intent(query):
+        searched = yahoo_symbol_search(query)
+        if searched:
+            return searched
+
     uppercase_tickers = re.findall(r"\b[A-Z]{1,5}(?:[\.-][A-Z])?\b", query)
     for token in uppercase_tickers:
         candidate = normalize_symbol(token)
         if candidate not in STOP_WORDS:
             return candidate
 
-    if has_finance_intent(query):
-        return yahoo_symbol_search(query)
+    after_word = re.search(
+        rf"\b(?:analyze|analyse|check|review|research|about|stock|ticker|company|financials?|value|valuation)\s+({TICKER_PATTERN})\b",
+        query,
+        re.I,
+    )
+    if after_word:
+        candidate = normalize_symbol(after_word.group(1))
+        if candidate not in STOP_WORDS:
+            return candidate
 
     return None
 
@@ -367,36 +369,6 @@ def fetch_financial_data(ticker: str) -> Dict[str, Any]:
         }
 
 def build_prompt(query: str, ticker: Optional[str], data: Optional[Dict[str, Any]]) -> List[Dict[str, str]]:
-    if data:
-        system = (
-            "You are QFin Terminal, an AI chat assistant specialized in finance. "
-            "Analyze only the provided backend data. Do not invent missing numbers. "
-            "Use plain text only, no markdown, no JSON. "
-            "Structure the response as: Fact. Interpretation. Watch Items. Disclaimer."
-        )
-
-        user = (
-            f"User request: {query}\n"
-            f"Resolved ticker: {ticker}\n"
-            f"Backend data: {data}\n"
-            "Write a clear analyst-style response using the provided data. "
-            "Mention that the data is latest available from the backend provider. "
-            "If data_status is unavailable, tell the user the ticker may be unsupported or needs the correct Yahoo Finance ticker suffix."
-        )
-
-    else:
-        system = (
-            "You are QFin Terminal, a normal friendly AI chatbot specialized in finance. "
-            "You can answer daily conversation normally, like greetings and general questions. "
-            "When the user asks finance, accounting, economics, company, or stock questions, answer like a careful finance assistant. "
-            "Use plain text only, no markdown, no JSON."
-        )
-        user = query
-
-    return [
-        {"role": "system", "content": system},
-        {"role": "user", "content": user},
-    ]
 
 async def generate_response(query: str, ticker: Optional[str] = None, mode: str = "chat") -> Dict[str, Any]:
     resolved = resolve_ticker(query, ticker)
