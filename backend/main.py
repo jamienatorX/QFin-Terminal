@@ -6,7 +6,6 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 import httpx
-import yfinance as yf
 from fastapi import FastAPI, File, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
@@ -14,7 +13,7 @@ from pydantic import BaseModel
 
 from qwen_client import QwenClientError, call_qwen, qwen_is_configured
 
-app = FastAPI(title="QFin Terminal API", version="qfin-fixed-1.0")
+app = FastAPI(title="QFin Terminal API", version="qfin-fast-chat-1.1")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
 SYSTEM_PROMPT = """
@@ -47,6 +46,16 @@ STOP = {"AI", "API", "CEO", "CFO", "GDP", "CPI", "USD", "IDR", "THE", "AND", "YO
 FIN_WORDS = ["analyze", "analyse", "compare", "stock", "ticker", "company", "financial", "finance", "revenue", "profit", "margin", "debt", "cash flow", "valuation", "price", "earnings", "risk", "market cap", "dcf", "capm", "portfolio", "option", "roe", "roa", "roic", "fcf"]
 TICKER_RE = r"[A-Za-z0-9][A-Za-z0-9\.\-\^=]{0,17}"
 
+CASUAL_REPLIES = {
+    "hi": "Hi, I am QFin Terminal. You can ask me normal questions, but I specialize in company analysis, financial statements, valuation, and quantitative finance.",
+    "hello": "Hello, I am QFin Terminal. Ask me to analyze a company, compare stocks, explain ratios, or answer quant finance questions.",
+    "hey": "Hey, I am QFin Terminal. What company or finance topic do you want to look at?",
+    "thanks": "You're welcome.",
+    "thank you": "You're welcome.",
+    "ok": "Okay.",
+    "okay": "Okay."
+}
+
 def extract_chat_query(payload: ChatRequest) -> str:
     if payload.message: return payload.message
     if payload.query: return payload.query
@@ -62,6 +71,18 @@ def clean_text(text: str) -> str:
     text = re.sub(r"\n\s*\n+", "\n\n", text)
     text = re.sub(r"[ \t]+", " ", text)
     return text.strip()
+
+def normalize_user_text(text: str) -> str:
+    cleaned = re.sub(r"[^a-zA-Z0-9\s]", "", text.lower())
+    return re.sub(r"\s+", " ", cleaned).strip()
+
+def fast_casual_reply(q: str) -> Optional[str]:
+    normalized = normalize_user_text(q)
+    if normalized in CASUAL_REPLIES:
+        return CASUAL_REPLIES[normalized]
+    if normalized in {"what can you do", "who are you", "help", "menu"}:
+        return "I am QFin Terminal. I can chat normally, analyze public companies, resolve company names into tickers, fetch latest available Yahoo Finance data, explain financial statements, compare companies, and help with valuation or quant finance concepts. Try: analyze Microsoft, analyze Honda, analyze Bumi Resources, or compare TSLA and BYD."
+    return None
 
 def norm_symbol(s: str) -> str:
     s = s.strip().upper().strip(".,;:!?()[]{}\"'")
@@ -150,6 +171,7 @@ def row(frame: Any, names: List[str]) -> Optional[float]:
 
 def fetch_financial_data(ticker: str) -> Dict[str, Any]:
     try:
+        import yfinance as yf
         asset = yf.Ticker(ticker)
         try: info = asset.get_info() or {}
         except Exception: info = {}
@@ -184,22 +206,8 @@ def fetch_financial_data(ticker: str) -> Dict[str, Any]:
         if de is None and as_float(info.get("debtToEquity")) is not None:
             raw = as_float(info.get("debtToEquity"))
             de = raw / 100 if raw and raw > 5 else raw
-        market = {
-            "last_price": round(price, 2) if price is not None else None,
-            "previous_close": round(prev, 2) if prev is not None else None,
-            "price_change_pct": pct(change),
-            "market_cap": money(fast.get("market_cap") or info.get("marketCap"), cur),
-            "enterprise_value": money(info.get("enterpriseValue"), cur),
-            "trailing_pe": round(as_float(info.get("trailingPE")), 2) if as_float(info.get("trailingPE")) is not None else None,
-            "forward_pe": round(as_float(info.get("forwardPE")), 2) if as_float(info.get("forwardPE")) is not None else None,
-        }
-        metrics = {
-            "total_revenue": money(revenue, cur), "revenue_growth": pct(info.get("revenueGrowth")),
-            "gross_profit": money(gp, cur), "gross_margin": pct(gm), "net_income": money(ni, cur),
-            "operating_cash_flow": money(ocf, cur), "free_cash_flow": money(fcf, cur),
-            "total_debt": money(debt, cur), "total_cash": money(cash, cur), "stockholder_equity": money(equity, cur),
-            "debt_to_equity": round(de, 2) if de is not None else None,
-        }
+        market = {"last_price": round(price, 2) if price is not None else None, "previous_close": round(prev, 2) if prev is not None else None, "price_change_pct": pct(change), "market_cap": money(fast.get("market_cap") or info.get("marketCap"), cur), "enterprise_value": money(info.get("enterpriseValue"), cur), "trailing_pe": round(as_float(info.get("trailingPE")), 2) if as_float(info.get("trailingPE")) is not None else None, "forward_pe": round(as_float(info.get("forwardPE")), 2) if as_float(info.get("forwardPE")) is not None else None}
+        metrics = {"total_revenue": money(revenue, cur), "revenue_growth": pct(info.get("revenueGrowth")), "gross_profit": money(gp, cur), "gross_margin": pct(gm), "net_income": money(ni, cur), "operating_cash_flow": money(ocf, cur), "free_cash_flow": money(fcf, cur), "total_debt": money(debt, cur), "total_cash": money(cash, cur), "stockholder_equity": money(equity, cur), "debt_to_equity": round(de, 2) if de is not None else None}
         has_data = any(v is not None for v in market.values()) or any(v is not None for v in metrics.values())
         return {"ticker": ticker, "company_name": info.get("longName") or info.get("shortName") or ticker, "currency": cur, "retrieved_at_utc": datetime.now(timezone.utc).isoformat(), "data_status": "latest_available" if has_data else "unavailable", "source": "yfinance/Yahoo Finance via backend", "market_data": market, "financial_metrics": metrics, "note": "Yahoo Finance/yfinance data. Market prices may be delayed and statements may be latest available trailing or annual values."}
     except Exception as e:
@@ -213,6 +221,9 @@ def build_prompt(q: str, ticker: Optional[str], data: Optional[Dict[str, Any]]) 
     return [{"role": "system", "content": SYSTEM_PROMPT}, {"role": "user", "content": user}]
 
 async def generate_response(q: str, ticker: Optional[str] = None, mode: str = "chat") -> Dict[str, Any]:
+    quick = fast_casual_reply(q)
+    if quick:
+        return {"mode": mode, "query": q, "ticker": None, "used_live_data": False, "facts": None, "qwen_status": "skipped_fast_reply", "answer": quick, "message": quick}
     resolved = resolve_ticker(q, ticker)
     data = fetch_financial_data(resolved) if wants_data(q, resolved) and resolved else None
     if not qwen_is_configured():
@@ -231,7 +242,7 @@ def root(request: Request):
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "service": "qfin-terminal-api", "version": "qfin-fixed-1.0", "qwen_configured": qwen_is_configured()}
+    return {"status": "ok", "service": "qfin-terminal-api", "version": "qfin-fast-chat-1.1", "qwen_configured": qwen_is_configured()}
 
 @app.post("/analyze")
 async def analyze(payload: AnalyzeRequest):
