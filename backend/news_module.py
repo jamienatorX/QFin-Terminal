@@ -1,3 +1,4 @@
+import asyncio
 import json
 import os
 import re
@@ -103,7 +104,10 @@ def validate_news(parsed: Dict[str, Any], category: str) -> Dict[str, Any]:
 
 async def generate_news(category: str) -> Dict[str, Any]:
     category = normalize_category(category)
-    candidates = await fetch_news_candidates(category)
+    try:
+        candidates = await asyncio.wait_for(fetch_news_candidates(category), timeout=8)
+    except Exception:
+        candidates = []
     if not qwen_is_configured():
         return fallback_news(category, candidates)
     model = os.getenv("DASHSCOPE_NEWS_MODEL", "qwen-plus")
@@ -111,14 +115,17 @@ async def generate_news(category: str) -> Dict[str, Any]:
         model = "qwen-plus"
     user = {"category": category, "generated_at": datetime.now(timezone.utc).isoformat(), "candidate_articles": candidates[:25], "instruction": "Generate the top 5 news items. Return only valid JSON matching the schema."}
     try:
-        response = await call_qwen(
-            messages=[{"role": "system", "content": NEWS_SYSTEM_PROMPT}, {"role": "user", "content": "JSON input: " + json.dumps(user, ensure_ascii=False)}],
-            model=model,
-            response_format={"type": "json_object"},
-            temperature=0.1,
+        response = await asyncio.wait_for(
+            call_qwen(
+                messages=[{"role": "system", "content": NEWS_SYSTEM_PROMPT}, {"role": "user", "content": "JSON input: " + json.dumps(user, ensure_ascii=False)}],
+                model=model,
+                response_format={"type": "json_object"},
+                temperature=0.1,
+            ),
+            timeout=15,
         )
         raw = response["choices"][0]["message"]["content"]
         parsed = json.loads(clean_json(raw))
         return validate_news(parsed, category)
-    except (QwenClientError, KeyError, IndexError, json.JSONDecodeError, ValueError):
+    except (QwenClientError, KeyError, IndexError, json.JSONDecodeError, ValueError, asyncio.TimeoutError):
         return fallback_news(category, candidates, parse_failure=True)
