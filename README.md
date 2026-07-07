@@ -1,6 +1,6 @@
 # QFin Terminal
 
-QFin Terminal is a Qwen-powered financial analyst dashboard for the Global AI Hackathon Series with Qwen Cloud.
+QFin Terminal is a Qwen-powered financial analyst dashboard for
 
 The app has three main layers:
 
