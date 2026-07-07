@@ -105,7 +105,7 @@ def validate_news(parsed: Dict[str, Any], category: str) -> Dict[str, Any]:
 async def generate_news(category: str) -> Dict[str, Any]:
     category = normalize_category(category)
     try:
-        candidates = await asyncio.wait_for(fetch_news_candidates(category), timeout=8)
+        candidates = await asyncio.wait_for(fetch_news_candidates(category), timeout=5)
     except Exception:
         candidates = []
     if not qwen_is_configured():
@@ -122,7 +122,7 @@ async def generate_news(category: str) -> Dict[str, Any]:
                 response_format={"type": "json_object"},
                 temperature=0.1,
             ),
-            timeout=15,
+            timeout=8,
         )
         raw = response["choices"][0]["message"]["content"]
         parsed = json.loads(clean_json(raw))
