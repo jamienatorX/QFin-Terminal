@@ -160,6 +160,46 @@ function isHelpPrompt(input: string) {
   );
 }
 
+function isLocalTimePrompt(input: string) {
+  const normalized = input
+    .trim()
+    .toLowerCase()
+    .replace(/[?.!]+$/g, '')
+    .replace(/\s+/g, ' ');
+
+  return [
+    'what day is today',
+    'what date is today',
+    'what is the date today',
+    'what is today',
+    'what time is it',
+    "what's the date",
+    "what's the date today",
+    "what's today",
+    'today date',
+    "today's date",
+    'current date',
+    'current time'
+  ].includes(normalized);
+}
+
+function buildLocalTimeReply() {
+  const now = new Date();
+  const dateText = new Intl.DateTimeFormat('en-US', {
+    weekday: 'long',
+    year: 'numeric',
+    month: 'long',
+    day: 'numeric'
+  }).format(now);
+  const timeText = new Intl.DateTimeFormat('en-US', {
+    hour: 'numeric',
+    minute: '2-digit',
+    timeZoneName: 'short'
+  }).format(now);
+
+  return `Today is ${dateText}. Your local time is ${timeText}.`;
+}
+
 function fetchWithTimeout(url: string, options: RequestInit = {}, timeoutMs = 9000) {
   const controller = new AbortController();
   const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
@@ -200,6 +240,176 @@ function sanitizeAssistantText(text: string) {
     .replace(/Do not include peer comparison, exhaustive risks, full statement breakdown, or multiple visuals\./gi, '')
     .replace(/[ \t]{2,}/g, ' ')
     .trim();
+}
+
+function renderInlineMarkdown(text: string) {
+  return text.split(/(\*\*[^*]+\*\*)/g).map((part, index) => {
+    if (part.startsWith('**') && part.endsWith('**')) {
+      return <strong key={index}>{part.slice(2, -2)}</strong>;
+    }
+
+    return part;
+  });
+}
+
+function isTableLine(line: string) {
+  return /^\s*\|.+\|\s*$/.test(line);
+}
+
+function parseTableLine(line: string) {
+  return line
+    .trim()
+    .replace(/^\|/, '')
+    .replace(/\|$/, '')
+    .split('|')
+    .map((cell) => cell.trim());
+}
+
+function isTableSeparator(line: string) {
+  const cells = parseTableLine(line);
+  return cells.length > 1 && cells.every((cell) => /^:?-{3,}:?$/.test(cell.replace(/\s/g, '')));
+}
+
+function MessageBody({ content }: { content: string }) {
+  const lines = content.split(/\r?\n/);
+  const blocks: React.ReactNode[] = [];
+  let index = 0;
+
+  while (index < lines.length) {
+    const trimmed = lines[index].trim();
+
+    if (!trimmed) {
+      index += 1;
+      continue;
+    }
+
+    if (trimmed.startsWith('```')) {
+      const codeLines: string[] = [];
+      index += 1;
+
+      while (index < lines.length && !lines[index].trim().startsWith('```')) {
+        codeLines.push(lines[index]);
+        index += 1;
+      }
+
+      index += 1;
+      blocks.push(
+        <pre className="reportCode" key={`code-${index}`}>
+          {codeLines.join('\n')}
+        </pre>
+      );
+      continue;
+    }
+
+    if (isTableLine(trimmed) && lines[index + 1] && isTableSeparator(lines[index + 1])) {
+      const tableLines = [trimmed];
+      index += 1;
+
+      while (index < lines.length && isTableLine(lines[index].trim())) {
+        tableLines.push(lines[index].trim());
+        index += 1;
+      }
+
+      const [headerLine, , ...bodyLines] = tableLines;
+      const headers = parseTableLine(headerLine);
+      const rows = bodyLines.map(parseTableLine);
+
+      blocks.push(
+        <div className="reportTableWrap" key={`table-${index}`}>
+          <table className="reportTable">
+            <thead>
+              <tr>
+                {headers.map((header, headerIndex) => (
+                  <th key={`${header}-${headerIndex}`}>{renderInlineMarkdown(header)}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((row, rowIndex) => (
+                <tr key={`row-${rowIndex}`}>
+                  {headers.map((_, cellIndex) => (
+                    <td key={`cell-${cellIndex}`}>
+                      {renderInlineMarkdown(row[cellIndex] || '')}
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      );
+      continue;
+    }
+
+    const headingMatch = trimmed.match(/^#{1,4}\s+(.+)$/);
+    if (headingMatch) {
+      blocks.push(
+        <h3 className="reportHeading" key={`heading-${index}`}>
+          {renderInlineMarkdown(headingMatch[1])}
+        </h3>
+      );
+      index += 1;
+      continue;
+    }
+
+    const boldHeadingMatch = trimmed.match(/^\*\*([^*]+):\*\*\s*(.*)$/);
+    if (boldHeadingMatch) {
+      blocks.push(
+        <h3 className="reportHeading" key={`bold-heading-${index}`}>
+          {boldHeadingMatch[1]}
+        </h3>
+      );
+
+      if (boldHeadingMatch[2]) {
+        blocks.push(
+          <p key={`bold-paragraph-${index}`}>{renderInlineMarkdown(boldHeadingMatch[2])}</p>
+        );
+      }
+
+      index += 1;
+      continue;
+    }
+
+    if (/^[-*]\s+/.test(trimmed)) {
+      const items: string[] = [];
+
+      while (index < lines.length && /^[-*]\s+/.test(lines[index].trim())) {
+        items.push(lines[index].trim().replace(/^[-*]\s+/, ''));
+        index += 1;
+      }
+
+      blocks.push(
+        <ul className="reportList" key={`list-${index}`}>
+          {items.map((item, itemIndex) => (
+            <li key={`${item}-${itemIndex}`}>{renderInlineMarkdown(item)}</li>
+          ))}
+        </ul>
+      );
+      continue;
+    }
+
+    const paragraphLines = [trimmed];
+    index += 1;
+
+    while (
+      index < lines.length &&
+      lines[index].trim() &&
+      !/^#{1,4}\s+/.test(lines[index].trim()) &&
+      !/^\*\*([^*]+):\*\*/.test(lines[index].trim()) &&
+      !/^[-*]\s+/.test(lines[index].trim()) &&
+      !isTableLine(lines[index].trim()) &&
+      !lines[index].trim().startsWith('```')
+    ) {
+      paragraphLines.push(lines[index].trim());
+      index += 1;
+    }
+
+    blocks.push(
+      <p key={`paragraph-${index}`}>{renderInlineMarkdown(paragraphLines.join(' '))}</p>
+    );
+  }
+
+  return <>{blocks}</>;
 }
 
 function IconLogo() {
@@ -427,6 +637,11 @@ function App() {
       return;
     }
 
+    if (isLocalTimePrompt(cleanInput)) {
+      addLocalAgentReply(cleanInput, buildLocalTimeReply());
+      return;
+    }
+
     const request = buildChatMessage(cleanInput);
     sendToChatStream(cleanInput, request.message);
   }
@@ -570,7 +785,9 @@ function App() {
                     className={`chatMessage ${message.role} ${message.error ? 'error' : ''}`}
                   >
                     {message.role === 'assistant' && <div className="assistantMark">Q</div>}
-                    <div className="messageContent">{message.content}</div>
+                    <div className="messageContent">
+                      <MessageBody content={message.content} />
+                    </div>
                   </article>
                 ))}
               </div>
