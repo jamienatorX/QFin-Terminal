@@ -207,18 +207,31 @@ svg {
   min-height: 312px;
   overflow: hidden;
   border-bottom: 1px solid var(--line);
-  background: #fafbff;
+  background: linear-gradient(
+    to bottom,
+    #fbfcff 0%,
+    #f5f2ff 45%,
+    #f8f8fd 100%
+  );
 }
 
 .chartBand {
   position: absolute;
-  inset: 76px 0 0;
-  opacity: 0.95;
+  inset: 0;
+  pointer-events: none;
+  opacity: 1;
   background:
-    linear-gradient(to bottom, rgba(236, 231, 255, 0.74), rgba(236, 231, 255, 0.42) 52%, rgba(247, 248, 251, 0.72)),
+    linear-gradient(
+      to bottom,
+      rgba(251, 252, 255, 0.92) 0%,
+      rgba(240, 235, 255, 0.7) 42%,
+      rgba(236, 231, 255, 0.46) 68%,
+      rgba(247, 248, 251, 0.92) 100%
+    ),
     url("data:image/svg+xml,%3Csvg width='1900' height='240' viewBox='0 0 1900 240' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M0 92 L38 74 L76 88 L116 70 L156 98 L198 128 L238 120 L278 138 L318 112 L358 142 L398 124 L438 110 L478 84 L518 76 L558 84 L598 68 L638 90 L678 82 L718 96 L758 78 L798 88 L838 64 L878 74 L918 58 L958 78 L998 68 L1038 86 L1078 62 L1118 82 L1158 60 L1198 84 L1238 58 L1278 86 L1318 66 L1358 72 L1398 84 L1438 98 L1478 104 L1518 124 L1558 116 L1598 140 L1638 126 L1678 124 L1718 132 L1758 112 L1798 134 L1838 118 L1878 104 L1900 92' fill='none' stroke='%23d9d0ff' stroke-width='4'/%3E%3C/svg%3E");
-  background-repeat: no-repeat;
-  background-size: 100% 100%;
+  background-repeat: no-repeat, no-repeat;
+  background-position: center, center 132px;
+  background-size: 100% 100%, 100% 220px;
 }
 
 .heroCopy {
