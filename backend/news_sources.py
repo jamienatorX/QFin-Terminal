@@ -1,3 +1,4 @@
+import asyncio
 import os
 import re
 import xml.etree.ElementTree as ET
@@ -112,11 +113,20 @@ async def fetch_finnhub(client: httpx.AsyncClient, category: str) -> List[Dict[s
 
 async def fetch_all_sources(category: str) -> List[Dict[str, Any]]:
     headers = {"User-Agent": "Mozilla/5.0 QFinTerminal/1.0"}
-    async with httpx.AsyncClient(timeout=12, follow_redirects=True, headers=headers) as client:
+    async with httpx.AsyncClient(timeout=6, follow_redirects=True, headers=headers) as client:
         items = []
-        items.extend(await fetch_yahoo(client, category))
-        items.extend(await fetch_gdelt(client, category))
-        items.extend(await fetch_rss(client, category))
-        items.extend(await fetch_newsapi(client, category))
-        items.extend(await fetch_finnhub(client, category))
+        tasks = [
+            fetch_yahoo(client, category),
+            fetch_gdelt(client, category),
+            fetch_rss(client, category),
+            fetch_newsapi(client, category),
+            fetch_finnhub(client, category),
+        ]
+        results = await asyncio.gather(
+            *(asyncio.wait_for(task, timeout=7) for task in tasks),
+            return_exceptions=True,
+        )
+        for result in results:
+            if isinstance(result, list):
+                items.extend(result)
     return _dedupe(items)
