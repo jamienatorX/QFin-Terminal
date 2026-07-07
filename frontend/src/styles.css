@@ -254,6 +254,103 @@ svg {
   text-align: center;
 }
 
+.chatSurface {
+  max-width: 1080px;
+  margin: 28px auto 0;
+  padding: 0 28px 42px;
+}
+
+.chatActions {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 16px;
+}
+
+.chatActions button {
+  min-height: 42px;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  padding: 0 18px;
+  background: var(--surface);
+  color: var(--ink-soft);
+  font-weight: 750;
+}
+
+.chatTranscript {
+  display: grid;
+  gap: 18px;
+  margin-bottom: 22px;
+}
+
+.emptyChat {
+  text-align: center;
+  padding: 18px 0 8px;
+}
+
+.emptyChat h2 {
+  margin: 0;
+  color: var(--ink);
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: 32px;
+  font-weight: 500;
+}
+
+.emptyChat p {
+  max-width: 620px;
+  margin: 10px auto 0;
+  color: var(--muted);
+  font-size: 17px;
+  line-height: 1.45;
+}
+
+.chatMessage {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+}
+
+.chatMessage.user {
+  justify-content: flex-end;
+}
+
+.assistantMark {
+  flex: 0 0 auto;
+  width: 34px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  border-radius: 10px;
+  background: #101525;
+  color: #ffffff;
+  font-family: Georgia, "Times New Roman", serif;
+  font-weight: 700;
+}
+
+.messageContent {
+  max-width: min(780px, 100%);
+  padding: 16px 18px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--ink-soft);
+  font-size: 18px;
+  line-height: 1.65;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  box-shadow: 0 4px 14px rgba(17, 24, 39, 0.04);
+}
+
+.chatMessage.user .messageContent {
+  background: #f3f0ff;
+  color: var(--ink);
+}
+
+.chatMessage.error .messageContent {
+  border-color: rgba(189, 51, 69, 0.28);
+  background: #fff6f7;
+  color: #8b2532;
+}
+
 .promptChips {
   display: flex;
   justify-content: center;
@@ -866,6 +963,7 @@ svg {
   }
 
   .promptArea,
+  .chatSurface,
   .analysisPanel,
   .communityPage {
     padding-left: 16px;
