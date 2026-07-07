@@ -17,6 +17,12 @@ QFIN_GREETING = "Hello, I am QFin Terminal, your AI financial analyst and quanti
 
 _DATA_CACHE: Dict[str, Dict[str, Any]] = {}
 _DATA_CACHE_TTL_SECONDS = 600
+_ALLOWED_ORIGINS = {
+    "https://q-fin-terminal.vercel.app",
+    "https://qfin-terminal.vercel.app",
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+}
 
 class CommunityNewsRequest(BaseModel):
     category: str = "Stocks"
@@ -48,6 +54,18 @@ def _is_greeting(text: str) -> bool:
     if words & {"hi", "hello", "hey", "helo"} and not (words & {"analyze", "analyse", "compare", "valuation", "stock", "ticker", "revenue", "profit", "risk", "capm", "var", "dcf"}):
         return True
     return False
+
+
+def _cors_headers(request: Request) -> Dict[str, str]:
+    origin = request.headers.get("origin")
+    allowed_origin = origin if origin in _ALLOWED_ORIGINS else "https://q-fin-terminal.vercel.app"
+    return {
+        "Access-Control-Allow-Origin": allowed_origin,
+        "Access-Control-Allow-Credentials": "true",
+        "Access-Control-Allow-Headers": "content-type, authorization",
+        "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+        "Vary": "Origin",
+    }
 
 
 async def _cached_financial_data(ticker: str):
@@ -97,6 +115,9 @@ async def _real_chat_stream(message: str, ticker: Optional[str] = None):
 
 @app.middleware("http")
 async def qfin_stream_guard(request: Request, call_next):
+    if request.url.path == "/chat/stream" and request.method == "OPTIONS":
+        return PlainTextResponse("", headers=_cors_headers(request))
+
     if request.url.path == "/chat/stream" and request.method == "POST":
         body = await request.body()
         try:
@@ -106,8 +127,12 @@ async def qfin_stream_guard(request: Request, call_next):
         message = _extract_text(payload) or "Hello"
         ticker = _extract_ticker(payload)
         if _is_greeting(message):
-            return PlainTextResponse(QFIN_GREETING)
-        return StreamingResponse(_real_chat_stream(message, ticker), media_type="text/plain; charset=utf-8")
+            return PlainTextResponse(QFIN_GREETING, headers=_cors_headers(request))
+        return StreamingResponse(
+            _real_chat_stream(message, ticker),
+            media_type="text/plain; charset=utf-8",
+            headers=_cors_headers(request),
+        )
 
     if request.url.path in {"/chat", "/analyze"} and request.method == "POST":
         body = await request.body()
@@ -117,7 +142,7 @@ async def qfin_stream_guard(request: Request, call_next):
             payload = {}
         text = _extract_text(payload)
         if _is_greeting(text):
-            return JSONResponse({"id": "qfin-greeting", "role": "assistant", "content": QFIN_GREETING, "answer": QFIN_GREETING, "data": {"qwen_status": "skipped_fast_reply", "used_live_data": False}})
+            return JSONResponse({"id": "qfin-greeting", "role": "assistant", "content": QFIN_GREETING, "answer": QFIN_GREETING, "data": {"qwen_status": "skipped_fast_reply", "used_live_data": False}}, headers=_cors_headers(request))
         request._body = body
     return await call_next(request)
 
