@@ -2,14 +2,14 @@ import React, { useEffect, useState } from 'react';
 import ReactDOM from 'react-dom/client';
 import './styles.css';
 
-type View = 'home' | 'community';
+type View = 'chat' | 'news' | 'settings';
 type DepthMode = 'Quick Mode' | 'Deep Mode';
-type CommunityTab = 'news' | 'forum' | 'models' | 'builder';
 
 type ChatMessage = {
   id: string;
   role: 'user' | 'assistant';
   content: string;
+  mode?: DepthMode;
   error?: boolean;
 };
 
@@ -34,13 +34,10 @@ const API_BASE_URL =
   import.meta.env.VITE_API_BASE_URL || 'https://qfin-terminal.onrender.com';
 
 const FALLBACK_GREETING =
-  'Hello, I am QFin Terminal, your AI financial analyst and quantitative finance agent. You are welcome to ask me to analyze a company, compare stocks, explain financial ratios, build a valuation view, review risks, generate market news, or answer quant finance questions.';
+  'Hello, I am QFin Terminal, your AI financial analyst and quantitative finance agent. You can ask me to analyze companies, compare stocks, explain financial ratios, review market risks, generate market news, or answer quant finance questions.';
 
 const FAILURE_MESSAGE =
-  'I could not reach QFin backend just now. Please retry in a moment.';
-
-const AGENT_GREETING =
-  'Hi, I am QFin. Ask me for company analysis, market news, valuation help, financial ratio explanations, or quant finance ideas.';
+  'QFin backend health is online, but this chat request did not finish. Render may be waking up, or Qwen/yfinance took too long. Please wait 30 seconds and retry.';
 
 const QUICK_MODE_INSTRUCTION =
   'Quick Mode: write only 3 to 5 short paragraphs, exactly one table or one chart, and a 2 to 3 sentence verdict. Do not include peer comparison, exhaustive risks, full statement breakdown, or multiple visuals.';
@@ -49,43 +46,22 @@ const DEEP_MODE_INSTRUCTION =
   'Deep Mode: write a full structured institutional report with Executive Summary, Revenue and Growth, Profitability, Liquidity and Solvency, Cash Flow Quality, Valuation Snapshot, Key Risks, and Final Verdict Table.';
 
 const SUGGESTED_PROMPTS = [
+  'Analyze Microsoft',
+  'Analyze Bumi Resources',
   'Analyze Alibaba',
-  'Explain free cash flow yield',
-  "Summarize NVIDIA's last quarter",
-  'Compare AAPL vs MSFT profitability'
+  'Analyze NVIDIA thoroughly',
+  'Compare AAPL vs MSFT',
+  'Explain free cash flow yield'
 ];
 
-const NEWS_CATEGORIES = ['Crypto', 'Stocks', 'Bonds', 'ETFs', 'Other'] as const;
-const COMMUNITY_TABS: Array<{ id: CommunityTab; label: string }> = [
-  { id: 'news', label: 'News' },
-  { id: 'forum', label: 'Forum' },
-  { id: 'models', label: 'Models' },
-  { id: 'builder', label: 'Builder' }
-];
-
-const TEMPLATE_SNIPPETS = [
-  {
-    name: 'RSI indicator',
-    code:
-      '# QFin Terminal - model template\n# Numbers must come from backend-provided data.\n\ndef signal(prices):\n    window = 14\n    if len(prices) < window:\n        return 0\n    gains = []\n    losses = []\n    for index in range(1, window):\n        move = prices[-index] - prices[-index - 1]\n        gains.append(max(move, 0))\n        losses.append(abs(min(move, 0)))\n    avg_gain = sum(gains) / window\n    avg_loss = sum(losses) / window or 1\n    rsi = 100 - (100 / (1 + avg_gain / avg_loss))\n    return 1 if rsi < 30 else -1 if rsi > 70 else 0\n'
-  },
-  {
-    name: 'MACD',
-    code:
-      '# QFin Terminal - MACD template\n# Execution runs only in a backend sandbox.\n\ndef ema(values, span):\n    weight = 2 / (span + 1)\n    result = values[0]\n    for value in values[1:]:\n        result = value * weight + result * (1 - weight)\n    return result\n\ndef signal(prices):\n    if len(prices) < 26:\n        return 0\n    macd = ema(prices[-26:], 12) - ema(prices[-26:], 26)\n    return 1 if macd > 0 else -1\n'
-  },
-  {
-    name: 'DCF sensitivity',
-    code:
-      '# QFin Terminal - DCF sensitivity template\n# Use backend financials; keep assumptions visible.\n\ndef valuation(free_cash_flow, growth=0.04, discount=0.1, terminal=0.025):\n    years = 5\n    cash_flows = []\n    for year in range(1, years + 1):\n        cash_flows.append(free_cash_flow * ((1 + growth) ** year))\n    present = sum(cf / ((1 + discount) ** index) for index, cf in enumerate(cash_flows, 1))\n    terminal_value = cash_flows[-1] * (1 + terminal) / (discount - terminal)\n    return present + terminal_value / ((1 + discount) ** years)\n'
-  }
-];
+const NEWS_CATEGORIES = ['Stocks', 'Crypto', 'Bonds', 'ETFs', 'Other'];
 
 const ANALYSIS_SIGNAL_PATTERNS = [
   /^(analyze|analyse|review|check|research)\b/i,
   /^(quick analysis|brief|summary|overview)\b/i,
   /^tell me about\b/i,
-  /^(how's|hows|how is)\b/i
+  /^(how's|hows|how is)\b/i,
+  /^compare\b/i
 ];
 
 function makeId() {
@@ -126,16 +102,18 @@ function appendModeInstruction(message: string, mode: DepthMode) {
     return message;
   }
 
-  const instruction = mode === 'Deep Mode' ? DEEP_MODE_INSTRUCTION : QUICK_MODE_INSTRUCTION;
+  const instruction =
+    mode === 'Deep Mode' ? DEEP_MODE_INSTRUCTION : QUICK_MODE_INSTRUCTION;
+
   return `${message}. ${instruction}`;
 }
 
-function buildChatMessage(input: string) {
+function buildBackendMessage(input: string) {
   const clean = input.trim();
 
   if (!clean || !shouldUseAnalysisMode(clean)) {
     return {
-      mode: undefined,
+      mode: undefined as DepthMode | undefined,
       message: clean
     };
   }
@@ -148,28 +126,6 @@ function buildChatMessage(input: string) {
   };
 }
 
-function isCasualGreeting(input: string) {
-  return /^(hi|hello|hey|yo|gm|good morning|good afternoon|good evening)[!. ]*$/i.test(
-    input.trim()
-  );
-}
-
-function isHelpPrompt(input: string) {
-  return /^(help|what can you do|what do you do|how does this work)[?.! ]*$/i.test(
-    input.trim()
-  );
-}
-
-function fetchWithTimeout(url: string, options: RequestInit = {}, timeoutMs = 9000) {
-  const controller = new AbortController();
-  const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
-
-  return fetch(url, {
-    ...options,
-    signal: controller.signal
-  }).finally(() => window.clearTimeout(timeoutId));
-}
-
 function escapeForRegex(value: string) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
@@ -180,132 +136,100 @@ function sanitizeAssistantText(text: string) {
     .replace(new RegExp(escapeForRegex(DEEP_MODE_INSTRUCTION), 'gi'), '')
     .replace(/Quick Mode:\s*/gi, '')
     .replace(/Deep Mode:\s*/gi, '')
-    .replace(/Do not include peer comparison, exhaustive risks, full statement breakdown, or multiple visuals\./gi, '')
-    .replace(/\s{2,}/g, ' ')
+    .replace(
+      /Do not include peer comparison, exhaustive risks, full statement breakdown, or multiple visuals\./gi,
+      ''
+    )
     .trim();
 }
 
-function IconLogo() {
-  return (
-    <svg viewBox="0 0 24 24" aria-hidden="true">
-      <path d="M4 16.5 9.5 11l3.3 3.3L20 7.1" />
-      <path d="M15 7h5v5" />
-    </svg>
-  );
-}
+function fetchWithTimeout(
+  url: string,
+  options: RequestInit = {},
+  timeoutMs = 15000
+) {
+  const controller = new AbortController();
+  const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
 
-function IconHome() {
-  return (
-    <svg viewBox="0 0 24 24" aria-hidden="true">
-      <path d="m4 11 8-7 8 7" />
-      <path d="M6.5 10.5V20h11v-9.5" />
-      <path d="M10 20v-5h4v5" />
-    </svg>
-  );
-}
-
-function IconUsers() {
-  return (
-    <svg viewBox="0 0 24 24" aria-hidden="true">
-      <path d="M8.5 11a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z" />
-      <path d="M2.8 19a5.7 5.7 0 0 1 11.4 0" />
-      <path d="M16.2 11.4a2.7 2.7 0 1 0-1.1-5.1" />
-      <path d="M15.7 14.1a5 5 0 0 1 5.5 4.9" />
-    </svg>
-  );
-}
-
-function IconFolder() {
-  return (
-    <svg viewBox="0 0 24 24" aria-hidden="true">
-      <path d="M3.5 6.5h6l2 2h9v9.5a2 2 0 0 1-2 2h-15v-13.5Z" />
-    </svg>
-  );
-}
-
-function IconSend() {
-  return (
-    <svg viewBox="0 0 24 24" aria-hidden="true">
-      <path d="M12 19V5" />
-      <path d="m6.5 10.5 5.5-5.5 5.5 5.5" />
-    </svg>
-  );
-}
-
-function IconUpload() {
-  return (
-    <svg viewBox="0 0 24 24" aria-hidden="true">
-      <path d="M12 15V4" />
-      <path d="m7 9 5-5 5 5" />
-      <path d="M5 15v4h14v-4" />
-    </svg>
-  );
-}
-
-function IconSave() {
-  return (
-    <svg viewBox="0 0 24 24" aria-hidden="true">
-      <path d="M5 4h12l2 2v14H5V4Z" />
-      <path d="M8 4v6h8V4" />
-      <path d="M8 20v-6h8v6" />
-    </svg>
-  );
-}
-
-function IconPlay() {
-  return (
-    <svg viewBox="0 0 24 24" aria-hidden="true">
-      <path d="M8 5v14l11-7L8 5Z" />
-    </svg>
-  );
-}
-
-function IconPlusBox() {
-  return (
-    <svg viewBox="0 0 24 24" aria-hidden="true">
-      <path d="M4.5 5.5h15v13h-15v-13Z" />
-      <path d="M12 9v6" />
-      <path d="M9 12h6" />
-    </svg>
-  );
+  return fetch(url, {
+    ...options,
+    signal: controller.signal
+  }).finally(() => window.clearTimeout(timeoutId));
 }
 
 function App() {
-  const [view, setView] = useState<View>('home');
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [view, setView] = useState<View>('chat');
+
+  const [messages, setMessages] = useState<ChatMessage[]>([
+    {
+      id: makeId(),
+      role: 'assistant',
+      content: FALLBACK_GREETING
+    }
+  ]);
+
   const [prompt, setPrompt] = useState('');
   const [loading, setLoading] = useState(false);
-  const [backendStatus, setBackendStatus] = useState('Checking QFin backend...');
-  const [backendOnline, setBackendOnline] = useState(false);
-  const [selectedFileName, setSelectedFileName] = useState('');
 
-  const [newsCategory, setNewsCategory] =
-    useState<(typeof NEWS_CATEGORIES)[number]>('Crypto');
-  const [communityTab, setCommunityTab] = useState<CommunityTab>('news');
+  const [backendStatus, setBackendStatus] = useState('Checking backend...');
+  const [backendOnline, setBackendOnline] = useState(false);
+  const [qwenConfigured, setQwenConfigured] = useState(false);
+
+  const [selectedMode, setSelectedMode] = useState<DepthMode>('Quick Mode');
+
+  const [newsCategory, setNewsCategory] = useState('Stocks');
   const [news, setNews] = useState<NewsItem[]>([]);
   const [newsLoading, setNewsLoading] = useState(false);
   const [newsError, setNewsError] = useState('');
   const [expandedNewsId, setExpandedNewsId] = useState<string | null>(null);
-  const [builderCode, setBuilderCode] = useState(TEMPLATE_SNIPPETS[0].code);
-  const [builderOutput, setBuilderOutput] = useState(
-    'Output appears here after Run template or Run backtest.'
-  );
+
+  const [debugInfo, setDebugInfo] = useState({
+    lastUrl: '',
+    lastStatus: '',
+    lastError: ''
+  });
 
   async function checkBackend() {
+    const url = `${API_BASE_URL}/health`;
+
+    setDebugInfo({
+      lastUrl: url,
+      lastStatus: 'Loading...',
+      lastError: ''
+    });
+
     try {
-      const response = await fetchWithTimeout(`${API_BASE_URL}/health`, {}, 7000);
+      const response = await fetchWithTimeout(url, {}, 15000);
       const data = await response.json();
+
+      setDebugInfo({
+        lastUrl: url,
+        lastStatus: `${response.status} ${response.statusText}`,
+        lastError: ''
+      });
 
       if (response.ok && data.status === 'ok') {
         setBackendOnline(true);
-        setBackendStatus('QFin backend connected');
+        setQwenConfigured(Boolean(data.qwen_configured));
+        setBackendStatus(
+          data.qwen_configured
+            ? 'QFin backend connected — Qwen configured'
+            : 'QFin backend connected — Qwen not configured'
+        );
       } else {
         setBackendOnline(false);
         setBackendStatus('Backend warning');
       }
-    } catch {
+    } catch (error) {
       setBackendOnline(false);
+      setQwenConfigured(false);
       setBackendStatus('Backend offline');
+
+      setDebugInfo({
+        lastUrl: url,
+        lastStatus: 'Request failed',
+        lastError: String(error)
+      });
     }
   }
 
@@ -313,62 +237,100 @@ function App() {
     checkBackend();
   }, []);
 
-  function addLocalAgentReply(userMessage: string, assistantMessage: string) {
-    setMessages((current) => [
-      ...current,
-      {
-        id: makeId(),
-        role: 'user',
-        content: userMessage
-      },
-      {
-        id: makeId(),
-        role: 'assistant',
-        content: assistantMessage
-      }
-    ]);
-  }
-
-  async function sendToChatStream(displayMessage: string, backendMessage: string) {
+  async function sendToChatStream(displayMessage: string) {
     const cleanDisplayMessage = displayMessage.trim();
-    const cleanBackendMessage = backendMessage.trim();
-    if (!cleanDisplayMessage || !cleanBackendMessage || loading) return;
+    if (!cleanDisplayMessage || loading) return;
 
+    const request = buildBackendMessage(cleanDisplayMessage);
     const assistantId = makeId();
+    const url = `${API_BASE_URL}/chat/stream`;
+
+    if (request.mode) {
+      setSelectedMode(request.mode);
+    }
 
     setMessages((current) => [
       ...current,
       {
         id: makeId(),
         role: 'user',
-        content: cleanDisplayMessage
+        content: cleanDisplayMessage,
+        mode: request.mode
       },
       {
         id: assistantId,
         role: 'assistant',
-        content: 'Thinking...'
+        content: 'Connecting to QFin backend...',
+        mode: request.mode
       }
     ]);
 
     setLoading(true);
 
+    setDebugInfo({
+      lastUrl: url,
+      lastStatus: 'Loading...',
+      lastError: ''
+    });
+
     try {
-      const response = await fetchWithTimeout(`${API_BASE_URL}/chat/stream`, {
+      const response = await fetch(url, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json'
         },
         body: JSON.stringify({
-          message: cleanBackendMessage
+          message: request.message
         })
-      }, 45000);
+      });
+
+      setDebugInfo({
+        lastUrl: url,
+        lastStatus: `${response.status} ${response.statusText}`,
+        lastError: ''
+      });
 
       if (!response.ok) {
         throw new Error(`Backend returned ${response.status}`);
       }
 
-      const text = await response.text();
-      const finalText = text.trim() ? sanitizeAssistantText(text) : FALLBACK_GREETING;
+      let accumulatedText = '';
+
+      if (response.body) {
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+
+        while (true) {
+          const part = await reader.read();
+
+          if (part.done) {
+            break;
+          }
+
+          accumulatedText += decoder.decode(part.value, { stream: true });
+
+          const visibleText =
+            sanitizeAssistantText(accumulatedText) || 'QFin is generating...';
+
+          setMessages((current) =>
+            current.map((message) =>
+              message.id === assistantId
+                ? {
+                    ...message,
+                    content: visibleText,
+                    error: false
+                  }
+                : message
+            )
+          );
+        }
+      } else {
+        accumulatedText = await response.text();
+      }
+
+      const finalText = accumulatedText.trim()
+        ? sanitizeAssistantText(accumulatedText)
+        : FALLBACK_GREETING;
 
       setMessages((current) =>
         current.map((message) =>
@@ -381,7 +343,15 @@ function App() {
             : message
         )
       );
-    } catch {
+    } catch (error) {
+      console.error('QFin backend request failed:', error);
+
+      setDebugInfo({
+        lastUrl: url,
+        lastStatus: 'Request failed',
+        lastError: String(error)
+      });
+
       setMessages((current) =>
         current.map((message) =>
           message.id === assistantId
@@ -398,423 +368,519 @@ function App() {
     }
   }
 
-  function submitPrompt(input = prompt) {
-    const cleanInput = input.trim();
-    if (!cleanInput) return;
+  function submitPrompt(event?: React.FormEvent) {
+    event?.preventDefault();
 
-    setView('home');
+    const clean = prompt.trim();
+    if (!clean) return;
+
     setPrompt('');
+    setView('chat');
+    sendToChatStream(clean);
+  }
 
-    if (isCasualGreeting(cleanInput) || isHelpPrompt(cleanInput)) {
-      addLocalAgentReply(cleanInput, AGENT_GREETING);
-      return;
-    }
-
-    const request = buildChatMessage(cleanInput);
-    sendToChatStream(cleanInput, request.message);
+  function runSuggestedPrompt(text: string) {
+    setView('chat');
+    sendToChatStream(text);
   }
 
   async function loadNews(category: string) {
     setNewsLoading(true);
     setNewsError('');
     setNews([]);
+    setExpandedNewsId(null);
 
-    const primaryUrl = `${API_BASE_URL}/community/news/${encodeURIComponent(category)}`;
+    const primaryUrl = `${API_BASE_URL}/community/news/${encodeURIComponent(
+      category
+    )}`;
     const fallbackUrl = `${API_BASE_URL}/news/${encodeURIComponent(category)}`;
 
     try {
-      const readNews = async (url: string) => {
-        const response = await fetchWithTimeout(url, {}, 6500);
-        if (!response.ok) {
-          throw new Error(`News request failed: ${response.status}`);
-        }
+      let response = await fetchWithTimeout(primaryUrl, {}, 20000);
 
-        const data = await response.json();
-        return Array.isArray(data.news) ? data.news.slice(0, 6) : [];
-      };
+      setDebugInfo({
+        lastUrl: primaryUrl,
+        lastStatus: `${response.status} ${response.statusText}`,
+        lastError: ''
+      });
 
-      const results = await Promise.allSettled([readNews(primaryUrl), readNews(fallbackUrl)]);
-      const items =
-        results.find(
-          (result): result is PromiseFulfilledResult<NewsItem[]> =>
-            result.status === 'fulfilled' && result.value.length > 0
-        )?.value || [];
+      if (!response.ok) {
+        response = await fetchWithTimeout(fallbackUrl, {}, 20000);
+
+        setDebugInfo({
+          lastUrl: fallbackUrl,
+          lastStatus: `${response.status} ${response.statusText}`,
+          lastError: ''
+        });
+      }
+
+      if (!response.ok) {
+        throw new Error(`News request failed: ${response.status}`);
+      }
+
+      const data = await response.json();
+      const items = Array.isArray(data.news) ? data.news.slice(0, 5) : [];
 
       if (!items.length) {
         throw new Error('Backend returned no news array.');
       }
 
       setNews(items);
-    } catch {
-      setNewsError('News unavailable. Please retry.');
+    } catch (error) {
+      console.error('QFin news request failed:', error);
+      setNewsError('News unavailable. Please retry in a moment.');
+
+      setDebugInfo((current) => ({
+        ...current,
+        lastError: String(error)
+      }));
     } finally {
       setNewsLoading(false);
     }
   }
 
   useEffect(() => {
-    if (view === 'community' && communityTab === 'news') {
+    if (view === 'news') {
       loadNews(newsCategory);
     }
-  }, [view, communityTab, newsCategory]);
+  }, [view, newsCategory]);
 
   return (
     <div className="appShell">
       <aside className="sidebar">
-        <div className="brandBlock">
-          <div className="brandIcon">
-            <IconLogo />
-          </div>
+        <div className="brandRow">
+          <div className="logo">↗</div>
           <div>
-            <strong>QFin</strong>
-            <span>Terminal</span>
+            <h2>QFin</h2>
+            <p>TERMINAL</p>
           </div>
         </div>
 
-        <nav className="sideNav" aria-label="Main navigation">
+        <nav className="navList">
           <button
             type="button"
-            className={view === 'home' ? 'active' : ''}
-            onClick={() => setView('home')}
+            className={view === 'chat' ? 'navActive' : ''}
+            onClick={() => setView('chat')}
           >
-            <IconHome />
-            Home
+            AI Analyst
           </button>
 
           <button
             type="button"
-            className={view === 'community' ? 'active' : ''}
-            onClick={() => setView('community')}
+            className={view === 'news' ? 'navActive' : ''}
+            onClick={() => setView('news')}
           >
-            <IconUsers />
-            Community
+            Community News
+          </button>
+
+          <button
+            type="button"
+            className={view === 'settings' ? 'navActive' : ''}
+            onClick={() => setView('settings')}
+          >
+            System Status
           </button>
         </nav>
 
-        <p className="sidebarNote">
-          Qwen-powered financial intelligence. Not investment advice.
-        </p>
+        <div className="securityBox">
+          <strong>Backend</strong>
+          <p>{backendStatus}</p>
+        </div>
       </aside>
 
-      <main className="mainSurface">
-        {view === 'home' && (
+      <main className="workspace">
+        <section className="hero">
+          <div>
+            <p className="eyebrow">AI Financial Analyst Dashboard</p>
+            <h1>QFin Terminal</h1>
+            <p>
+              A clean Qwen-powered finance workspace for company analysis,
+              market news, valuation thinking, and quantitative finance.
+            </p>
+          </div>
+
+          <div className="heroActions">
+            <button type="button" onClick={checkBackend}>
+              Check Backend
+            </button>
+
+            <button type="button" onClick={() => setView('news')}>
+              Open News
+            </button>
+          </div>
+        </section>
+
+        {view === 'chat' && (
           <>
-            <header className="topBar">
-              <button
-                type="button"
-                className={`statusPill ${backendOnline ? 'online' : 'offline'}`}
-                onClick={checkBackend}
-              >
-                <span />
-                {backendStatus}
-              </button>
-
-              <button
-                type="button"
-                className="watchlistButton"
-                onClick={() => alert('Reports & Watchlist is coming soon.')}
-              >
-                <IconFolder />
-                Reports & Watchlist
-              </button>
-            </header>
-
-            <section className="homeHero">
-              <div className="chartBand" aria-hidden="true" />
-              <div className="heroCopy">
-                <h1>Ask QFin. Explore Community.</h1>
-                <p>Real financial data, computed on the backend. Qwen explains the result.</p>
-              </div>
-            </section>
-
-            <section className="chatSurface" aria-label="QFin chat">
-              {!!messages.length && (
-                <div className="chatActions">
-                  <button type="button" onClick={() => setMessages([])}>
-                    New chat
-                  </button>
-                </div>
-              )}
-
-              <div className="chatTranscript" aria-live="polite">
-                {!messages.length && (
-                  <div className="emptyChat">
-                    <h2>What would you like to analyze?</h2>
+            <section className="grid">
+              <div className="panel">
+                <div className="panelHeader">
+                  <div>
+                    <h3>Ask QFin</h3>
                     <p>
-                      Ask for a company analysis, valuation explanation, market update, or a quant
-                      finance idea.
+                      Ask for a quick company view, a deep report, a ratio
+                      explanation, or a quant finance concept.
                     </p>
                   </div>
-                )}
 
-                {messages.map((message) => (
-                  <article
-                    key={message.id}
-                    className={`chatMessage ${message.role} ${message.error ? 'error' : ''}`}
-                  >
-                    {message.role === 'assistant' && <div className="assistantMark">Q</div>}
-                    <div className="messageContent">{message.content}</div>
-                  </article>
-                ))}
-              </div>
+                  <span className="pill">{selectedMode}</span>
+                </div>
 
-              {!messages.length && (
-                <div className="promptChips">
-                  {SUGGESTED_PROMPTS.map((suggestion) => (
-                    <button key={suggestion} type="button" onClick={() => submitPrompt(suggestion)}>
-                      {suggestion}
+                <form onSubmit={submitPrompt}>
+                  <label className="label" htmlFor="prompt">
+                    Prompt
+                  </label>
+
+                  <textarea
+                    id="prompt"
+                    className="textarea"
+                    value={prompt}
+                    onChange={(event) => setPrompt(event.target.value)}
+                    placeholder="Example: Analyze Bumi Resources, Analyze Microsoft thoroughly, Explain CAPM..."
+                  />
+
+                  <div className="buttonRow">
+                    <button
+                      type="submit"
+                      className="primary"
+                      disabled={loading}
+                    >
+                      {loading ? 'Generating...' : 'Send to QFin'}
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => setPrompt('Analyze Bumi Resources')}
+                    >
+                      Bumi Resources
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setPrompt('Analyze Microsoft thoroughly')
+                      }
+                    >
+                      Deep Report
+                    </button>
+                  </div>
+                </form>
+
+                <div className="tickerGrid">
+                  {SUGGESTED_PROMPTS.map((item) => (
+                    <button
+                      key={item}
+                      type="button"
+                      onClick={() => runSuggestedPrompt(item)}
+                      disabled={loading}
+                    >
+                      {item}
                     </button>
                   ))}
                 </div>
-              )}
 
-              <form
-                className="composer"
-                onSubmit={(event) => {
-                  event.preventDefault();
-                  submitPrompt();
-                }}
-              >
-                <textarea
-                  value={prompt}
-                  onChange={(event) => setPrompt(event.target.value)}
-                  onKeyDown={(event) => {
-                    if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
-                      event.preventDefault();
-                      submitPrompt();
-                    }
-                  }}
-                  placeholder="Ask QFin to analyze a company, explain a finance concept, or upload a financial statement..."
-                />
+                <div className="output">
+                  <p className="status">
+                    {backendOnline
+                      ? 'Backend online'
+                      : 'Backend status not confirmed'}
+                  </p>
 
-                <div className="composerFooter">
-                  <label className="uploadButton">
-                    <input
-                      type="file"
-                      accept=".csv,.xls,.xlsx"
-                      onChange={(event) =>
-                        setSelectedFileName(event.target.files?.[0]?.name || '')
+                  {messages.map((message) => (
+                    <div
+                      key={message.id}
+                      className={
+                        message.error ? 'reportText errorText' : 'reportText'
                       }
-                    />
-                    <span>+</span>
-                    {selectedFileName || 'Upload CSV or Excel'}
-                  </label>
-
-                  <button
-                    type="submit"
-                    className="sendButton"
-                    disabled={loading || !prompt.trim()}
-                    aria-label="Send prompt"
-                  >
-                    <IconSend />
-                  </button>
+                    >
+                      <strong>
+                        {message.role === 'user' ? 'You' : 'QFin'}
+                        {message.mode ? ` · ${message.mode}` : ''}
+                      </strong>
+                      {message.content}
+                    </div>
+                  ))}
                 </div>
-              </form>
+              </div>
 
-              <p className="supportText">
-                Supports finance questions, company analysis, market news, and Excel statement uploads.
-              </p>
+              <aside className="panel stockPanel">
+                <h3>Terminal Snapshot</h3>
+                <p>
+                  This panel confirms which backend and mode your frontend is
+                  using.
+                </p>
+
+                <div className="metrics">
+                  <div>
+                    <span>Backend</span>
+                    <strong>{API_BASE_URL}</strong>
+                  </div>
+
+                  <div>
+                    <span>Status</span>
+                    <strong>{backendStatus}</strong>
+                  </div>
+
+                  <div>
+                    <span>Qwen</span>
+                    <strong>
+                      {qwenConfigured ? 'Configured' : 'Not confirmed'}
+                    </strong>
+                  </div>
+
+                  <div>
+                    <span>Default Analysis</span>
+                    <strong>Quick Mode</strong>
+                  </div>
+                </div>
+              </aside>
             </section>
+
+            <div className="disclaimer">
+              QFin is for education and financial analysis support only. It is
+              not personal investment advice.
+            </div>
           </>
         )}
 
-        {view === 'community' && (
-          <section className="communityPage">
-            <header className="pageHeader">
-              <p>Community</p>
-              <h1>Ideas, models, and market chatter.</h1>
-              <span>
-                Browse cached market news, discuss with other analysts, and remix
-                community-built model templates.
-              </span>
-            </header>
+        {view === 'news' && (
+          <>
+            <section className="grid">
+              <div className="panel">
+                <div className="panelHeader">
+                  <div>
+                    <h3>Community News</h3>
+                    <p>
+                      Pulls backend-generated market news cards from the QFin
+                      Render API.
+                    </p>
+                  </div>
 
-            <div className="categoryTabs" role="tablist" aria-label="Market category">
-              {NEWS_CATEGORIES.map((category) => (
-                <button
-                  key={category}
-                  type="button"
-                  className={newsCategory === category ? 'active' : ''}
-                  onClick={() => setNewsCategory(category)}
-                >
-                  {category}
-                </button>
-              ))}
-            </div>
+                  <span className="pill">{newsCategory}</span>
+                </div>
 
-            <div className="sectionRule" />
-
-            <div className="communityTabs" role="tablist" aria-label="Community section">
-              {COMMUNITY_TABS.map((tab) => (
-                <button
-                  key={tab.id}
-                  type="button"
-                  className={communityTab === tab.id ? 'active' : ''}
-                  onClick={() => setCommunityTab(tab.id)}
-                >
-                  {tab.label}
-                </button>
-              ))}
-            </div>
-
-            {communityTab === 'news' && (
-              <section className="newsGrid">
-                {newsLoading &&
-                  [1, 2, 3, 4].map((item) => (
-                    <article key={item} className="newsCard skeletonCard">
-                      <span />
-                      <strong />
-                      <p />
-                    </article>
-                  ))}
-
-                {newsError && !newsLoading && (
-                  <article className="emptyState">
-                    <h2>{newsError}</h2>
-                    <p>Refresh the category or retry in a moment.</p>
-                    <button type="button" onClick={() => loadNews(newsCategory)}>
-                      Retry
+                <div className="tickerGrid">
+                  {NEWS_CATEGORIES.map((category) => (
+                    <button
+                      key={category}
+                      type="button"
+                      className={newsCategory === category ? 'primary' : ''}
+                      onClick={() => setNewsCategory(category)}
+                    >
+                      {category}
                     </button>
-                  </article>
-                )}
+                  ))}
+                </div>
 
-                {!newsLoading &&
-                  !newsError &&
-                  news.map((item, index) => {
-                    const newsId = item.id || String(index);
-                    const expanded = expandedNewsId === newsId;
-
-                    return (
-                      <article key={newsId} className="newsCard">
-                        <span className="sentiment">
-                          {(item.sentiment || 'neutral').toUpperCase()}
-                          {item.stale ? ' - LAST KNOWN' : ''}
-                        </span>
-                        <h2>{item.headline || 'Untitled market update'}</h2>
-                        <p>{item.teaser || 'No teaser returned by backend.'}</p>
-                        <div className="newsMeta">
-                          <span>{item.source?.name || 'QFin backend'}</span>
-                          <button
-                            type="button"
-                            onClick={() => setExpandedNewsId(expanded ? null : newsId)}
-                          >
-                            {expanded ? 'Hide details' : 'Show details'}
-                          </button>
-                        </div>
-
-                        {expanded && (
-                          <div className="newsDetails">
-                            <strong>What happened</strong>
-                            <p>{item.explanation?.what_happened || 'Not provided.'}</p>
-                            <strong>Why it matters</strong>
-                            <p>{item.explanation?.why_it_matters || 'Not provided.'}</p>
-                            <strong>Market reaction</strong>
-                            <p>{item.explanation?.market_reaction || 'Not provided.'}</p>
-                            {item.source?.url && (
-                              <a href={item.source.url} target="_blank" rel="noreferrer">
-                                Open source
-                              </a>
-                            )}
-                          </div>
-                        )}
-                      </article>
-                    );
-                  })}
-              </section>
-            )}
-
-            {communityTab === 'forum' && (
-              <section className="communityStack">
-                <div className="sectionHeader">
-                  <h2>Forum</h2>
-                  <button type="button" className="darkButton">
-                    <IconPlusBox />
-                    New thread
+                <div className="buttonRow">
+                  <button
+                    type="button"
+                    className="primary"
+                    onClick={() => loadNews(newsCategory)}
+                    disabled={newsLoading}
+                  >
+                    {newsLoading ? 'Loading news...' : 'Refresh News'}
                   </button>
                 </div>
-                <article className="emptyState">
-                  <h2>No threads yet</h2>
-                  <p>Community discussions will appear here after posting is enabled.</p>
-                </article>
-              </section>
-            )}
 
-            {communityTab === 'models' && (
-              <section className="communityStack">
-                <div className="sectionHeader">
-                  <h2>Models</h2>
+                <div className="output">
+                  {newsLoading && <p className="status">Loading news...</p>}
+
+                  {newsError && (
+                    <p className="reportText errorText">{newsError}</p>
+                  )}
+
+                  {!newsLoading &&
+                    !newsError &&
+                    news.map((item, index) => {
+                      const id = item.id || `${item.headline}-${index}`;
+                      const expanded = expandedNewsId === id;
+
+                      return (
+                        <div key={id} className="reportText">
+                          <strong>
+                            {item.headline || `Market update ${index + 1}`}
+                          </strong>
+
+                          <p>
+                            Sentiment:{' '}
+                            <b>{item.sentiment || 'Neutral-Watch'}</b>
+                          </p>
+
+                          <p>{item.teaser || 'No teaser available.'}</p>
+
+                          {expanded && (
+                            <>
+                              <p>
+                                <b>What happened:</b>{' '}
+                                {item.explanation?.what_happened ||
+                                  'Not provided.'}
+                              </p>
+
+                              <p>
+                                <b>Why it matters:</b>{' '}
+                                {item.explanation?.why_it_matters ||
+                                  'Not provided.'}
+                              </p>
+
+                              <p>
+                                <b>Market reaction:</b>{' '}
+                                {item.explanation?.market_reaction ||
+                                  'Not provided.'}
+                              </p>
+
+                              {item.source?.url && (
+                                <p>
+                                  <a
+                                    href={item.source.url}
+                                    target="_blank"
+                                    rel="noreferrer"
+                                  >
+                                    Source: {item.source.name || 'Open source'}
+                                  </a>
+                                </p>
+                              )}
+                            </>
+                          )}
+
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setExpandedNewsId(expanded ? null : id)
+                            }
+                          >
+                            {expanded ? 'Show Less' : 'Read More'}
+                          </button>
+                        </div>
+                      );
+                    })}
                 </div>
-                <article className="emptyState">
-                  <h2>No published models yet</h2>
-                  <p>Forkable valuation, backtest, and quant templates will appear here.</p>
-                </article>
-              </section>
-            )}
+              </div>
 
-            {communityTab === 'builder' && (
-              <section className="builderGrid">
-                <article className="modelEditor">
-                  <div className="modelToolbar">
-                    <h2>Model editor</h2>
-                    <div>
-                      <button type="button" onClick={() => alert('Saved privately for this MVP.')}>
-                        <IconSave />
-                        Save privately
-                      </button>
-                      <button type="button" onClick={() => alert('Publishing is disabled in MVP.')}>
-                        <IconUpload />
-                        Publish
-                      </button>
-                      <button
-                        type="button"
-                        className="darkButton"
-                        onClick={() =>
-                          setBuilderOutput(
-                            'Template parsed successfully. Backtest execution is routed through the backend sandbox in the production flow.'
-                          )
-                        }
-                      >
-                        <IconPlay />
-                        Run template
-                      </button>
-                    </div>
+              <aside className="panel stockPanel">
+                <h3>News API</h3>
+                <p>Frontend tries both endpoints automatically.</p>
+
+                <div className="metrics">
+                  <div>
+                    <span>Primary</span>
+                    <strong>/community/news/{newsCategory}</strong>
                   </div>
 
-                  <textarea
-                    className="codeEditor"
-                    value={builderCode}
-                    onChange={(event) => setBuilderCode(event.target.value)}
-                    spellCheck={false}
-                  />
-
-                  <div className="outputPanel">
-                    <span>Output</span>
-                    <pre>{builderOutput}</pre>
-                    <p>Hypothetical or simulated performance is not a guarantee of future results.</p>
+                  <div>
+                    <span>Fallback</span>
+                    <strong>/news/{newsCategory}</strong>
                   </div>
-                </article>
 
-                <aside className="templatePanel">
-                  <h2>Templates</h2>
-                  {TEMPLATE_SNIPPETS.map((template) => (
-                    <button
-                      key={template.name}
-                      type="button"
-                      onClick={() => {
-                        setBuilderCode(template.code);
-                        setBuilderOutput('Template loaded. Run template to preview output.');
-                      }}
-                    >
-                      {template.name}
-                    </button>
-                  ))}
+                  <div>
+                    <span>Cards</span>
+                    <strong>5 max</strong>
+                  </div>
+                </div>
+              </aside>
+            </section>
+
+            <div className="disclaimer">
+              News is generated by the backend and may depend on available API
+              keys and external data.
+            </div>
+          </>
+        )}
+
+        {view === 'settings' && (
+          <section className="grid">
+            <div className="panel">
+              <div className="panelHeader">
+                <div>
+                  <h3>System Status</h3>
                   <p>
-                    Running a stranger's published model is disabled in MVP. Fork to your workspace
-                    to run privately.
+                    Use this panel to confirm the frontend is calling the
+                    correct Render backend.
                   </p>
-                </aside>
-              </section>
-            )}
+                </div>
+
+                <span className="pill">
+                  {backendOnline ? 'Online' : 'Offline'}
+                </span>
+              </div>
+
+              <div className="metrics">
+                <div>
+                  <span>Backend Base URL</span>
+                  <strong>{API_BASE_URL}</strong>
+                </div>
+
+                <div>
+                  <span>Backend Status</span>
+                  <strong>{backendStatus}</strong>
+                </div>
+
+                <div>
+                  <span>Qwen Configured</span>
+                  <strong>{qwenConfigured ? 'Yes' : 'Not confirmed'}</strong>
+                </div>
+
+                <div>
+                  <span>Last URL</span>
+                  <strong>{debugInfo.lastUrl || 'None yet'}</strong>
+                </div>
+
+                <div>
+                  <span>Last Status</span>
+                  <strong>{debugInfo.lastStatus || 'None yet'}</strong>
+                </div>
+
+                <div>
+                  <span>Last Error</span>
+                  <strong>{debugInfo.lastError || 'None'}</strong>
+                </div>
+              </div>
+
+              <div className="buttonRow">
+                <button type="button" className="primary" onClick={checkBackend}>
+                  Recheck Backend
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => window.open(`${API_BASE_URL}/health`, '_blank')}
+                >
+                  Open /health
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => window.open(`${API_BASE_URL}/debug`, '_blank')}
+                >
+                  Open /debug
+                </button>
+              </div>
+            </div>
+
+            <aside className="panel stockPanel">
+              <h3>Deployment Notes</h3>
+              <p>
+                If this works locally but not on Vercel, redeploy Vercel after
+                committing this file.
+              </p>
+
+              <div className="metrics">
+                <div>
+                  <span>Vercel Root Directory</span>
+                  <strong>frontend</strong>
+                </div>
+
+                <div>
+                  <span>Build Command</span>
+                  <strong>npm run build</strong>
+                </div>
+
+                <div>
+                  <span>Output Directory</span>
+                  <strong>dist</strong>
+                </div>
+              </div>
+            </aside>
           </section>
         )}
       </main>
