@@ -335,9 +335,96 @@ svg {
   color: var(--ink-soft);
   font-size: 18px;
   line-height: 1.65;
-  white-space: pre-wrap;
+  white-space: normal;
   overflow-wrap: anywhere;
   box-shadow: 0 4px 14px rgba(17, 24, 39, 0.04);
+}
+
+.messageContent p {
+  margin: 0 0 12px;
+}
+
+.messageContent p:last-child {
+  margin-bottom: 0;
+}
+
+.messageContent strong {
+  color: var(--ink);
+  font-weight: 850;
+}
+
+.reportHeading {
+  margin: 14px 0 8px;
+  color: var(--ink);
+  font-size: 19px;
+  font-weight: 850;
+  line-height: 1.35;
+}
+
+.reportHeading:first-child {
+  margin-top: 0;
+}
+
+.reportList {
+  margin: 8px 0 14px;
+  padding-left: 22px;
+}
+
+.reportList li {
+  margin: 5px 0;
+}
+
+.reportTableWrap {
+  width: 100%;
+  margin: 14px 0;
+  overflow-x: auto;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.reportTable {
+  width: 100%;
+  border-collapse: collapse;
+  color: var(--ink-soft);
+  font-size: 15px;
+  line-height: 1.45;
+}
+
+.reportTable th,
+.reportTable td {
+  min-width: 130px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--line);
+  border-right: 1px solid var(--line);
+  text-align: left;
+  vertical-align: top;
+}
+
+.reportTable th {
+  background: #f6f3ff;
+  color: var(--purple-dark);
+  font-weight: 850;
+}
+
+.reportTable tr:last-child td {
+  border-bottom: 0;
+}
+
+.reportTable th:last-child,
+.reportTable td:last-child {
+  border-right: 0;
+}
+
+.reportCode {
+  margin: 12px 0;
+  padding: 14px;
+  border-radius: 8px;
+  background: #f6f7fa;
+  color: #303747;
+  font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+  font-size: 14px;
+  line-height: 1.55;
+  white-space: pre-wrap;
 }
 
 .chatMessage.user .messageContent {
