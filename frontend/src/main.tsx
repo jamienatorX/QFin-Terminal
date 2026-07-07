@@ -170,11 +170,18 @@ function fetchWithTimeout(url: string, options: RequestInit = {}, timeoutMs = 90
   }).finally(() => window.clearTimeout(timeoutId));
 }
 
+function escapeForRegex(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 function sanitizeAssistantText(text: string) {
   return text
+    .replace(new RegExp(escapeForRegex(QUICK_MODE_INSTRUCTION), 'gi'), '')
+    .replace(new RegExp(escapeForRegex(DEEP_MODE_INSTRUCTION), 'gi'), '')
     .replace(/Quick Mode:\s*/gi, '')
     .replace(/Deep Mode:\s*/gi, '')
     .replace(/Do not include peer comparison, exhaustive risks, full statement breakdown, or multiple visuals\./gi, '')
+    .replace(/\s{2,}/g, ' ')
     .trim();
 }
 
@@ -663,8 +670,8 @@ function App() {
 
                 {newsError && !newsLoading && (
                   <article className="emptyState">
-                    <h2>News unavailable</h2>
-                    <p>Please retry the backend news request.</p>
+                    <h2>{newsError}</h2>
+                    <p>Refresh the category or retry in a moment.</p>
                     <button type="button" onClick={() => loadNews(newsCategory)}>
                       Retry
                     </button>
