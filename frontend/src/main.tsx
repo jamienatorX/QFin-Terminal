@@ -441,7 +441,7 @@ function App() {
 
     try {
       const readNews = async (url: string) => {
-        const response = await fetchWithTimeout(url, {}, 20000);
+        const response = await fetchWithTimeout(url, {}, 30000);
         if (!response.ok) {
           throw new Error(`News request failed: ${response.status}`);
         }
