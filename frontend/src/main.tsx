@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import ReactDOM from 'react-dom/client';
 import './styles.css';
 
@@ -10,7 +10,6 @@ type ChatMessage = {
   id: string;
   role: 'user' | 'assistant';
   content: string;
-  mode?: DepthMode;
   error?: boolean;
 };
 
@@ -38,7 +37,10 @@ const FALLBACK_GREETING =
   'Hello, I am QFin Terminal, your AI financial analyst and quantitative finance agent. You are welcome to ask me to analyze a company, compare stocks, explain financial ratios, build a valuation view, review risks, generate market news, or answer quant finance questions.';
 
 const FAILURE_MESSAGE =
-  'Analysis request failed. Backend did not return a response. Please check Render backend health or retry.';
+  'I could not reach QFin backend just now. Please retry in a moment.';
+
+const AGENT_GREETING =
+  'Hi, I am QFin. Ask me for company analysis, market news, valuation help, financial ratio explanations, or quant finance ideas.';
 
 const QUICK_MODE_INSTRUCTION =
   'Quick Mode: write only 3 to 5 short paragraphs, exactly one table or one chart, and a 2 to 3 sentence verdict. Do not include peer comparison, exhaustive risks, full statement breakdown, or multiple visuals.';
@@ -144,6 +146,36 @@ function buildChatMessage(input: string) {
     mode,
     message: appendModeInstruction(clean, mode)
   };
+}
+
+function isCasualGreeting(input: string) {
+  return /^(hi|hello|hey|yo|gm|good morning|good afternoon|good evening)[!. ]*$/i.test(
+    input.trim()
+  );
+}
+
+function isHelpPrompt(input: string) {
+  return /^(help|what can you do|what do you do|how does this work)[?.! ]*$/i.test(
+    input.trim()
+  );
+}
+
+function fetchWithTimeout(url: string, options: RequestInit = {}, timeoutMs = 9000) {
+  const controller = new AbortController();
+  const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
+
+  return fetch(url, {
+    ...options,
+    signal: controller.signal
+  }).finally(() => window.clearTimeout(timeoutId));
+}
+
+function sanitizeAssistantText(text: string) {
+  return text
+    .replace(/Quick Mode:\s*/gi, '')
+    .replace(/Deep Mode:\s*/gi, '')
+    .replace(/Do not include peer comparison, exhaustive risks, full statement breakdown, or multiple visuals\./gi, '')
+    .trim();
 }
 
 function IconLogo() {
@@ -252,14 +284,9 @@ function App() {
     'Output appears here after Run template or Run backtest.'
   );
 
-  const latestAssistantMessage = useMemo(
-    () => [...messages].reverse().find((message) => message.role === 'assistant'),
-    [messages]
-  );
-
   async function checkBackend() {
     try {
-      const response = await fetch(`${API_BASE_URL}/health`);
+      const response = await fetchWithTimeout(`${API_BASE_URL}/health`, {}, 7000);
       const data = await response.json();
 
       if (response.ok && data.status === 'ok') {
@@ -279,9 +306,26 @@ function App() {
     checkBackend();
   }, []);
 
-  async function sendToChatStream(rawMessage: string, mode?: DepthMode) {
-    const cleanMessage = rawMessage.trim();
-    if (!cleanMessage || loading) return;
+  function addLocalAgentReply(userMessage: string, assistantMessage: string) {
+    setMessages((current) => [
+      ...current,
+      {
+        id: makeId(),
+        role: 'user',
+        content: userMessage
+      },
+      {
+        id: makeId(),
+        role: 'assistant',
+        content: assistantMessage
+      }
+    ]);
+  }
+
+  async function sendToChatStream(displayMessage: string, backendMessage: string) {
+    const cleanDisplayMessage = displayMessage.trim();
+    const cleanBackendMessage = backendMessage.trim();
+    if (!cleanDisplayMessage || !cleanBackendMessage || loading) return;
 
     const assistantId = makeId();
 
@@ -290,36 +334,34 @@ function App() {
       {
         id: makeId(),
         role: 'user',
-        content: cleanMessage,
-        mode
+        content: cleanDisplayMessage
       },
       {
         id: assistantId,
         role: 'assistant',
-        content: 'QFin is generating the analysis...',
-        mode
+        content: 'Thinking...'
       }
     ]);
 
     setLoading(true);
 
     try {
-      const response = await fetch(`${API_BASE_URL}/chat/stream`, {
+      const response = await fetchWithTimeout(`${API_BASE_URL}/chat/stream`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json'
         },
         body: JSON.stringify({
-          message: cleanMessage
+          message: cleanBackendMessage
         })
-      });
+      }, 45000);
 
       if (!response.ok) {
         throw new Error(`Backend returned ${response.status}`);
       }
 
       const text = await response.text();
-      const finalText = text.trim() ? text : FALLBACK_GREETING;
+      const finalText = text.trim() ? sanitizeAssistantText(text) : FALLBACK_GREETING;
 
       setMessages((current) =>
         current.map((message) =>
@@ -350,12 +392,19 @@ function App() {
   }
 
   function submitPrompt(input = prompt) {
-    const request = buildChatMessage(input);
-    if (!request.message) return;
+    const cleanInput = input.trim();
+    if (!cleanInput) return;
 
     setView('home');
     setPrompt('');
-    sendToChatStream(request.message, request.mode);
+
+    if (isCasualGreeting(cleanInput) || isHelpPrompt(cleanInput)) {
+      addLocalAgentReply(cleanInput, AGENT_GREETING);
+      return;
+    }
+
+    const request = buildChatMessage(cleanInput);
+    sendToChatStream(cleanInput, request.message);
   }
 
   async function loadNews(category: string) {
@@ -367,18 +416,22 @@ function App() {
     const fallbackUrl = `${API_BASE_URL}/news/${encodeURIComponent(category)}`;
 
     try {
-      let response = await fetch(primaryUrl);
+      const readNews = async (url: string) => {
+        const response = await fetchWithTimeout(url, {}, 6500);
+        if (!response.ok) {
+          throw new Error(`News request failed: ${response.status}`);
+        }
 
-      if (!response.ok) {
-        response = await fetch(fallbackUrl);
-      }
+        const data = await response.json();
+        return Array.isArray(data.news) ? data.news.slice(0, 6) : [];
+      };
 
-      if (!response.ok) {
-        throw new Error(`News request failed: ${response.status}`);
-      }
-
-      const data = await response.json();
-      const items = Array.isArray(data.news) ? data.news.slice(0, 6) : [];
+      const results = await Promise.allSettled([readNews(primaryUrl), readNews(fallbackUrl)]);
+      const items =
+        results.find(
+          (result): result is PromiseFulfilledResult<NewsItem[]> =>
+            result.status === 'fulfilled' && result.value.length > 0
+        )?.value || [];
 
       if (!items.length) {
         throw new Error('Backend returned no news array.');
@@ -467,14 +520,46 @@ function App() {
               </div>
             </section>
 
-            <section className="promptArea" aria-label="Ask QFin">
-              <div className="promptChips">
-                {SUGGESTED_PROMPTS.map((suggestion) => (
-                  <button key={suggestion} type="button" onClick={() => submitPrompt(suggestion)}>
-                    {suggestion}
+            <section className="chatSurface" aria-label="QFin chat">
+              {!!messages.length && (
+                <div className="chatActions">
+                  <button type="button" onClick={() => setMessages([])}>
+                    New chat
                   </button>
+                </div>
+              )}
+
+              <div className="chatTranscript" aria-live="polite">
+                {!messages.length && (
+                  <div className="emptyChat">
+                    <h2>What would you like to analyze?</h2>
+                    <p>
+                      Ask for a company analysis, valuation explanation, market update, or a quant
+                      finance idea.
+                    </p>
+                  </div>
+                )}
+
+                {messages.map((message) => (
+                  <article
+                    key={message.id}
+                    className={`chatMessage ${message.role} ${message.error ? 'error' : ''}`}
+                  >
+                    {message.role === 'assistant' && <div className="assistantMark">Q</div>}
+                    <div className="messageContent">{message.content}</div>
+                  </article>
                 ))}
               </div>
+
+              {!messages.length && (
+                <div className="promptChips">
+                  {SUGGESTED_PROMPTS.map((suggestion) => (
+                    <button key={suggestion} type="button" onClick={() => submitPrompt(suggestion)}>
+                      {suggestion}
+                    </button>
+                  ))}
+                </div>
+              )}
 
               <form
                 className="composer"
@@ -523,41 +608,6 @@ function App() {
                 Supports finance questions, company analysis, market news, and Excel statement uploads.
               </p>
             </section>
-
-            {!!messages.length && (
-              <section className="analysisPanel">
-                <div className="analysisHeader">
-                  <div>
-                    <span>Analysis</span>
-                    <h2>{loading ? 'QFin is working' : 'Latest response'}</h2>
-                  </div>
-                  <button type="button" onClick={() => setMessages([])}>
-                    New chat
-                  </button>
-                </div>
-
-                <div className="messageList">
-                  {messages.map((message) => (
-                    <article
-                      key={message.id}
-                      className={`messageBubble ${message.role} ${message.error ? 'error' : ''}`}
-                    >
-                      <strong>
-                        {message.role === 'user' ? 'You' : 'QFin'}
-                        {message.mode ? ` - ${message.mode}` : ''}
-                      </strong>
-                      <p>{message.content}</p>
-                    </article>
-                  ))}
-                </div>
-              </section>
-            )}
-
-            {!messages.length && latestAssistantMessage && (
-              <section className="analysisPanel">
-                <p>{latestAssistantMessage.content}</p>
-              </section>
-            )}
           </>
         )}
 
