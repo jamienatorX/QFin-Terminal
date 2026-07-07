@@ -1,14 +1,14 @@
 # QFin Terminal
 
-QFin Terminal is a Qwen-powered financial analyst dashboard
+QFin Terminal is a Qwen-powered financial analyst dashboard for the Global AI Hackathon Series with Qwen Cloud.
 
 The app has three main layers:
 
 ```text
-Frontend: React / Vite dashboard
-Backend: FastAPI service
+Frontend: React / Vite website deployed on Vercel
+Backend: FastAPI service deployed on Render
 AI: Qwen Cloud / DashScope API
-Database: Supabase Postgres
+Database: Supabase Postgres behind the backend
 ```
 
 ## Repository structure
@@ -20,6 +20,7 @@ QFin-Terminal
 ├── supabase
 ├── README.md
 ├── render.yaml
+├── vercel.json
 ├── .gitignore
 └── LICENSE
 ```
@@ -27,13 +28,13 @@ QFin-Terminal
 ## What works
 
 - Frontend opens locally at `http://localhost:5173`
-- Buttons are clickable
-- Generate Report calls FastAPI `/analyze`
-- Ticker buttons update the prompt
+- Frontend fallback backend is `https://qfin-terminal.onrender.com`
+- Chat and company analysis call FastAPI `POST /chat/stream`
+- The frontend reads chat responses as plain text with `response.text()`
+- Community news calls `/community/news/{category}` and falls back to `/news/{category}`
 - Backend opens locally at `http://127.0.0.1:8000`
-- `/`, `/health`, `/docs`, `/analyze`, and `/upload` work
-- Qwen is called only from the backend if `DASHSCOPE_API_KEY` is configured
-- If Qwen key is missing, backend returns safe demo mode
+- `/`, `/health`, `/docs`, `/chat/stream`, `/community/news/{category}`, and `/news/{category}` work
+- Qwen and Supabase are called only from the backend
 
 ## Local backend setup
 
@@ -95,10 +96,28 @@ frontend/.env.local
 Add:
 
 ```env
-VITE_API_BASE_URL=https://your-backend-url.onrender.com
+VITE_API_BASE_URL=https://qfin-terminal.onrender.com
 ```
 
 Restart the frontend after changing `.env.local`.
+
+## Vercel frontend deployment
+
+This repo includes `vercel.json` so Vercel can build the app from the repository root.
+
+Use these settings if configuring manually:
+
+```text
+Install Command: cd frontend && npm install
+Build Command: cd frontend && npm run build
+Output Directory: frontend/dist
+```
+
+Set this environment variable in Vercel:
+
+```env
+VITE_API_BASE_URL=https://qfin-terminal.onrender.com
+```
 
 ## Render backend deployment
 
@@ -125,7 +144,7 @@ SUPABASE_SERVICE_ROLE_KEY=your_supabase_secret_or_service_role_key
 After deployment, test:
 
 ```text
-https://your-render-backend-url.onrender.com/health
+https://qfin-terminal.onrender.com/health
 ```
 
 Expected response:
@@ -138,14 +157,6 @@ Expected response:
 }
 ```
 
-## Alibaba Cloud final deployment
-
-Render is temporary. For final hackathon submission, deploy the backend to Alibaba Cloud ECS or Simple Application Server, then change the frontend variable:
-
-```env
-VITE_API_BASE_URL=https://your-alibaba-backend-url.com
-```
-
 ## Security
 
 Never expose these in frontend code or GitHub:
@@ -156,6 +167,8 @@ SUPABASE_SERVICE_ROLE_KEY
 .env
 .env.local
 ```
+
+The browser frontend should only call the Render backend URL. Supabase service-role access stays on the backend.
 
 ## License
 
