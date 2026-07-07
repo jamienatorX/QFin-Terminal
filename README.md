@@ -1,6 +1,6 @@
 # QFin Terminal
 
-QFin Terminal is a Qwen-powered financial analyst dashboard for
+QFin Terminal is a Qwen-powered financial analyst dashboard
 
 The app has three main layers:
 
