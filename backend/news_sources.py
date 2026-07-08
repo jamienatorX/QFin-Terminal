@@ -79,10 +79,38 @@ async def fetch_rss(client: httpx.AsyncClient, category: str) -> List[Dict[str, 
                 title = node.findtext("title") or ""
                 desc = re.sub(r"<[^>]+>", "", node.findtext("description") or "").strip()
                 text = f"{title} {desc}".lower()
-                if category == "Other" or any(k in text for k in keys[:6]):
+                if category in {"Stocks", "Other"} or any(k in text for k in keys[:6]):
                     output.append({"title": title, "summary": desc, "publisher": source, "link": node.findtext("link"), "providerPublishTime": node.findtext("pubDate"), "source": f"{source} RSS"})
         except Exception:
             continue
+    return output
+
+
+async def fetch_google_news(client: httpx.AsyncClient, category: str) -> List[Dict[str, Any]]:
+    query = quote_plus(CATEGORY_QUERIES.get(category, CATEGORY_QUERIES["Stocks"]))
+    url = f"https://news.google.com/rss/search?q={query}&hl=en-US&gl=US&ceid=US:en"
+    output = []
+    try:
+        r = await client.get(url)
+        if r.status_code >= 400:
+            return []
+        root = ET.fromstring(r.text)
+        for node in root.findall(".//item")[:12]:
+            title = node.findtext("title") or ""
+            link = node.findtext("link")
+            pub_date = node.findtext("pubDate")
+            output.append(
+                {
+                    "title": title,
+                    "summary": title,
+                    "publisher": "Google News",
+                    "link": link,
+                    "providerPublishTime": pub_date,
+                    "source": "Google News RSS",
+                }
+            )
+    except Exception:
+        return []
     return output
 
 async def fetch_newsapi(client: httpx.AsyncClient, category: str) -> List[Dict[str, Any]]:
@@ -119,6 +147,7 @@ async def fetch_all_sources(category: str) -> List[Dict[str, Any]]:
             fetch_yahoo(client, category),
             fetch_gdelt(client, category),
             fetch_rss(client, category),
+            fetch_google_news(client, category),
             fetch_newsapi(client, category),
             fetch_finnhub(client, category),
         ]
