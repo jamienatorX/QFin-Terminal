@@ -2,7 +2,7 @@
 
 QFin Terminal is a Qwen-powered financial analyst dashboard for the Global AI Hackathon Series with Qwen Cloud.
 
-The app has three main layers:
+The app has four main layers:
 
 ```text
 Frontend: React / Vite website deployed on Vercel
@@ -29,11 +29,12 @@ QFin-Terminal
 
 - Frontend opens locally at `http://localhost:5173`
 - Frontend fallback backend is `https://qfin-terminal.onrender.com`
-- Chat and company analysis call FastAPI `POST /chat/stream`
+- Chat and company analysis call FastAPI `POST /agent/chat/stream`
 - The frontend reads chat responses as plain text with `response.text()`
 - Community news calls `/community/news/{category}` and falls back to `/news/{category}`
+- Community forum threads, votes, and builder models persist through Supabase when configured
 - Backend opens locally at `http://127.0.0.1:8000`
-- `/`, `/health`, `/docs`, `/chat/stream`, `/community/news/{category}`, and `/news/{category}` work
+- `/`, `/health`, `/docs`, `/agent/chat/stream`, `/community/news/{category}`, `/community/forum`, and `/community/models` work
 - Qwen and Supabase are called only from the backend
 
 ## Local backend setup
@@ -69,9 +70,26 @@ DASHSCOPE_BASE_URL=https://dashscope-intl.aliyuncs.com/compatible-mode/v1
 DASHSCOPE_MODEL=qwen3.7-plus
 SUPABASE_URL=your_supabase_project_url
 SUPABASE_SERVICE_ROLE_KEY=your_supabase_secret_or_service_role_key
+FINNHUB_API_KEY=your_finnhub_api_key
 ```
 
 Do not commit `.env` to GitHub.
+
+## Supabase setup
+
+Run the SQL in:
+
+```text
+supabase/schema.sql
+```
+
+This creates the forum and builder persistence tables:
+
+- `public.qfin_forum_threads`
+- `public.qfin_builder_models`
+- `public.qfin_reports`
+
+The backend uses the Supabase service role key, so the browser never talks to these tables directly.
 
 ## Local frontend setup
 
@@ -139,6 +157,7 @@ DASHSCOPE_BASE_URL=https://dashscope-intl.aliyuncs.com/compatible-mode/v1
 DASHSCOPE_MODEL=qwen3.7-plus
 SUPABASE_URL=your_supabase_project_url
 SUPABASE_SERVICE_ROLE_KEY=your_supabase_secret_or_service_role_key
+FINNHUB_API_KEY=your_finnhub_api_key
 ```
 
 After deployment, test:
@@ -153,7 +172,9 @@ Expected response:
 {
   "status": "ok",
   "service": "qfin-terminal-api",
-  "qwen_configured": true
+  "version": "qfin-agent-2.1",
+  "qwen_configured": true,
+  "supabase_configured": true
 }
 ```
 
