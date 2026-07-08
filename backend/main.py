@@ -213,8 +213,10 @@ DETAILED_SIGNALS = [
 
 SUPABASE_FORUM_TABLE = "qfin_forum_threads"
 SUPABASE_MODEL_TABLE = "qfin_builder_models"
+SUPABASE_SYMBOL_TABLE = "qfin_symbol_master"
 FINANCIAL_DATA_CACHE_TTL_SECONDS = 900
 MODEL_PERIOD_LABELS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+SYMBOL_MASTER_CACHE: Dict[str, Dict[str, Any]] = {}
 
 TICKER_RE = r"[A-Za-z0-9][A-Za-z0-9\.\-\^=]{0,17}"
 
@@ -339,6 +341,18 @@ def normalize_user_text(text: str) -> str:
     return re.sub(r"\s+", " ", cleaned).strip()
 
 
+def symbol_search_text(*parts: Any) -> str:
+    values: List[str] = []
+    for part in parts:
+        if part is None:
+            continue
+        if isinstance(part, list):
+            values.extend(str(item) for item in part if item)
+        else:
+            values.append(str(part))
+    return normalize_user_text(" ".join(values))
+
+
 def clean_text(text: str) -> str:
     text = text.replace("\r\n", "\n").replace("\r", "\n")
     text = re.sub(r"\n\s*\n+", "\n\n", text)
@@ -349,6 +363,138 @@ def clean_text(text: str) -> str:
 def norm_symbol(symbol: str) -> str:
     value = symbol.strip().upper().strip(".,;:!?()[]{}\"'")
     return "BRK-B" if value == "BRK.B" else value
+
+
+def symbol_record(
+    symbol: str,
+    name: str,
+    exchange: str,
+    market: str,
+    country: str,
+    currency: str,
+    aliases: Optional[List[str]] = None,
+    yahoo_symbol: Optional[str] = None,
+    priority: int = 50,
+    source: str = "qfin_seed",
+) -> Dict[str, Any]:
+    resolved_symbol = norm_symbol(yahoo_symbol or symbol)
+    public_symbol = norm_symbol(symbol)
+    alias_values = aliases or []
+    return {
+        "symbol": public_symbol,
+        "yahoo_symbol": resolved_symbol,
+        "name": name,
+        "exchange": exchange,
+        "market": market,
+        "country": country,
+        "currency": currency,
+        "aliases": alias_values,
+        "search_text": symbol_search_text(public_symbol, resolved_symbol, name, exchange, market, country, alias_values),
+        "source": source,
+        "priority": priority,
+        "active": True,
+        "updated_at": utc_now(),
+    }
+
+
+def default_symbol_master_records() -> List[Dict[str, Any]]:
+    us = [
+        ("AAPL", "Apple Inc.", ["apple"]),
+        ("MSFT", "Microsoft Corporation", ["microsoft"]),
+        ("NVDA", "NVIDIA Corporation", ["nvidia"]),
+        ("GOOGL", "Alphabet Inc. Class A", ["google", "alphabet"]),
+        ("GOOG", "Alphabet Inc. Class C", ["google class c"]),
+        ("AMZN", "Amazon.com Inc.", ["amazon"]),
+        ("META", "Meta Platforms Inc.", ["meta", "facebook"]),
+        ("TSLA", "Tesla Inc.", ["tesla"]),
+        ("BRK-B", "Berkshire Hathaway Inc. Class B", ["berkshire hathaway", "berkshire"]),
+        ("JPM", "JPMorgan Chase & Co.", ["jpmorgan", "jp morgan"]),
+        ("V", "Visa Inc.", ["visa"]),
+        ("MA", "Mastercard Incorporated", ["mastercard"]),
+        ("UNH", "UnitedHealth Group Incorporated", ["unitedhealth", "united health"]),
+        ("LLY", "Eli Lilly and Company", ["eli lilly", "lilly"]),
+        ("XOM", "Exxon Mobil Corporation", ["exxon", "exxonmobil"]),
+        ("AVGO", "Broadcom Inc.", ["broadcom"]),
+        ("WMT", "Walmart Inc.", ["walmart"]),
+        ("COST", "Costco Wholesale Corporation", ["costco"]),
+        ("PG", "Procter & Gamble Company", ["procter gamble", "p&g"]),
+        ("JNJ", "Johnson & Johnson", ["johnson and johnson"]),
+        ("HD", "The Home Depot Inc.", ["home depot"]),
+        ("BAC", "Bank of America Corporation", ["bank of america", "bofa"]),
+        ("ABBV", "AbbVie Inc.", ["abbvie"]),
+        ("KO", "The Coca-Cola Company", ["coca cola", "coke"]),
+        ("NFLX", "Netflix Inc.", ["netflix"]),
+        ("AMD", "Advanced Micro Devices Inc.", ["advanced micro devices", "amd"]),
+        ("ADBE", "Adobe Inc.", ["adobe"]),
+        ("CRM", "Salesforce Inc.", ["salesforce"]),
+        ("ORCL", "Oracle Corporation", ["oracle"]),
+        ("CSCO", "Cisco Systems Inc.", ["cisco"]),
+        ("INTC", "Intel Corporation", ["intel"]),
+        ("QCOM", "QUALCOMM Incorporated", ["qualcomm"]),
+        ("PEP", "PepsiCo Inc.", ["pepsico", "pepsi"]),
+        ("PFE", "Pfizer Inc.", ["pfizer"]),
+        ("MRK", "Merck & Co. Inc.", ["merck"]),
+        ("DIS", "The Walt Disney Company", ["disney"]),
+        ("BA", "The Boeing Company", ["boeing"]),
+        ("CAT", "Caterpillar Inc.", ["caterpillar"]),
+        ("IBM", "International Business Machines Corporation", ["ibm"]),
+        ("MCD", "McDonald's Corporation", ["mcdonalds", "mcdonald's"]),
+        ("PYPL", "PayPal Holdings Inc.", ["paypal"]),
+        ("UBER", "Uber Technologies Inc.", ["uber"]),
+        ("ABNB", "Airbnb Inc.", ["airbnb"]),
+        ("PLTR", "Palantir Technologies Inc.", ["palantir"]),
+        ("SPY", "SPDR S&P 500 ETF Trust", ["s&p 500 etf", "sp500 etf"]),
+        ("QQQ", "Invesco QQQ Trust", ["nasdaq 100 etf", "qqq"]),
+        ("DIA", "SPDR Dow Jones Industrial Average ETF Trust", ["dow etf"]),
+        ("IWM", "iShares Russell 2000 ETF", ["russell 2000 etf"]),
+    ]
+
+    global_rows = [
+        ("BBCA", "BBCA.JK", "Bank Central Asia Tbk", "IDX", "Indonesia", "Indonesia", "IDR", ["bca", "bank central asia"], 95),
+        ("BBRI", "BBRI.JK", "Bank Rakyat Indonesia Tbk", "IDX", "Indonesia", "Indonesia", "IDR", ["bri", "bank rakyat indonesia"], 90),
+        ("BMRI", "BMRI.JK", "Bank Mandiri Tbk", "IDX", "Indonesia", "Indonesia", "IDR", ["mandiri", "bank mandiri"], 90),
+        ("TLKM", "TLKM.JK", "Telkom Indonesia Tbk", "IDX", "Indonesia", "Indonesia", "IDR", ["telkom indonesia", "telkom"], 85),
+        ("MDKA", "MDKA.JK", "Merdeka Copper Gold Tbk", "IDX", "Indonesia", "Indonesia", "IDR", ["merdeka copper gold", "merdeka copper", "merdeka gold"], 95),
+        ("MBMA", "MBMA.JK", "Merdeka Battery Materials Tbk", "IDX", "Indonesia", "Indonesia", "IDR", ["merdeka battery", "merdeka battery materials"], 80),
+        ("D05", "D05.SI", "DBS Group Holdings Ltd", "SGX", "Singapore", "Singapore", "SGD", ["dbs", "dbs group"], 95),
+        ("O39", "O39.SI", "Oversea-Chinese Banking Corporation", "SGX", "Singapore", "Singapore", "SGD", ["ocbc"], 90),
+        ("U11", "U11.SI", "United Overseas Bank Limited", "SGX", "Singapore", "Singapore", "SGD", ["uob", "united overseas bank"], 90),
+        ("Z74", "Z74.SI", "Singapore Telecommunications Limited", "SGX", "Singapore", "Singapore", "SGD", ["singtel"], 85),
+        ("1155", "1155.KL", "Malayan Banking Berhad", "Bursa Malaysia", "Malaysia", "Malaysia", "MYR", ["maybank", "malayan banking"], 95),
+        ("1023", "1023.KL", "CIMB Group Holdings Berhad", "Bursa Malaysia", "Malaysia", "Malaysia", "MYR", ["cimb"], 90),
+        ("1295", "1295.KL", "Public Bank Berhad", "Bursa Malaysia", "Malaysia", "Malaysia", "MYR", ["public bank"], 90),
+        ("5347", "5347.KL", "Tenaga Nasional Berhad", "Bursa Malaysia", "Malaysia", "Malaysia", "MYR", ["tenaga nasional", "tenaga"], 85),
+        ("MC", "MC.PA", "LVMH Moet Hennessy Louis Vuitton SE", "Euronext Paris", "France", "Europe", "EUR", ["lvmh"], 95),
+        ("OR", "OR.PA", "L'Oreal S.A.", "Euronext Paris", "France", "Europe", "EUR", ["loreal", "l'oreal"], 85),
+        ("TTE", "TTE.PA", "TotalEnergies SE", "Euronext Paris", "France", "Europe", "EUR", ["totalenergies", "total energies"], 85),
+        ("SAP", "SAP", "SAP SE", "NYSE", "United States", "United States", "USD", ["sap"], 90),
+        ("SIE", "SIE.DE", "Siemens Aktiengesellschaft", "XETRA", "Germany", "Europe", "EUR", ["siemens"], 90),
+        ("ASML", "ASML", "ASML Holding N.V.", "NASDAQ", "United States", "United States", "USD", ["asml"], 95),
+        ("NESN", "NESN.SW", "Nestle S.A.", "SIX Swiss Exchange", "Switzerland", "Europe", "CHF", ["nestle"], 90),
+        ("ROG", "ROG.SW", "Roche Holding AG", "SIX Swiss Exchange", "Switzerland", "Europe", "CHF", ["roche"], 90),
+        ("SHEL", "SHEL", "Shell plc", "NYSE", "United States", "United States", "USD", ["shell"], 90),
+        ("HSBC", "HSBC", "HSBC Holdings plc", "NYSE", "United States", "United States", "USD", ["hsbc"], 85),
+        ("BHP", "BHP.AX", "BHP Group Limited", "ASX", "Australia", "Australia", "AUD", ["bhp"], 85),
+        ("CBA", "CBA.AX", "Commonwealth Bank of Australia", "ASX", "Australia", "Australia", "AUD", ["commonwealth bank", "cba"], 85),
+        ("RY", "RY.TO", "Royal Bank of Canada", "TSX", "Canada", "Canada", "CAD", ["royal bank of canada", "rbc"], 85),
+        ("SHOP", "SHOP.TO", "Shopify Inc.", "TSX", "Canada", "Canada", "CAD", ["shopify canada"], 80),
+        ("0700", "0700.HK", "Tencent Holdings Limited", "HKEX", "Hong Kong", "Hong Kong", "HKD", ["tencent"], 90),
+        ("9988", "9988.HK", "Alibaba Group Holding Limited", "HKEX", "Hong Kong", "Hong Kong", "HKD", ["alibaba hong kong"], 85),
+        ("7203", "7203.T", "Toyota Motor Corporation", "Tokyo Stock Exchange", "Japan", "Japan", "JPY", ["toyota"], 90),
+        ("6758", "6758.T", "Sony Group Corporation", "Tokyo Stock Exchange", "Japan", "Japan", "JPY", ["sony"], 90),
+        ("005930", "005930.KS", "Samsung Electronics Co. Ltd.", "KOSPI", "South Korea", "South Korea", "KRW", ["samsung electronics", "samsung"], 90),
+        ("2330", "2330.TW", "Taiwan Semiconductor Manufacturing Company", "TWSE", "Taiwan", "Taiwan", "TWD", ["tsmc taiwan"], 85),
+        ("PETR4", "PETR4.SA", "Petroleo Brasileiro S.A. Petrobras", "B3", "Brazil", "Brazil", "BRL", ["petrobras"], 85),
+        ("VALE3", "VALE3.SA", "Vale S.A.", "B3", "Brazil", "Brazil", "BRL", ["vale brazil"], 85),
+    ]
+
+    records = [
+        symbol_record(symbol, name, "NASDAQ/NYSE", "United States", "United States", "USD", aliases, priority=90)
+        for symbol, name, aliases in us
+    ]
+    for symbol, yahoo_symbol, name, exchange, country, market, currency, aliases, priority in global_rows:
+        records.append(symbol_record(symbol, name, exchange, market, country, currency, aliases, yahoo_symbol, priority))
+    return records
 
 
 def extract_chat_query(payload: AgentChatRequest) -> str:
@@ -506,6 +652,198 @@ def extract_symbol_candidates(text: str) -> List[str]:
     return found
 
 
+def ensure_supabase_symbol_master_seeded() -> None:
+    if not supabase_is_configured():
+        return
+    try:
+        existing = supabase_request(
+            "GET",
+            SUPABASE_SYMBOL_TABLE,
+            params={"select": "symbol", "source": "eq.qfin_seed", "limit": "1"},
+        ) or []
+        if existing:
+            return
+        payload = default_symbol_master_records()
+        for index in range(0, len(payload), 100):
+            supabase_request(
+                "POST",
+                SUPABASE_SYMBOL_TABLE,
+                params={"on_conflict": "symbol"},
+                json_body=payload[index : index + 100],
+                prefer="resolution=merge-duplicates,return=minimal",
+            )
+    except Exception:
+        return
+
+
+def clean_symbol_lookup_text(text: str) -> str:
+    cleaned = re.sub(
+        r"\b(analyze|analyse|compare|check|review|research|stock|ticker|company|financial|finance|about|for|on|valuation|value|summarize|summary|profitability|growth|margins|margin|cash flow|liquidity|solvency|returns|revenue|debt|earnings)\b",
+        " ",
+        text,
+        flags=re.I,
+    )
+    return normalize_user_text(cleaned)
+
+
+def symbol_master_terms(text: str, provided: Optional[str] = None) -> List[str]:
+    terms: List[str] = []
+    if provided:
+        terms.append(norm_symbol(provided))
+    for token in re.findall(r"\$?([A-Za-z0-9]{1,8}(?:[.\-][A-Za-z0-9]{1,5})?)\b", text):
+        normalized = norm_symbol(token)
+        if normalized not in STOP and normalized not in terms:
+            terms.append(normalized)
+    cleaned = clean_symbol_lookup_text(text)
+    if cleaned and cleaned not in terms:
+        terms.append(cleaned)
+    return terms[:12]
+
+
+def symbol_master_score(record: Dict[str, Any], term: str, text: str) -> int:
+    symbol = norm_symbol(str(record.get("symbol") or ""))
+    yahoo_symbol = norm_symbol(str(record.get("yahoo_symbol") or symbol))
+    normalized_term = normalize_user_text(term)
+    search_text = str(record.get("search_text") or "").lower()
+    aliases = [normalize_user_text(str(alias)) for alias in record.get("aliases") or []]
+    suffixes = preferred_market_suffixes(text)
+    score = int(record.get("priority") or 0)
+
+    if norm_symbol(term) in {symbol, yahoo_symbol}:
+        score += 120
+    if normalized_term and normalized_term in aliases:
+        score += 95
+    if normalized_term and normalized_term in search_text:
+        score += 60
+    for suffix in suffixes:
+        if suffix == "" and "." not in yahoo_symbol:
+            score += 35
+        elif suffix and yahoo_symbol.endswith(suffix):
+            score += 45
+    return score
+
+
+def local_symbol_master_candidates(term: str, text: str) -> List[Dict[str, Any]]:
+    normalized_term = normalize_user_text(term)
+    raw_symbol = norm_symbol(term)
+    rows = []
+    for record in default_symbol_master_records():
+        symbol = norm_symbol(str(record.get("symbol") or ""))
+        yahoo_symbol = norm_symbol(str(record.get("yahoo_symbol") or symbol))
+        search_text = str(record.get("search_text") or "")
+        if (
+            raw_symbol in {symbol, yahoo_symbol}
+            or (normalized_term and normalized_term in search_text)
+        ):
+            rows.append(record)
+    return sorted(rows, key=lambda row: symbol_master_score(row, term, text), reverse=True)
+
+
+def fetch_symbol_master_candidates(term: str, text: str) -> List[Dict[str, Any]]:
+    if not supabase_is_configured():
+        return local_symbol_master_candidates(term, text)
+    ensure_supabase_symbol_master_seeded()
+    select = "symbol,yahoo_symbol,name,exchange,market,country,currency,aliases,search_text,priority,active"
+    normalized_term = normalize_user_text(term)
+    raw_symbol = norm_symbol(term)
+    rows: List[Dict[str, Any]] = []
+
+    try:
+        if re.fullmatch(r"[A-Z0-9]{1,8}(?:[.\-][A-Z0-9]{1,5})?", raw_symbol):
+            for field in ("symbol", "yahoo_symbol"):
+                rows.extend(
+                    supabase_request(
+                        "GET",
+                        SUPABASE_SYMBOL_TABLE,
+                        params={"select": select, "active": "eq.true", field: f"eq.{raw_symbol}", "limit": "10"},
+                    ) or []
+                )
+        if len(normalized_term) >= 2:
+            rows.extend(
+                supabase_request(
+                    "GET",
+                    SUPABASE_SYMBOL_TABLE,
+                    params={
+                        "select": select,
+                        "active": "eq.true",
+                        "search_text": f"ilike.*{normalized_term}*",
+                        "limit": "20",
+                    },
+                ) or []
+            )
+    except Exception:
+        return local_symbol_master_candidates(term, text)
+
+    deduped: Dict[str, Dict[str, Any]] = {}
+    for row in rows:
+        key = norm_symbol(str(row.get("yahoo_symbol") or row.get("symbol") or ""))
+        if key:
+            deduped[key] = row
+    return sorted(deduped.values(), key=lambda row: symbol_master_score(row, term, text), reverse=True)
+
+
+def resolve_from_symbol_master(text: str, provided: Optional[str] = None) -> Optional[str]:
+    cache_key = f"{provided or ''}|{normalize_user_text(text)}"
+    cached = SYMBOL_MASTER_CACHE.get(cache_key)
+    if cached:
+        return str(cached.get("symbol") or "")
+
+    best_record: Optional[Dict[str, Any]] = None
+    best_score = 0
+    for term in symbol_master_terms(text, provided):
+        candidates = fetch_symbol_master_candidates(term, text)
+        if not candidates:
+            continue
+        score = symbol_master_score(candidates[0], term, text)
+        if score > best_score:
+            best_record = candidates[0]
+            best_score = score
+
+    if not best_record or best_score < 70:
+        return None
+
+    resolved = norm_symbol(str(best_record.get("yahoo_symbol") or best_record.get("symbol") or ""))
+    if resolved:
+        SYMBOL_MASTER_CACHE[cache_key] = {"symbol": resolved, "record": best_record}
+    return resolved or None
+
+
+def learn_symbol_master(query: str, symbol: str, quote: Optional[Dict[str, Any]] = None) -> None:
+    if not supabase_is_configured() or not symbol:
+        return
+    quote = quote or {}
+    name = (
+        quote.get("longname")
+        or quote.get("shortname")
+        or quote.get("name")
+        or clean_symbol_lookup_text(query)
+        or symbol
+    )
+    exchange = quote.get("exchDisp") or quote.get("exchange") or "Yahoo Finance"
+    row = symbol_record(
+        symbol=symbol,
+        yahoo_symbol=symbol,
+        name=str(name),
+        exchange=str(exchange),
+        market=str(quote.get("market") or exchange),
+        country=str(quote.get("region") or ""),
+        currency=str(quote.get("currency") or ""),
+        aliases=[clean_symbol_lookup_text(query)],
+        priority=40,
+        source="yahoo_search",
+    )
+    try:
+        supabase_request(
+            "POST",
+            SUPABASE_SYMBOL_TABLE,
+            params={"on_conflict": "symbol"},
+            json_body=row,
+            prefer="resolution=merge-duplicates,return=minimal",
+        )
+    except Exception:
+        return
+
+
 def yahoo_quote_score(item: Dict[str, Any], query: str) -> int:
     symbol = norm_symbol(str(item.get("symbol") or ""))
     name = " ".join(
@@ -539,14 +877,19 @@ def yahoo_quote_score(item: Dict[str, Any], query: str) -> int:
     return score
 
 
-def pick_best_yahoo_quote(quotes: List[Dict[str, Any]], query: str) -> Optional[str]:
+def pick_best_yahoo_quote_record(quotes: List[Dict[str, Any]], query: str) -> Optional[Dict[str, Any]]:
     if not quotes:
         return None
     ranked = sorted(quotes, key=lambda item: yahoo_quote_score(item, query), reverse=True)
     best = ranked[0]
     if yahoo_quote_score(best, query) <= 0:
         return None
-    return norm_symbol(str(best["symbol"]))
+    return best
+
+
+def pick_best_yahoo_quote(quotes: List[Dict[str, Any]], query: str) -> Optional[str]:
+    best = pick_best_yahoo_quote_record(quotes, query)
+    return norm_symbol(str(best["symbol"])) if best else None
 
 
 def search_yahoo_quotes(query: str, quotes_count: int = 25) -> List[Dict[str, Any]]:
@@ -589,15 +932,19 @@ def yahoo_symbol_search(query: str) -> Optional[str]:
             return direct_candidates[0]
 
         quotes = search_yahoo_quotes(cleaned)
-        best = pick_best_yahoo_quote(quotes, query)
-        if best:
-            return best
+        best_record = pick_best_yahoo_quote_record(quotes, query)
+        if best_record:
+            symbol = norm_symbol(str(best_record["symbol"]))
+            learn_symbol_master(query, symbol, best_record)
+            return symbol
 
         for suffix in preferred_market_suffixes(query):
             if suffix:
-                best = pick_best_yahoo_quote(search_yahoo_quotes(f"{cleaned} {suffix}"), query)
-                if best:
-                    return best
+                best_record = pick_best_yahoo_quote_record(search_yahoo_quotes(f"{cleaned} {suffix}"), query)
+                if best_record:
+                    symbol = norm_symbol(str(best_record["symbol"]))
+                    learn_symbol_master(query, symbol, best_record)
+                    return symbol
     except Exception:
         return None
     return None
@@ -605,11 +952,15 @@ def yahoo_symbol_search(query: str) -> Optional[str]:
 
 def resolve_single_ticker(text: str, provided: Optional[str] = None, allow_search: bool = True) -> Optional[str]:
     if provided:
-        return normalize_market_symbol(provided, text)
+        return resolve_from_symbol_master(text, provided) or normalize_market_symbol(provided, text)
 
     candidates = extract_symbol_candidates(text)
     if candidates:
         return candidates[0]
+
+    master_symbol = resolve_from_symbol_master(text)
+    if master_symbol:
+        return master_symbol
 
     if allow_search and finance_intent(text):
         return yahoo_symbol_search(text)
@@ -672,7 +1023,7 @@ def classify_message(text: str, provided_ticker: Optional[str] = None) -> Dict[s
         return {"kind": "news", "category": category}
 
     ticker = resolve_single_ticker(text, provided_ticker)
-    if ticker and finance_intent(text):
+    if ticker:
         return {"kind": "company", "ticker": ticker, "detail": "deep" if needs_detail(text) else "standard"}
     if finance_intent(text):
         return {"kind": "finance_concept", "detail": "deep" if needs_detail(text) else "standard"}
@@ -1935,6 +2286,7 @@ def root(request: Request):
         "health": f"{base}/health",
         "agent_chat": f"{base}/agent/chat",
         "agent_stream": f"{base}/agent/chat/stream",
+        "symbol_resolve": f"{base}/symbols/resolve?query=Microsoft",
     }
 
 
@@ -1946,6 +2298,7 @@ def health():
         "version": "qfin-agent-2.5",
         "qwen_configured": qwen_is_configured(),
         "supabase_configured": supabase_is_configured(),
+        "symbol_master_table": SUPABASE_SYMBOL_TABLE,
     }
 
 
@@ -2002,6 +2355,31 @@ def resolve_ticker_route(symbol: Optional[str] = None, query: Optional[str] = No
     raw = symbol or query or ""
     resolved = resolve_single_ticker(raw, symbol)
     return {"symbol": resolved, "ticker": resolved, "status": "resolved" if resolved else "not_found"}
+
+
+@app.get("/symbols/resolve")
+def resolve_symbol_master_route(query: str, symbol: Optional[str] = None):
+    resolved = resolve_single_ticker(query, symbol)
+    cached = SYMBOL_MASTER_CACHE.get(f"{symbol or ''}|{normalize_user_text(query)}") or {}
+    return {
+        "query": query,
+        "symbol": resolved,
+        "ticker": resolved,
+        "status": "resolved" if resolved else "not_found",
+        "source": "symbol_master" if cached else "resolver",
+        "record": cached.get("record"),
+    }
+
+
+@app.post("/symbols/seed")
+def seed_symbol_master_route():
+    ensure_supabase_symbol_master_seeded()
+    return {
+        "status": "ok",
+        "table": SUPABASE_SYMBOL_TABLE,
+        "seed_count": len(default_symbol_master_records()),
+        "supabase_configured": supabase_is_configured(),
+    }
 
 
 @app.get("/market-data/{ticker}")
