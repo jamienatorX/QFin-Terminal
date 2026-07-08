@@ -80,6 +80,13 @@ def fallback_news(category: str, candidates: Optional[List[Dict[str, Any]]] = No
         output["error"] = "parse_failure"
     return output
 
+
+def news_from_candidates(category: str, candidates: Optional[List[Dict[str, Any]]] = None, warning: Optional[str] = None) -> Dict[str, Any]:
+    cards = fallback_news(category, candidates or [], parse_failure=False)
+    if warning:
+        cards["warning"] = warning
+    return cards
+
 def validate_news(parsed: Dict[str, Any], category: str) -> Dict[str, Any]:
     if not isinstance(parsed, dict):
         raise ValueError("News response is not an object")
@@ -105,11 +112,11 @@ def validate_news(parsed: Dict[str, Any], category: str) -> Dict[str, Any]:
 async def generate_news(category: str) -> Dict[str, Any]:
     category = normalize_category(category)
     try:
-        candidates = await asyncio.wait_for(fetch_news_candidates(category), timeout=5)
+        candidates = await asyncio.wait_for(fetch_news_candidates(category), timeout=7)
     except Exception:
         candidates = []
     if not qwen_is_configured():
-        return fallback_news(category, candidates)
+        return news_from_candidates(category, candidates)
     model = os.getenv("DASHSCOPE_NEWS_MODEL", "qwen-plus")
     if "thinking" in model.lower():
         model = "qwen-plus"
@@ -128,4 +135,6 @@ async def generate_news(category: str) -> Dict[str, Any]:
         parsed = json.loads(clean_json(raw))
         return validate_news(parsed, category)
     except (QwenClientError, KeyError, IndexError, json.JSONDecodeError, ValueError, asyncio.TimeoutError):
+        if candidates:
+            return news_from_candidates(category, candidates, warning="qwen_parse_failure")
         return fallback_news(category, candidates, parse_failure=True)
