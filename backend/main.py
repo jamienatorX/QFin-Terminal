@@ -2,6 +2,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 import hashlib
+import os
 import random
 import re
 from datetime import datetime, timezone
@@ -16,7 +17,7 @@ from pydantic import BaseModel
 from news_module import generate_news, normalize_category
 from qwen_client import QwenClientError, call_qwen, qwen_is_configured
 
-app = FastAPI(title="QFin Terminal API", version="qfin-agent-2.0")
+app = FastAPI(title="QFin Terminal API", version="qfin-agent-2.1")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -109,6 +110,9 @@ DETAILED_SIGNALS = [
     "give me everything",
 ]
 
+SUPABASE_FORUM_TABLE = "qfin_forum_threads"
+SUPABASE_MODEL_TABLE = "qfin_builder_models"
+
 TICKER_RE = r"[A-Za-z0-9][A-Za-z0-9\.\-\^=]{0,17}"
 
 
@@ -161,6 +165,59 @@ def make_id(prefix: str) -> str:
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def supabase_is_configured() -> bool:
+    return bool(os.getenv("SUPABASE_URL") and os.getenv("SUPABASE_SERVICE_ROLE_KEY"))
+
+
+def supabase_url(table: str) -> str:
+    return f"{os.getenv('SUPABASE_URL', '').rstrip('/')}/rest/v1/{table}"
+
+
+def supabase_headers(prefer: Optional[str] = None) -> Dict[str, str]:
+    key = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
+    headers = {
+        "apikey": key,
+        "Authorization": f"Bearer {key}",
+        "Content-Type": "application/json",
+    }
+    if prefer:
+        headers["Prefer"] = prefer
+    return headers
+
+
+def supabase_request(
+    method: str,
+    table: str,
+    *,
+    params: Optional[Dict[str, str]] = None,
+    json_body: Optional[Any] = None,
+    prefer: Optional[str] = None,
+) -> Any:
+    if not supabase_is_configured():
+        raise RuntimeError("Supabase is not configured.")
+
+    response = httpx.request(
+        method,
+        supabase_url(table),
+        params=params,
+        json=json_body,
+        headers=supabase_headers(prefer),
+        timeout=20.0,
+    )
+    if response.status_code >= 400:
+        snippet = response.text[:300] if response.text else ""
+        raise RuntimeError(f"Supabase {table} request failed ({response.status_code}): {snippet}")
+    if not response.text.strip():
+        return None
+    return response.json()
+
+
+def parse_iso_datetime(value: Optional[str]) -> datetime:
+    if not value:
+        return datetime.now(timezone.utc)
+    return datetime.fromisoformat(value.replace("Z", "+00:00"))
 
 
 def normalize_user_text(text: str) -> str:
@@ -441,7 +498,7 @@ def extract_historical_series(frame: Any, names: List[str], currency: str, max_p
 
 
 def fetch_finnhub_data(symbol: str) -> Dict[str, Any]:
-    token = __import__("os").getenv("FINNHUB_API_KEY")
+    token = os.getenv("FINNHUB_API_KEY")
     if not token:
         return {}
 
@@ -755,33 +812,25 @@ async def generate_agent_reply(query: str, provided_ticker: Optional[str] = None
     return {"route": route, "content": content, "facts": None, "used_live_data": False}
 
 
-def seed_forum() -> None:
-    if FORUM_THREADS:
-        return
-    FORUM_THREADS.extend(
-        [
-            {
-                "id": make_id("thread"),
-                "title": "What is the cleanest way to compare banks?",
-                "body": "I keep bouncing between ROE, NIM, loan growth, and NPLs. What do you prioritize first when screening banks?",
-                "author": "MacroMira",
-                "created_at": utc_now(),
-                "score": 18,
-                "upvotes": 22,
-                "downvotes": 4,
-            },
-            {
-                "id": make_id("thread"),
-                "title": "Best metric for capital-light compounders?",
-                "body": "I am testing a watchlist around gross margin, FCF margin, and ROIC. Curious what everyone here uses as the first filter.",
-                "author": "QuantRafi",
-                "created_at": utc_now(),
-                "score": 11,
-                "upvotes": 15,
-                "downvotes": 4,
-            },
-        ]
-    )
+def default_forum_threads() -> List[Dict[str, Any]]:
+    return [
+        {
+            "title": "What is the cleanest way to compare banks?",
+            "body": "I keep bouncing between ROE, NIM, loan growth, and NPLs. What do you prioritize first when screening banks?",
+            "author": "MacroMira",
+            "score": 18,
+            "upvotes": 22,
+            "downvotes": 4,
+        },
+        {
+            "title": "Best metric for capital-light compounders?",
+            "body": "I am testing a watchlist around gross margin, FCF margin, and ROIC. Curious what everyone here uses as the first filter.",
+            "author": "QuantRafi",
+            "score": 11,
+            "upvotes": 15,
+            "downvotes": 4,
+        },
+    ]
 
 
 def build_random_model(name: str, author: str, summary: str, tags: List[str], seed_text: str) -> Dict[str, Any]:
@@ -809,34 +858,296 @@ def build_random_model(name: str, author: str, summary: str, tags: List[str], se
     }
 
 
+def default_public_models() -> List[Dict[str, Any]]:
+    return [
+        build_random_model(
+            "Volatility Regime Switcher",
+            "Dimas Halim",
+            "Switches between trend-following and defensive positioning based on realized volatility expansion.",
+            ["volatility", "regime", "risk"],
+            "def signal(prices, vol):\n    if vol[-1] > vol[-20:].mean() * 1.25:\n        return 0\n    return 1 if prices[-1] > sum(prices[-20:]) / 20 else -1\n",
+        ),
+        build_random_model(
+            "Earnings Drift Capture",
+            "Sasha Verdan",
+            "Ranks companies after earnings and leans into post-report drift while reducing exposure to weak guidance.",
+            ["earnings", "event", "equities"],
+            "def signal(surprise, guidance, momentum):\n    score = surprise * 0.6 + guidance * 0.3 + momentum * 0.1\n    return 1 if score > 0.4 else -1 if score < -0.2 else 0\n",
+        ),
+        build_random_model(
+            "Carry and Quality Basket",
+            "Nabila Frost",
+            "Builds a quality-tilted basket using free cash flow yield, balance-sheet strength, and trend confirmation.",
+            ["quality", "factor", "portfolio"],
+            "def rank(fcf_yield, debt_to_equity, trend):\n    return fcf_yield * 0.5 - debt_to_equity * 0.2 + trend * 0.3\n",
+        ),
+    ]
+
+
+def seed_forum() -> None:
+    if FORUM_THREADS:
+        return
+    for record in default_forum_threads():
+        FORUM_THREADS.append(
+            {
+                "id": make_id("thread"),
+                "created_at": utc_now(),
+                **record,
+            }
+        )
+
+
 def seed_models() -> None:
     if COMMUNITY_MODELS:
         return
-    COMMUNITY_MODELS.extend(
-        [
-            build_random_model(
-                "Volatility Regime Switcher",
-                "Dimas Halim",
-                "Switches between trend-following and defensive positioning based on realized volatility expansion.",
-                ["volatility", "regime", "risk"],
-                "def signal(prices, vol):\n    if vol[-1] > vol[-20:].mean() * 1.25:\n        return 0\n    return 1 if prices[-1] > sum(prices[-20:]) / 20 else -1\n",
-            ),
-            build_random_model(
-                "Earnings Drift Capture",
-                "Sasha Verdan",
-                "Ranks companies after earnings and leans into post-report drift while reducing exposure to weak guidance.",
-                ["earnings", "event", "equities"],
-                "def signal(surprise, guidance, momentum):\n    score = surprise * 0.6 + guidance * 0.3 + momentum * 0.1\n    return 1 if score > 0.4 else -1 if score < -0.2 else 0\n",
-            ),
-            build_random_model(
-                "Carry and Quality Basket",
-                "Nabila Frost",
-                "Builds a quality-tilted basket using free cash flow yield, balance-sheet strength, and trend confirmation.",
-                ["quality", "factor", "portfolio"],
-                "def rank(fcf_yield, debt_to_equity, trend):\n    return fcf_yield * 0.5 - debt_to_equity * 0.2 + trend * 0.3\n",
-            ),
-        ]
+    COMMUNITY_MODELS.extend(default_public_models())
+
+
+def ensure_supabase_forum_seeded() -> None:
+    if not supabase_is_configured():
+        return
+    existing = supabase_request("GET", SUPABASE_FORUM_TABLE, params={"select": "id", "limit": "1"}) or []
+    if existing:
+        return
+    now = utc_now()
+    payload = [{**record, "created_at": now, "updated_at": now} for record in default_forum_threads()]
+    supabase_request("POST", SUPABASE_FORUM_TABLE, json_body=payload, prefer="return=minimal")
+
+
+def ensure_supabase_models_seeded() -> None:
+    if not supabase_is_configured():
+        return
+    existing = supabase_request(
+        "GET",
+        SUPABASE_MODEL_TABLE,
+        params={"select": "id", "visibility": "eq.public", "limit": "1"},
+    ) or []
+    if existing:
+        return
+    now = utc_now()
+    payload = []
+    for index, model in enumerate(default_public_models()):
+        payload.append(
+            {
+                "name": model["name"],
+                "author": model["author"],
+                "summary": model["summary"],
+                "code": model["code"],
+                "tags": model["tags"],
+                "stats": model["stats"],
+                "score": model["score"],
+                "visibility": "public",
+                "seed_key": f"seed-model-{index + 1}",
+                "created_at": now,
+                "updated_at": now,
+            }
+        )
+    supabase_request("POST", SUPABASE_MODEL_TABLE, json_body=payload, prefer="return=minimal")
+
+
+def normalize_thread_record(record: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "id": record.get("id") or make_id("thread"),
+        "title": clean_text(str(record.get("title") or "Untitled thread")),
+        "body": clean_text(str(record.get("body") or "")),
+        "author": clean_text(str(record.get("author") or "Anonymous")),
+        "score": int(record.get("score") or 0),
+        "upvotes": int(record.get("upvotes") or 0),
+        "downvotes": int(record.get("downvotes") or 0),
+        "created_at": str(record.get("created_at") or utc_now()),
+    }
+
+
+def normalize_model_record(record: Dict[str, Any]) -> Dict[str, Any]:
+    tags = record.get("tags") or []
+    stats = record.get("stats") or {}
+    return {
+        "id": record.get("id") or make_id("model"),
+        "name": clean_text(str(record.get("name") or "Untitled model")),
+        "author": clean_text(str(record.get("author") or "Unknown author")),
+        "summary": clean_text(str(record.get("summary") or "")),
+        "code": str(record.get("code") or ""),
+        "tags": tags if isinstance(tags, list) else [],
+        "stats": stats if isinstance(stats, dict) else {},
+        "score": int(record.get("score") or 0),
+        "visibility": str(record.get("visibility") or "public"),
+        "created_at": str(record.get("created_at") or utc_now()),
+    }
+
+
+def load_forum_threads() -> Dict[str, Any]:
+    if supabase_is_configured():
+        try:
+            ensure_supabase_forum_seeded()
+            rows = supabase_request(
+                "GET",
+                SUPABASE_FORUM_TABLE,
+                params={"select": "*", "order": "score.desc,created_at.desc", "limit": "100"},
+            ) or []
+            threads = [normalize_thread_record(row) for row in rows]
+            return {"threads": threads, "storage": "supabase"}
+        except Exception as exc:
+            seed_forum()
+            threads = sorted(FORUM_THREADS, key=lambda item: (item["score"], item["created_at"]), reverse=True)
+            return {"threads": threads, "storage": "memory", "warning": str(exc)}
+
+    seed_forum()
+    threads = sorted(FORUM_THREADS, key=lambda item: (item["score"], item["created_at"]), reverse=True)
+    return {"threads": threads, "storage": "memory"}
+
+
+def create_forum_thread_record(payload: ForumCreateRequest) -> Dict[str, Any]:
+    record = {
+        "title": clean_text(payload.title),
+        "body": clean_text(payload.body),
+        "author": clean_text(payload.author or f"Analyst{random.randint(17, 98)}"),
+        "score": 1,
+        "upvotes": 1,
+        "downvotes": 0,
+        "created_at": utc_now(),
+        "updated_at": utc_now(),
+    }
+
+    if supabase_is_configured():
+        try:
+            rows = supabase_request("POST", SUPABASE_FORUM_TABLE, json_body=record, prefer="return=representation") or []
+            thread = normalize_thread_record(rows[0] if isinstance(rows, list) else rows)
+            return {"thread": thread, "storage": "supabase"}
+        except Exception:
+            pass
+
+    thread = {"id": make_id("thread"), **record}
+    thread.pop("updated_at", None)
+    FORUM_THREADS.append(thread)
+    return {"thread": thread, "storage": "memory"}
+
+
+def vote_forum_thread_record(thread_id: str, direction: str) -> Dict[str, Any]:
+    if supabase_is_configured():
+        try:
+            rows = supabase_request(
+                "GET",
+                SUPABASE_FORUM_TABLE,
+                params={"select": "*", "id": f"eq.{thread_id}", "limit": "1"},
+            ) or []
+            if rows:
+                current = normalize_thread_record(rows[0])
+                updated_values = {
+                    "upvotes": current["upvotes"] + (1 if direction == "up" else 0),
+                    "downvotes": current["downvotes"] + (1 if direction == "down" else 0),
+                    "score": current["score"] + (1 if direction == "up" else -1),
+                    "updated_at": utc_now(),
+                }
+                updated = supabase_request(
+                    "PATCH",
+                    SUPABASE_FORUM_TABLE,
+                    params={"id": f"eq.{thread_id}"},
+                    json_body=updated_values,
+                    prefer="return=representation",
+                ) or []
+                thread = normalize_thread_record(updated[0] if isinstance(updated, list) else updated or {**current, **updated_values})
+                return {"status": "updated", "thread": thread, "storage": "supabase"}
+        except Exception:
+            pass
+
+    for thread in FORUM_THREADS:
+        if thread["id"] == thread_id:
+            if direction == "up":
+                thread["upvotes"] += 1
+                thread["score"] += 1
+            else:
+                thread["downvotes"] += 1
+                thread["score"] -= 1
+            return {"status": "updated", "thread": thread, "storage": "memory"}
+    return {"status": "not_found"}
+
+
+def load_community_models() -> Dict[str, Any]:
+    if supabase_is_configured():
+        try:
+            ensure_supabase_models_seeded()
+            rows = supabase_request(
+                "GET",
+                SUPABASE_MODEL_TABLE,
+                params={
+                    "select": "*",
+                    "visibility": "eq.public",
+                    "order": "score.desc,created_at.desc",
+                    "limit": "12",
+                },
+            ) or []
+            models = [normalize_model_record(row) for row in rows]
+            return {"models": models, "storage": "supabase"}
+        except Exception as exc:
+            seed_models()
+            models = sorted(COMMUNITY_MODELS, key=lambda item: (item["score"], item["created_at"]), reverse=True)
+            return {"models": models[:12], "storage": "memory", "warning": str(exc)}
+
+    seed_models()
+    models = sorted(COMMUNITY_MODELS, key=lambda item: (item["score"], item["created_at"]), reverse=True)
+    return {"models": models[:12], "storage": "memory"}
+
+
+def create_community_model_record(payload: BuilderPublishRequest) -> Dict[str, Any]:
+    model = build_random_model(
+        payload.name,
+        clean_text(payload.author or f"Trader{random.randint(11, 88)}"),
+        clean_text(payload.summary or "Published from the QFin builder."),
+        ["community", "published"],
+        payload.code,
     )
+    model["code"] = payload.code
+
+    if supabase_is_configured():
+        try:
+            row = {
+                "name": model["name"],
+                "author": model["author"],
+                "summary": model["summary"],
+                "code": model["code"],
+                "tags": model["tags"],
+                "stats": model["stats"],
+                "score": model["score"],
+                "visibility": "public",
+                "created_at": utc_now(),
+                "updated_at": utc_now(),
+            }
+            rows = supabase_request("POST", SUPABASE_MODEL_TABLE, json_body=row, prefer="return=representation") or []
+            saved = normalize_model_record(rows[0] if isinstance(rows, list) else rows)
+            return {"model": saved, "storage": "supabase"}
+        except Exception:
+            pass
+
+    COMMUNITY_MODELS.insert(0, model)
+    return {"model": model, "storage": "memory"}
+
+
+def save_private_model_record(payload: BuilderPublishRequest) -> Dict[str, Any]:
+    record = {
+        "name": clean_text(payload.name),
+        "author": clean_text(payload.author or "Private workspace"),
+        "summary": clean_text(payload.summary or "Saved privately from the QFin builder."),
+        "code": payload.code,
+        "tags": ["private"],
+        "stats": {},
+        "score": 0,
+        "visibility": "private",
+        "created_at": utc_now(),
+        "updated_at": utc_now(),
+    }
+
+    if supabase_is_configured():
+        try:
+            rows = supabase_request("POST", SUPABASE_MODEL_TABLE, json_body=record, prefer="return=representation") or []
+            saved = normalize_model_record(rows[0] if isinstance(rows, list) else rows)
+            return {"model": saved, "storage": "supabase"}
+        except Exception:
+            pass
+
+    local_record = {"id": make_id("private_model"), **record}
+    local_record.pop("updated_at", None)
+    PRIVATE_MODELS.insert(0, local_record)
+    return {"model": local_record, "storage": "memory"}
 
 
 def builder_run_output(name: str, code: str, author: Optional[str]) -> Dict[str, Any]:
@@ -891,8 +1202,9 @@ def health():
     return {
         "status": "ok",
         "service": "qfin-terminal-api",
-        "version": "qfin-agent-2.0",
+        "version": "qfin-agent-2.1",
         "qwen_configured": qwen_is_configured(),
+        "supabase_configured": supabase_is_configured(),
     }
 
 
@@ -984,64 +1296,40 @@ async def news_post(payload: Dict[str, str]):
 
 @app.get("/community/forum")
 def community_forum():
+    forum_state = load_forum_threads()
+    threads = forum_state["threads"]
     today = datetime.now(timezone.utc).date()
-    top_today = sorted(
-        [thread for thread in FORUM_THREADS if datetime.fromisoformat(thread["created_at"]).date() == today],
-        key=lambda item: item["score"],
-        reverse=True,
-    )[:3]
-    threads = sorted(FORUM_THREADS, key=lambda item: (item["score"], item["created_at"]), reverse=True)
-    return {"top_today": top_today, "threads": threads}
+    top_today = [thread for thread in threads if parse_iso_datetime(thread["created_at"]).date() == today][:3]
+    response = {"top_today": top_today, "threads": threads, "storage": forum_state["storage"]}
+    if forum_state.get("warning"):
+        response["warning"] = forum_state["warning"]
+    return response
 
 
 @app.post("/community/forum")
 def create_forum_thread(payload: ForumCreateRequest):
-    thread = {
-        "id": make_id("thread"),
-        "title": clean_text(payload.title),
-        "body": clean_text(payload.body),
-        "author": clean_text(payload.author or f"Analyst{random.randint(17, 98)}"),
-        "created_at": utc_now(),
-        "score": 1,
-        "upvotes": 1,
-        "downvotes": 0,
-    }
-    FORUM_THREADS.append(thread)
-    return {"status": "created", "thread": thread}
+    created = create_forum_thread_record(payload)
+    return {"status": "created", "thread": created["thread"], "storage": created["storage"]}
 
 
 @app.post("/community/forum/{thread_id}/vote")
 def vote_forum_thread(thread_id: str, payload: VoteRequest):
-    for thread in FORUM_THREADS:
-        if thread["id"] == thread_id:
-            if payload.direction == "up":
-                thread["upvotes"] += 1
-                thread["score"] += 1
-            else:
-                thread["downvotes"] += 1
-                thread["score"] -= 1
-            return {"status": "updated", "thread": thread}
-    return {"status": "not_found"}
+    return vote_forum_thread_record(thread_id, payload.direction)
 
 
 @app.get("/community/models")
 def community_models():
-    models = sorted(COMMUNITY_MODELS, key=lambda item: (item["score"], item["created_at"]), reverse=True)
-    return {"models": models[:12]}
+    model_state = load_community_models()
+    response = {"models": model_state["models"], "storage": model_state["storage"]}
+    if model_state.get("warning"):
+        response["warning"] = model_state["warning"]
+    return response
 
 
 @app.post("/community/models")
 def create_community_model(payload: BuilderPublishRequest):
-    model = build_random_model(
-        payload.name,
-        clean_text(payload.author or f"Trader{random.randint(11, 88)}"),
-        clean_text(payload.summary or "Published from the QFin builder."),
-        ["community", "published"],
-        payload.code,
-    )
-    model["code"] = payload.code
-    COMMUNITY_MODELS.insert(0, model)
-    return {"status": "published", "model": model}
+    created = create_community_model_record(payload)
+    return {"status": "published", "model": created["model"], "storage": created["storage"]}
 
 
 @app.post("/builder/run")
@@ -1052,24 +1340,15 @@ def builder_run(payload: BuilderRunRequest):
 
 @app.post("/builder/save-private")
 def builder_save_private(payload: BuilderPublishRequest):
-    record = {
-        "id": make_id("private_model"),
-        "name": clean_text(payload.name),
-        "author": clean_text(payload.author or "Private workspace"),
-        "summary": clean_text(payload.summary or "Saved privately from the QFin builder."),
-        "code": payload.code,
-        "created_at": utc_now(),
-        "visibility": "private",
-    }
-    PRIVATE_MODELS.insert(0, record)
-    return {"status": "saved", "model": record}
+    saved = save_private_model_record(payload)
+    return {"status": "saved", "model": saved["model"], "storage": saved["storage"]}
 
 
 @app.post("/builder/run-private")
 def builder_run_private(payload: BuilderPublishRequest):
-    saved = builder_save_private(payload)
+    saved = save_private_model_record(payload)
     result = builder_run_output(payload.name, payload.code, payload.author)
-    return {"status": "saved_and_ran", "model": saved["model"], "result": result}
+    return {"status": "saved_and_ran", "model": saved["model"], "result": result, "storage": saved["storage"]}
 
 
 @app.post("/builder/publish")
