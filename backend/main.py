@@ -83,6 +83,26 @@ ALIASES = {
     "uber": "UBER",
     "grab": "GRAB",
     "bbca": "BBCA.JK",
+    "bank central asia": "BBCA.JK",
+    "bca": "BBCA.JK",
+    "mdka": "MDKA.JK",
+    "merdeka copper gold": "MDKA.JK",
+    "merdeka copper": "MDKA.JK",
+    "merdeka gold": "MDKA.JK",
+    "merdeka battery": "MBMA.JK",
+    "mbma": "MBMA.JK",
+}
+
+IDX_SYMBOLS = {
+    "AALI", "ACES", "ADRO", "AKRA", "AMMN", "ANTM", "ARTO", "ASII", "BBCA",
+    "BBNI", "BBRI", "BBTN", "BMRI", "BRIS", "BRPT", "BUKA", "CPIN", "EMTK",
+    "ESSA", "EXCL", "GGRM", "GOTO", "HRUM", "ICBP", "INCO", "INDF", "INKP",
+    "INTP", "ITMG", "JPFA", "KLBF", "MDKA", "MEDC", "MIKA", "PGAS", "PTBA",
+    "SIDO", "SMGR", "TLKM", "TOWR", "UNTR", "UNVR", "WIKA",
+}
+
+INDONESIA_CONTEXT_WORDS = {
+    "indonesia", "indonesian", "idx", "bei", "jakarta", "rupiah", "idr", "tbk",
 }
 
 STOP = {
@@ -304,7 +324,23 @@ def local_time_reply() -> str:
 
 def finance_intent(text: str) -> bool:
     lower = text.lower()
-    return any(word in lower for word in FINANCE_WORDS)
+    return any(word in lower for word in FINANCE_WORDS) or any(
+        re.search(rf"\b{re.escape(alias)}\b", lower) for alias in ALIASES
+    )
+
+
+def has_indonesia_context(text: str) -> bool:
+    normalized = normalize_user_text(text)
+    return any(re.search(rf"\b{re.escape(word)}\b", normalized) for word in INDONESIA_CONTEXT_WORDS)
+
+
+def normalize_market_symbol(symbol: str, text: str = "") -> str:
+    normalized = norm_symbol(symbol)
+    if "." not in normalized and normalized in IDX_SYMBOLS:
+        return f"{normalized}.JK"
+    if "." not in normalized and has_indonesia_context(text):
+        return f"{normalized}.JK"
+    return normalized
 
 
 def needs_detail(text: str) -> bool:
@@ -322,12 +358,12 @@ def extract_symbol_candidates(text: str) -> List[str]:
                 found.append(ticker)
 
     for token in re.findall(r"\$([A-Za-z0-9\.\-]{1,12})\b", text):
-        symbol = norm_symbol(token)
+        symbol = normalize_market_symbol(token, text)
         if symbol not in STOP and symbol not in found:
             found.append(symbol)
 
     for token in re.findall(r"\b[A-Z]{1,5}(?:[.\-][A-Z0-9]{1,4})?\b", text):
-        symbol = norm_symbol(token)
+        symbol = normalize_market_symbol(token, text)
         if symbol not in STOP and symbol not in found:
             found.append(symbol)
 
@@ -345,6 +381,9 @@ def yahoo_symbol_search(query: str) -> Optional[str]:
         cleaned = re.sub(r"\s+", " ", cleaned).strip()
         if len(cleaned) < 2:
             return None
+        direct_candidates = extract_symbol_candidates(cleaned)
+        if direct_candidates:
+            return direct_candidates[0]
         response = httpx.get(
             "https://query2.finance.yahoo.com/v1/finance/search",
             params={
@@ -358,7 +397,17 @@ def yahoo_symbol_search(query: str) -> Optional[str]:
         )
         if response.status_code >= 400:
             return None
-        for item in response.json().get("quotes", []):
+        quotes = [
+            item
+            for item in response.json().get("quotes", [])
+            if item.get("symbol") and item.get("quoteType") in {"EQUITY", "ETF", "MUTUALFUND", "INDEX"}
+        ]
+        if has_indonesia_context(query):
+            for item in quotes:
+                symbol = norm_symbol(item["symbol"])
+                if symbol.endswith(".JK"):
+                    return symbol
+        for item in quotes:
             if item.get("symbol") and item.get("quoteType") in {"EQUITY", "ETF", "MUTUALFUND", "INDEX"}:
                 return norm_symbol(item["symbol"])
     except Exception:
@@ -368,7 +417,7 @@ def yahoo_symbol_search(query: str) -> Optional[str]:
 
 def resolve_single_ticker(text: str, provided: Optional[str] = None, allow_search: bool = True) -> Optional[str]:
     if provided:
-        return norm_symbol(provided)
+        return normalize_market_symbol(provided, text)
 
     candidates = extract_symbol_candidates(text)
     if candidates:
@@ -1706,7 +1755,7 @@ def health():
     return {
         "status": "ok",
         "service": "qfin-terminal-api",
-        "version": "qfin-agent-2.3",
+        "version": "qfin-agent-2.4",
         "qwen_configured": qwen_is_configured(),
         "supabase_configured": supabase_is_configured(),
     }
