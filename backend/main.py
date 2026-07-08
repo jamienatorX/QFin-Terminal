@@ -2,6 +2,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 import hashlib
+import math
 import os
 import random
 import re
@@ -147,6 +148,8 @@ class BuilderRunRequest(BaseModel):
     name: str
     code: str
     author: Optional[str] = None
+    summary: Optional[str] = None
+    ticker: Optional[str] = None
 
 
 class BuilderPublishRequest(BaseModel):
@@ -154,6 +157,7 @@ class BuilderPublishRequest(BaseModel):
     code: str
     author: Optional[str] = None
     summary: Optional[str] = None
+    ticker: Optional[str] = None
 
 
 FORUM_THREADS: List[Dict[str, Any]] = []
@@ -1154,6 +1158,7 @@ def normalize_model_record(record: Dict[str, Any]) -> Dict[str, Any]:
         "author": clean_text(str(record.get("author") or "Unknown author")),
         "summary": summary,
         "code": code,
+        "ticker": str(record.get("ticker") or profile.get("benchmark") or "SPY"),
         "tags": tags_value,
         "stats": normalized_stats,
         "profile": profile,
@@ -1279,107 +1284,404 @@ def load_community_models() -> Dict[str, Any]:
     return {"models": models[:12], "storage": "memory"}
 
 
-def create_community_model_record(payload: BuilderPublishRequest) -> Dict[str, Any]:
-    model = build_random_model(
-        payload.name,
-        clean_text(payload.author or f"Trader{random.randint(11, 88)}"),
-        clean_text(payload.summary or "Published from the QFin builder."),
-        ["community", "published"],
-        payload.code,
+def resolve_builder_ticker(name: str, summary: str, code: str, requested: Optional[str] = None) -> str:
+    if requested and re.fullmatch(TICKER_RE, requested.strip()):
+        return norm_symbol(requested)
+
+    text = " ".join([name, summary, code])
+    ticker = resolve_single_ticker(text, allow_search=False)
+    if ticker:
+        return ticker
+
+    lowered = text.lower()
+    if "crypto" in lowered or "bitcoin" in lowered or "btc" in lowered:
+        return "BTC-USD"
+    if "bond" in lowered or "treasury" in lowered or "duration" in lowered or "rate" in lowered:
+        return "TLT"
+    if "ipo" in lowered:
+        return "IPO"
+    if "nasdaq" in lowered or "technology" in lowered or "ai" in lowered:
+        return "QQQ"
+    return "SPY"
+
+
+def fetch_price_history(ticker: str, period: str = "1y") -> Dict[str, Any]:
+    try:
+        import yfinance as yf
+
+        frame = yf.Ticker(ticker).history(period=period, interval="1d", auto_adjust=True)
+        if frame is None or frame.empty or "Close" not in frame:
+            raise RuntimeError("No close-price history returned.")
+
+        rows: List[Dict[str, Any]] = []
+        closes = frame["Close"].dropna()
+        volume_series = frame["Volume"] if "Volume" in frame else None
+        for index, value in closes.items():
+            volume = None
+            if volume_series is not None:
+                volume = as_float(volume_series.loc[index])
+            rows.append(
+                {
+                    "date": str(index.date()) if hasattr(index, "date") else str(index)[:10],
+                    "close": float(value),
+                    "volume": volume,
+                }
+            )
+
+        if len(rows) >= 20:
+            return {"ticker": ticker, "rows": rows, "source": "Yahoo Finance via yfinance"}
+    except Exception as exc:
+        fallback = build_fallback_price_history(ticker)
+        fallback["warning"] = str(exc)
+        return fallback
+
+    return build_fallback_price_history(ticker)
+
+
+def build_fallback_price_history(ticker: str, periods: int = 252) -> Dict[str, Any]:
+    seed = hashlib.sha256(ticker.encode("utf-8")).hexdigest()
+    price = 100.0 + int(seed[:2], 16) % 40
+    rows = []
+    for index in range(periods):
+        wave = math.sin(index / 13) * 0.006
+        drift = ((int(seed[(index % 24):(index % 24) + 2], 16) % 7) - 2) / 1000
+        price *= 1 + wave + drift
+        rows.append(
+            {
+                "date": f"T-{periods - index}",
+                "close": round(price, 2),
+                "volume": 1_000_000 + (index * 13791) % 800_000,
+            }
+        )
+    return {"ticker": ticker, "rows": rows, "source": "deterministic fallback history"}
+
+
+def strategy_family(name: str, summary: str, code: str) -> str:
+    text = " ".join([name, summary, code]).lower()
+    if "rsi" in text or "mean reversion" in text or "pullback" in text:
+        return "mean-reversion"
+    if "macd" in text or "moving average" in text or "momentum" in text or "trend" in text:
+        return "trend-following"
+    if "monte" in text or "gbm" in text or "scenario" in text:
+        return "simulation"
+    if "bond" in text or "duration" in text or "rate shock" in text:
+        return "rates"
+    if "lbo" in text or "waterfall" in text or "irr" in text:
+        return "deal-model"
+    if "ipo" in text or "new issue" in text or "ecm" in text:
+        return "event-monitor"
+    return "adaptive-momentum"
+
+
+def simple_mean(values: List[float]) -> float:
+    return sum(values) / len(values) if values else 0.0
+
+
+def simple_std(values: List[float]) -> float:
+    if len(values) < 2:
+        return 0.0
+    avg = simple_mean(values)
+    variance = sum((value - avg) ** 2 for value in values) / (len(values) - 1)
+    return math.sqrt(max(variance, 0.0))
+
+
+def calculate_rsi(prices: List[float], period: int = 14) -> Optional[float]:
+    if len(prices) <= period:
+        return None
+    gains: List[float] = []
+    losses: List[float] = []
+    window = prices[-period - 1:]
+    for previous, current in zip(window, window[1:]):
+        change = current - previous
+        gains.append(max(change, 0.0))
+        losses.append(abs(min(change, 0.0)))
+    avg_loss = simple_mean(losses)
+    if avg_loss == 0:
+        return 100.0
+    relative_strength = simple_mean(gains) / avg_loss
+    return 100 - (100 / (1 + relative_strength))
+
+
+def signal_for_family(family: str, prices: List[float], index: int) -> float:
+    history = prices[: index + 1]
+    if len(history) < 21:
+        return 0.0
+
+    price = history[-1]
+    ma20 = simple_mean(history[-20:])
+    ma50 = simple_mean(history[-50:]) if len(history) >= 50 else ma20
+
+    if family == "mean-reversion":
+        rsi = calculate_rsi(history) or 50.0
+        if rsi < 38 and price >= ma20 * 0.94:
+            return 1.0
+        if rsi > 68:
+            return 0.0
+        return 0.5 if price > ma50 else 0.0
+
+    if family == "trend-following":
+        return 1.0 if ma20 > ma50 and price > ma20 else 0.0
+
+    if family == "simulation":
+        vol = simple_std([(history[i] / history[i - 1] - 1) for i in range(max(1, len(history) - 21), len(history))])
+        return 0.7 if vol < 0.03 and price > ma50 else 0.35
+
+    if family == "rates":
+        return 1.0 if price > ma20 else 0.25
+
+    if family == "deal-model":
+        return 0.6 if price > ma50 else 0.2
+
+    if family == "event-monitor":
+        five_day = price / history[-5] - 1 if len(history) >= 5 and history[-5] else 0.0
+        return 1.0 if five_day > 0.01 and price > ma20 else 0.0
+
+    return 1.0 if price > ma20 and ma20 >= ma50 else 0.25
+
+
+def make_backtest_series(rows: List[Dict[str, Any]], equity_curve: List[float], benchmark_curve: List[float]) -> List[Dict[str, Any]]:
+    if not equity_curve:
+        return build_model_series("empty-builder-series")
+
+    points = min(12, len(equity_curve))
+    if points <= 1:
+        selected = [0]
+    else:
+        selected = sorted({round(index * (len(equity_curve) - 1) / (points - 1)) for index in range(points)})
+
+    series = []
+    peak = 100.0
+    for index in selected:
+        equity = equity_curve[index]
+        benchmark = benchmark_curve[index]
+        peak = max(peak, max(equity_curve[: index + 1]))
+        drawdown = max(0.0, (peak - equity) / peak * 100) if peak else 0.0
+        date_label = rows[index + 1]["date"] if index + 1 < len(rows) else rows[index]["date"]
+        series.append(
+            {
+                "label": str(date_label)[5:] if len(str(date_label)) >= 10 else str(date_label),
+                "equity": round(equity, 2),
+                "benchmark": round(benchmark, 2),
+                "drawdown": round(drawdown, 2),
+            }
+        )
+    return series
+
+
+def run_builder_backtest(name: str, code: str, author: Optional[str], summary: str, ticker: str) -> Dict[str, Any]:
+    history = fetch_price_history(ticker)
+    rows = history["rows"]
+    closes = [float(row["close"]) for row in rows if as_float(row.get("close")) is not None]
+    family = strategy_family(name, summary, code)
+
+    equity = 100.0
+    benchmark = 100.0
+    equity_curve: List[float] = []
+    benchmark_curve: List[float] = []
+    strategy_returns: List[float] = []
+    benchmark_returns: List[float] = []
+    positions: List[float] = []
+
+    for index in range(1, len(closes)):
+        daily_return = closes[index] / closes[index - 1] - 1 if closes[index - 1] else 0.0
+        position = signal_for_family(family, closes, index - 1)
+        strategy_return = daily_return * position
+        equity *= 1 + strategy_return
+        benchmark *= 1 + daily_return
+        equity_curve.append(equity)
+        benchmark_curve.append(benchmark)
+        strategy_returns.append(strategy_return)
+        benchmark_returns.append(daily_return)
+        positions.append(position)
+
+    if not equity_curve:
+        return builder_run_output_fallback(name, code, author, summary, ticker, history.get("source", "fallback"))
+
+    days = max(len(strategy_returns), 1)
+    annual_return = (equity_curve[-1] / 100) ** (252 / days) - 1
+    benchmark_return = (benchmark_curve[-1] / 100) ** (252 / days) - 1
+    daily_std = simple_std(strategy_returns)
+    sharpe = (simple_mean(strategy_returns) / daily_std * math.sqrt(252)) if daily_std else 0.0
+
+    peak = 100.0
+    drawdowns = []
+    for value in equity_curve:
+        peak = max(peak, value)
+        drawdowns.append((peak - value) / peak if peak else 0.0)
+
+    position_changes = sum(1 for previous, current in zip(positions, positions[1:]) if previous != current)
+    turnover = position_changes / max(len(positions), 1) * 252
+    active_returns = [value for value, position in zip(strategy_returns, positions) if position > 0]
+    win_rate = sum(1 for value in active_returns if value > 0) / len(active_returns) if active_returns else 0.0
+
+    stats = {
+        "annual_return": f"{annual_return * 100:.1f}%",
+        "benchmark_return": f"{benchmark_return * 100:.1f}%",
+        "sharpe": f"{sharpe:.2f}",
+        "max_drawdown": f"-{max(drawdowns) * 100:.1f}%",
+        "turnover": f"{turnover:.1f}%",
+        "win_rate": f"{win_rate * 100:.1f}%",
+    }
+
+    profile = build_model_profile(name, summary, ["builder", family], code)
+    profile.update(
+        {
+            "benchmark": ticker,
+            "strategy_family": family.replace("-", " ").title(),
+            "data_source": history.get("source", "unknown"),
+            "data_window": f"{len(closes)} daily closes",
+            "live_use": "Paper trade first. Add fees, slippage, limits, and broker execution rules before live deployment.",
+        }
     )
-    model["code"] = payload.code
+
+    notes = [
+        f"Backtest used {len(closes)} daily closes for {ticker}.",
+        "The backend classifies the model text and runs a guarded strategy template instead of executing arbitrary uploaded code.",
+        "Results are hypothetical and exclude fees, slippage, borrow costs, taxes, and execution latency.",
+    ]
+    if history.get("warning"):
+        notes.append(f"Live price fetch warning: {history['warning']}")
+
+    return {
+        "name": clean_text(name),
+        "author": clean_text(author or "Private workspace"),
+        "summary": clean_text(summary or f"{name} ran a guarded {family.replace('-', ' ')} backtest on {ticker}."),
+        "ticker": ticker,
+        "stats": stats,
+        "profile": profile,
+        "status": build_model_status(stats),
+        "series": make_backtest_series(rows, equity_curve, benchmark_curve),
+        "highlights": build_model_highlights(stats, profile),
+        "validation": [
+            {"label": "Ticker data", "status": "pass", "detail": f"Loaded {len(closes)} price points for {ticker}."},
+            {"label": "Strategy parser", "status": "pass", "detail": f"Matched this model to {family.replace('-', ' ')} logic."},
+            {"label": "Risk controls", "status": "review", "detail": "Position sizing is guarded, but fees and slippage are not yet modeled."},
+            {"label": "Live deployment", "status": "review", "detail": "Use paper trading before real capital."},
+        ],
+        "notes": notes,
+    }
+
+
+def builder_run_output_fallback(
+    name: str,
+    code: str,
+    author: Optional[str],
+    summary: str,
+    ticker: str,
+    source: str,
+) -> Dict[str, Any]:
+    seed_text = f"{name}\n{summary}\n{code}\n{ticker}"
+    series = build_model_series(seed_text)
+    stats = {
+        "annual_return": f"{8 + hash_slice(seed_text, 1) % 15:.1f}%",
+        "benchmark_return": f"{5 + hash_slice(seed_text, 2) % 11:.1f}%",
+        "sharpe": f"{0.8 + (hash_slice(seed_text, 3) % 85) / 100:.2f}",
+        "max_drawdown": f"-{6 + hash_slice(seed_text, 4) % 16:.1f}%",
+        "turnover": f"{18 + hash_slice(seed_text, 5) % 52:.1f}%",
+        "win_rate": f"{45 + hash_slice(seed_text, 6) % 22:.1f}%",
+    }
+    profile = build_model_profile(name, summary, ["builder"], code)
+    profile.update({"benchmark": ticker, "data_source": source, "data_window": "fallback simulation"})
+    return {
+        "name": clean_text(name),
+        "author": clean_text(author or "Private workspace"),
+        "summary": clean_text(summary or f"{name} generated a fallback simulation for {ticker}."),
+        "ticker": ticker,
+        "stats": stats,
+        "profile": profile,
+        "status": build_model_status(stats),
+        "series": series,
+        "highlights": build_model_highlights(stats, profile),
+        "validation": [
+            {"label": "Ticker data", "status": "review", "detail": "Live history was unavailable, so QFin used a deterministic fallback."},
+            {"label": "Strategy parser", "status": "pass", "detail": "Model text was mapped to a guarded simulation template."},
+            {"label": "Live deployment", "status": "review", "detail": "Do not use fallback results for trading decisions."},
+        ],
+        "notes": ["Fallback simulation generated because live market history was unavailable."],
+    }
+
+
+def builder_run_output(name: str, code: str, author: Optional[str], summary: Optional[str] = None, ticker: Optional[str] = None) -> Dict[str, Any]:
+    clean_summary = clean_text(summary or "")
+    resolved_ticker = resolve_builder_ticker(name, clean_summary, code, ticker)
+    return run_builder_backtest(name, code, author, clean_summary, resolved_ticker)
+
+
+def model_supabase_rows(model: Dict[str, Any], visibility: str) -> List[Dict[str, Any]]:
+    base = {
+        "name": model["name"],
+        "author": model["author"],
+        "summary": model["summary"],
+        "code": model["code"],
+        "tags": model["tags"],
+        "stats": model["stats"],
+        "score": model["score"],
+        "visibility": visibility,
+        "created_at": model["created_at"],
+        "updated_at": utc_now(),
+    }
+    extended = {
+        **base,
+        "ticker": model.get("ticker"),
+        "profile": model.get("profile") or {},
+        "series": model.get("series") or [],
+        "highlights": model.get("highlights") or [],
+        "status": model.get("status") or "research",
+        "last_run_result": model.get("last_run_result") or {},
+    }
+    return [extended, base]
+
+
+def create_community_model_record(payload: BuilderPublishRequest) -> Dict[str, Any]:
+    result = builder_run_output(payload.name, payload.code, payload.author, payload.summary, payload.ticker)
+    model = {
+        **result,
+        "id": make_id("model"),
+        "code": payload.code,
+        "tags": ["community", "published", strategy_family(payload.name, payload.summary or "", payload.code)],
+        "score": 1,
+        "visibility": "public",
+        "created_at": utc_now(),
+        "last_run_result": result,
+    }
 
     if supabase_is_configured():
-        try:
-            row = {
-                "name": model["name"],
-                "author": model["author"],
-                "summary": model["summary"],
-                "code": model["code"],
-                "tags": model["tags"],
-                "stats": model["stats"],
-                "score": model["score"],
-                "visibility": "public",
-                "created_at": utc_now(),
-                "updated_at": utc_now(),
-            }
-            rows = supabase_request("POST", SUPABASE_MODEL_TABLE, json_body=row, prefer="return=representation") or []
-            saved = normalize_model_record(rows[0] if isinstance(rows, list) else rows)
-            return {"model": saved, "storage": "supabase"}
-        except Exception:
-            pass
+        for row in model_supabase_rows(model, "public"):
+            try:
+                rows = supabase_request("POST", SUPABASE_MODEL_TABLE, json_body=row, prefer="return=representation") or []
+                saved = normalize_model_record(rows[0] if isinstance(rows, list) else rows)
+                return {"model": saved, "storage": "supabase"}
+            except Exception:
+                continue
 
     COMMUNITY_MODELS.insert(0, model)
     return {"model": model, "storage": "memory"}
 
 
 def save_private_model_record(payload: BuilderPublishRequest) -> Dict[str, Any]:
+    result = builder_run_output(payload.name, payload.code, payload.author, payload.summary, payload.ticker)
     record = {
-        "name": clean_text(payload.name),
-        "author": clean_text(payload.author or "Private workspace"),
-        "summary": clean_text(payload.summary or "Saved privately from the QFin builder."),
+        **result,
+        "id": make_id("private_model"),
         "code": payload.code,
-        "tags": ["private"],
-        "stats": {},
+        "tags": ["private", strategy_family(payload.name, payload.summary or "", payload.code)],
         "score": 0,
         "visibility": "private",
         "created_at": utc_now(),
-        "updated_at": utc_now(),
+        "last_run_result": result,
     }
 
     if supabase_is_configured():
-        try:
-            rows = supabase_request("POST", SUPABASE_MODEL_TABLE, json_body=record, prefer="return=representation") or []
-            saved = normalize_model_record(rows[0] if isinstance(rows, list) else rows)
-            return {"model": saved, "storage": "supabase"}
-        except Exception:
-            pass
+        for row in model_supabase_rows(record, "private"):
+            try:
+                rows = supabase_request("POST", SUPABASE_MODEL_TABLE, json_body=row, prefer="return=representation") or []
+                saved = normalize_model_record(rows[0] if isinstance(rows, list) else rows)
+                return {"model": saved, "storage": "supabase"}
+            except Exception:
+                continue
 
-    local_record = {"id": make_id("private_model"), **record}
-    local_record.pop("updated_at", None)
-    PRIVATE_MODELS.insert(0, local_record)
-    return {"model": local_record, "storage": "memory"}
-
-
-def builder_run_output(name: str, code: str, author: Optional[str]) -> Dict[str, Any]:
-    digest = hashlib.sha256(f"{name}\n{code}".encode("utf-8")).hexdigest()
-    annual_return = 8 + int(digest[0:2], 16) % 19
-    sharpe = 0.9 + (int(digest[2:4], 16) % 90) / 100
-    max_drawdown = 5 + int(digest[4:6], 16) % 18
-    turnover = 18 + int(digest[6:8], 16) % 64
-    win_rate = 44 + int(digest[8:10], 16) % 22
-    stats = {
-        "annual_return": f"{annual_return:.1f}%",
-        "sharpe": f"{sharpe:.2f}",
-        "max_drawdown": f"-{max_drawdown:.1f}%",
-        "turnover": f"{turnover:.1f}%",
-        "win_rate": f"{win_rate:.1f}%",
-    }
-    profile = build_model_profile(name, "", ["builder"], code)
-    return {
-        "name": name,
-        "author": author or "Private workspace",
-        "summary": (
-            f"{name} completed a sandbox-style template run. "
-            f"The current MVP runner validates structure, generates a deterministic backtest preview, "
-            f"and keeps the model ready for private save or community publishing."
-        ),
-        "stats": stats,
-        "profile": profile,
-        "status": build_model_status(stats),
-        "series": build_model_series(f"{name}\n{code}"),
-        "highlights": build_model_highlights(stats, profile),
-        "validation": [
-            {"label": "Signal logic", "status": "pass", "detail": "Template parsed into a deterministic preview flow."},
-            {"label": "Market mapping", "status": "review", "detail": f"Best matched to {profile['universe']} with {profile['rebalance'].lower()}."},
-            {"label": "Live deployment", "status": "review", "detail": "Fees, slippage, and broker constraints still need to be added before live use."},
-        ],
-        "notes": [
-            "Signal function parsed successfully.",
-            "Template is ready for sandbox execution expansion in the next backend pass.",
-            "Private and published saves are available from this result."
-        ],
-    }
+    PRIVATE_MODELS.insert(0, record)
+    return {"model": record, "storage": "memory"}
 
 
 seed_forum()
@@ -1404,7 +1706,7 @@ def health():
     return {
         "status": "ok",
         "service": "qfin-terminal-api",
-        "version": "qfin-agent-2.2",
+        "version": "qfin-agent-2.3",
         "qwen_configured": qwen_is_configured(),
         "supabase_configured": supabase_is_configured(),
     }
@@ -1544,7 +1846,7 @@ def create_community_model(payload: BuilderPublishRequest):
 
 @app.post("/builder/run")
 def builder_run(payload: BuilderRunRequest):
-    result = builder_run_output(payload.name, payload.code, payload.author)
+    result = builder_run_output(payload.name, payload.code, payload.author, payload.summary, payload.ticker)
     return {"status": "ok", "result": result}
 
 
@@ -1557,8 +1859,13 @@ def builder_save_private(payload: BuilderPublishRequest):
 @app.post("/builder/run-private")
 def builder_run_private(payload: BuilderPublishRequest):
     saved = save_private_model_record(payload)
-    result = builder_run_output(payload.name, payload.code, payload.author)
+    result = builder_run_output(payload.name, payload.code, payload.author, payload.summary, payload.ticker)
     return {"status": "saved_and_ran", "model": saved["model"], "result": result, "storage": saved["storage"]}
+
+
+@app.post("/builder/backtest")
+def builder_backtest(payload: BuilderRunRequest):
+    return builder_run(payload)
 
 
 @app.post("/builder/publish")

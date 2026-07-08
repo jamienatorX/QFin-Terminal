@@ -50,6 +50,7 @@ type CommunityModel = {
   tags: string[];
   stats: Record<string, string>;
   code: string;
+  ticker?: string;
   profile?: Record<string, string>;
   series?: Array<{
     label: string;
@@ -65,6 +66,7 @@ type BuilderResult = {
   name: string;
   author: string;
   summary: string;
+  ticker?: string;
   stats: Record<string, string>;
   profile?: Record<string, string>;
   series?: Array<{
@@ -219,6 +221,15 @@ const TEMPLATE_SNIPPETS: BuilderTemplate[] = [
       '# IPO calendar and aftermarket monitor\n\ndef score_deal(price_range_mid, demand_multiple, free_float, quality):\n    demand_score = min(demand_multiple / 4, 1.5)\n    float_score = 0.8 if free_float < 0.15 else 1.0\n    return round(price_range_mid * demand_score * float_score * quality, 2)\n\n\ndef rank_pipeline(deals):\n    ranked = []\n    for deal in deals:\n        ranked.append((deal[\"name\"], score_deal(deal[\"price\"], deal[\"demand\"], deal[\"float\"], deal[\"quality\"])))\n    return sorted(ranked, key=lambda item: item[1], reverse=True)\n\n\ndef signal(prices):\n    return 1 if len(prices) > 5 and prices[-1] > prices[-5] else 0\n'
   }
 ];
+
+function defaultTickerForTemplate(template: BuilderTemplate) {
+  const text = `${template.name} ${template.tags.join(' ')} ${template.benchmark}`.toLowerCase();
+  if (text.includes('bond') || text.includes('rate') || text.includes('treasury')) return 'TLT';
+  if (text.includes('ipo') || text.includes('ecm')) return 'IPO';
+  if (text.includes('crypto')) return 'BTC-USD';
+  if (text.includes('ai') || text.includes('technology')) return 'QQQ';
+  return 'SPY';
+}
 
 function makeId() {
   return Math.random().toString(36).slice(2) + Date.now().toString(36);
@@ -387,6 +398,7 @@ function buildBuilderPreviewModel({
   author,
   summary,
   code,
+  ticker,
   template,
   result
 }: {
@@ -394,9 +406,16 @@ function buildBuilderPreviewModel({
   author: string;
   summary: string;
   code: string;
+  ticker: string;
   template: BuilderTemplate;
   result: BuilderResult | null;
 }): CommunityModel {
+  const benchmark = result?.ticker || result?.profile?.benchmark || ticker || defaultTickerForTemplate(template);
+  const previewProfile = {
+    ...template.previewProfile,
+    benchmark
+  };
+
   return {
     id: 'builder-preview',
     name: name.trim() || template.name,
@@ -407,15 +426,16 @@ function buildBuilderPreviewModel({
     tags: template.tags,
     stats: result?.stats || template.previewStats,
     code,
-    profile: result?.profile || template.previewProfile,
+    ticker: benchmark,
+    profile: result?.profile || previewProfile,
     series:
       result?.series ||
-      buildPreviewSeries(name.trim() || template.name, result?.profile?.benchmark || template.benchmark),
+      buildPreviewSeries(name.trim() || template.name, benchmark),
     highlights:
       result?.highlights || [
         `Built from ${template.tags[0]} foundation`,
         `Uses ${template.previewProfile.engine.toLowerCase()}`,
-        `Preview benchmark: ${result?.profile?.benchmark || template.benchmark}`
+        `Preview benchmark: ${benchmark}`
       ],
     status: result?.status || template.status
   };
@@ -958,6 +978,7 @@ function App() {
   const [builderTemplateName, setBuilderTemplateName] = useState(TEMPLATE_SNIPPETS[0].name);
   const [builderName, setBuilderName] = useState(TEMPLATE_SNIPPETS[0].name);
   const [builderSummary, setBuilderSummary] = useState(TEMPLATE_SNIPPETS[0].summary);
+  const [builderTicker, setBuilderTicker] = useState(defaultTickerForTemplate(TEMPLATE_SNIPPETS[0]));
   const [builderCode, setBuilderCode] = useState(TEMPLATE_SNIPPETS[0].code);
   const [builderOutput, setBuilderOutput] = useState(
     'Output appears here after Run template or Run privately.'
@@ -971,6 +992,7 @@ function App() {
     author: builderAuthor,
     summary: builderSummary,
     code: builderCode,
+    ticker: builderTicker,
     template: activeTemplate,
     result: builderResult
   });
@@ -979,6 +1001,7 @@ function App() {
     setBuilderTemplateName(template.name);
     setBuilderName(template.name);
     setBuilderSummary(template.summary);
+    setBuilderTicker(defaultTickerForTemplate(template));
     setBuilderCode(template.code);
     setBuilderResult(null);
     setBuilderOutput('Template loaded. Refine the canvas, run the model, or publish it to the gallery.');
@@ -1167,10 +1190,11 @@ function App() {
           name: builderName,
           code: builderCode,
           author: builderAuthor,
-          summary: builderSummary.trim() || activeTemplate.summary
+          summary: builderSummary.trim() || activeTemplate.summary,
+          ticker: builderTicker.trim() || defaultTickerForTemplate(activeTemplate)
         })
       },
-      30000
+      AGENT_REQUEST_TIMEOUT_MS
     );
     const data = await response.json();
 
@@ -1201,10 +1225,11 @@ function App() {
           name: builderName,
           code: builderCode,
           author: builderAuthor,
-          summary: builderSummary.trim() || activeTemplate.summary
+          summary: builderSummary.trim() || activeTemplate.summary,
+          ticker: builderTicker.trim() || defaultTickerForTemplate(activeTemplate)
         })
       },
-      30000
+      AGENT_REQUEST_TIMEOUT_MS
     );
     const data = await response.json();
     setBuilderResult(null);
@@ -1226,10 +1251,11 @@ function App() {
           name: builderName,
           code: builderCode,
           author: builderAuthor,
-          summary: builderSummary.trim() || activeTemplate.summary
+          summary: builderSummary.trim() || activeTemplate.summary,
+          ticker: builderTicker.trim() || defaultTickerForTemplate(activeTemplate)
         })
       },
-      20000
+      AGENT_REQUEST_TIMEOUT_MS
     );
     const data = await response.json();
     setBuilderResult(null);
@@ -1644,11 +1670,13 @@ function App() {
                               setBuilderName(model.name);
                               setBuilderAuthor(model.author);
                               setBuilderSummary(model.summary);
+                              setBuilderTicker(model.ticker || model.profile?.benchmark || defaultTickerForTemplate(matchedTemplate));
                               setBuilderCode(model.code);
                               setBuilderResult({
                                 name: model.name,
                                 author: model.author,
                                 summary: model.summary,
+                                ticker: model.ticker,
                                 stats: model.stats,
                                 profile: model.profile,
                                 series: model.series,
@@ -1720,6 +1748,15 @@ function App() {
                             value={builderAuthor}
                             onChange={(event) => setBuilderAuthor(event.target.value)}
                             placeholder="Author"
+                          />
+                        </label>
+                        <label className="builderFieldGroup">
+                          <span>Apply to ticker</span>
+                          <input
+                            className="forumAuthorInput"
+                            value={builderTicker}
+                            onChange={(event) => setBuilderTicker(event.target.value.toUpperCase())}
+                            placeholder="SPY"
                           />
                         </label>
                         <label className="builderFieldGroup builderFieldSpan">

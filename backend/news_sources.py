@@ -2,6 +2,7 @@ import asyncio
 import os
 import re
 import xml.etree.ElementTree as ET
+from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 from typing import Any, Dict, List
 from urllib.parse import quote_plus
@@ -16,6 +17,33 @@ CATEGORY_QUERIES = {
     "Other": "global markets commodities currencies macro economy",
 }
 
+CATEGORY_KEYWORDS = {
+    "Crypto": [
+        "crypto", "cryptocurrency", "bitcoin", "btc", "ethereum", "ether",
+        "solana", "xrp", "token", "stablecoin", "blockchain", "defi", "web3",
+    ],
+    "Stocks": [
+        "stock", "stocks", "share", "shares", "equity", "equities", "earnings",
+        "guidance", "dividend", "buyback", "ipo", "valuation", "nasdaq", "nyse",
+        "s&p", "dow", "index", "indices", "company", "quarter", "revenue",
+    ],
+    "Bonds": [
+        "bond", "bonds", "treasury", "treasuries", "yield", "yields", "coupon",
+        "fixed income", "credit spread", "spread", "municipal", "muni",
+        "sovereign debt", "debt sale", "auction", "notes", "gilts",
+    ],
+    "ETFs": [
+        "etf", "etfs", "exchange-traded fund", "fund flows", "inflows",
+        "outflows", "ishares", "vanguard", "spdr", "invesco", "ark", "blackrock",
+    ],
+    "Other": [
+        "commodity", "commodities", "oil", "crude", "gold", "silver", "copper",
+        "natural gas", "forex", "fx", "currency", "currencies", "dollar", "usd",
+        "euro", "yen", "yuan", "macro", "economy", "inflation", "cpi", "ppi",
+        "jobs", "payrolls", "gdp", "central bank", "opec",
+    ],
+}
+
 RSS_FEEDS = {
     "CNBC": "https://www.cnbc.com/id/100003114/device/rss/rss.html",
     "CoinDesk": "https://www.coindesk.com/arc/outboundfeeds/rss/",
@@ -27,12 +55,41 @@ def _time_value(value: Any) -> float:
         if isinstance(value, (int, float)):
             return float(value)
         if isinstance(value, str) and value:
-            return parsedate_to_datetime(value).timestamp()
+            if value.isdigit():
+                return float(value)
+            try:
+                return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+            except ValueError:
+                return parsedate_to_datetime(value).timestamp()
     except Exception:
         return 0.0
     return 0.0
 
-def _dedupe(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+
+def _category_score(item: Dict[str, Any], category: str) -> int:
+    text = " ".join(
+        str(item.get(field) or "")
+        for field in ("title", "summary", "publisher", "link", "source")
+    ).lower()
+    score = 0
+    for keyword in CATEGORY_KEYWORDS.get(category, []):
+        if keyword in text:
+            score += 2 if " " in keyword else 1
+    if category == "Stocks":
+        if any(token in text for token in ("shares", "earnings", "nasdaq", "nyse", "s&p", "dow")):
+            score += 2
+    return score
+
+
+def _is_recent(item: Dict[str, Any]) -> bool:
+    published_ts = _time_value(item.get("providerPublishTime"))
+    if not published_ts:
+        return True
+    age = datetime.now(timezone.utc).timestamp() - published_ts
+    return age <= timedelta(hours=36).total_seconds()
+
+
+def _dedupe(items: List[Dict[str, Any]], category: str) -> List[Dict[str, Any]]:
     seen = set()
     output = []
     for item in items:
@@ -41,9 +98,15 @@ def _dedupe(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         key = (re.sub(r"\W+", "", title.lower())[:90], link)
         if not title or key in seen:
             continue
+        score = _category_score(item, category)
+        if score <= 0:
+            continue
+        if not _is_recent(item):
+            continue
         seen.add(key)
+        item["_category_score"] = score
         output.append(item)
-    output.sort(key=lambda x: _time_value(x.get("providerPublishTime")), reverse=True)
+    output.sort(key=lambda x: (x.get("_category_score", 0), _time_value(x.get("providerPublishTime"))), reverse=True)
     return output[:40]
 
 async def fetch_yahoo(client: httpx.AsyncClient, category: str) -> List[Dict[str, Any]]:
@@ -158,4 +221,4 @@ async def fetch_all_sources(category: str) -> List[Dict[str, Any]]:
         for result in results:
             if isinstance(result, list):
                 items.extend(result)
-    return _dedupe(items)
+    return _dedupe(items, category)
