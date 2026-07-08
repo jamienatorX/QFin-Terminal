@@ -83,6 +83,18 @@ type BuilderResult = {
   status?: string;
 };
 
+type BuilderTemplate = {
+  name: string;
+  description: string;
+  summary: string;
+  tags: string[];
+  benchmark: string;
+  status: string;
+  previewStats: Record<string, string>;
+  previewProfile: Record<string, string>;
+  code: string;
+};
+
 const API_BASE_URL =
   import.meta.env.VITE_API_BASE_URL || 'https://qfin-terminal.onrender.com';
 const AGENT_REQUEST_TIMEOUT_MS = Number(import.meta.env.VITE_AGENT_TIMEOUT_MS || 240000);
@@ -105,24 +117,106 @@ const COMMUNITY_TABS: Array<{ id: CommunityTab; label: string }> = [
   { id: 'builder', label: 'Builder' }
 ];
 
-const TEMPLATE_SNIPPETS = [
+const TEMPLATE_SNIPPETS: BuilderTemplate[] = [
   {
-    name: 'RSI indicator',
-    description: 'Mean-reversion template for oversold and overbought pullbacks.',
+    name: 'Monte Carlo Simulator · GBM Paths',
+    description: 'Scenario engine for path dispersion, drawdown cones, and bull/base/bear cases.',
+    summary:
+      'Probability-first terminal for simulating return paths, drawdown bands, and scenario ranges on a single research card.',
+    tags: ['Simulation', 'Macro', 'Volatility'],
+    benchmark: 'SPY',
+    status: 'paper-ready',
+    previewStats: {
+      annual_return: '14.8%',
+      sharpe: '1.31',
+      max_drawdown: '-12.6%',
+      turnover: '18%',
+      win_rate: '62%'
+    },
+    previewProfile: {
+      benchmark: 'SPY',
+      universe: 'US large cap',
+      horizon: '12 month',
+      regime: 'Risk-on / risk-off',
+      engine: 'GBM + shock bands'
+    },
     code:
-      '# RSI pullback template\n\ndef signal(prices):\n    window = 14\n    if len(prices) < window:\n        return 0\n    gains = []\n    losses = []\n    for index in range(1, window):\n        move = prices[-index] - prices[-index - 1]\n        gains.append(max(move, 0))\n        losses.append(abs(min(move, 0)))\n    avg_gain = sum(gains) / window\n    avg_loss = sum(losses) / window or 1\n    rsi = 100 - (100 / (1 + avg_gain / avg_loss))\n    return 1 if rsi < 30 else -1 if rsi > 70 else 0\n'
+      '# Monte Carlo GBM path terminal\n\nimport math\nimport random\n\ndef simulate_paths(start_price=100, drift=0.09, vol=0.24, horizon=252, paths=500):\n    scenarios = []\n    for _ in range(paths):\n        price = start_price\n        path = [price]\n        for _ in range(horizon):\n            shock = random.gauss(0, 1)\n            step = (drift - 0.5 * vol**2) / 252 + vol * shock / math.sqrt(252)\n            price *= math.exp(step)\n            path.append(price)\n        scenarios.append(path)\n    return scenarios\n\n\ndef signal(prices):\n    if len(prices) < 60:\n        return 0\n    realized = max(prices[-1] / prices[-21] - 1, -1)\n    return 1 if realized > 0.03 else -1 if realized < -0.04 else 0\n'
   },
   {
-    name: 'MACD crossover',
-    description: 'Trend-following template that reacts to momentum regime shifts.',
+    name: 'LBO Value Bridge · Waterfall & Returns',
+    description: 'Deal workbench for sponsor returns, leverage cases, and valuation bridges.',
+    summary:
+      'Private equity underwriting frame that links entry multiples, deleveraging, and exit cases into one decision surface.',
+    tags: ['Private Equity', 'LBO', 'Waterfall'],
+    benchmark: 'PE Comp Set',
+    status: 'research',
+    previewStats: {
+      irr: '21.6%',
+      moic: '2.34x',
+      debt_paydown: '39%',
+      equity_check: '$420m',
+      exit_multiple: '11.5x'
+    },
+    previewProfile: {
+      benchmark: 'PE Comp Set',
+      sector: 'Business services',
+      horizon: '5 years',
+      financing: 'First lien + TLB',
+      engine: 'Waterfall + bridge'
+    },
     code:
-      '# MACD crossover template\n\ndef ema(values, span):\n    weight = 2 / (span + 1)\n    result = values[0]\n    for value in values[1:]:\n        result = value * weight + result * (1 - weight)\n    return result\n\ndef signal(prices):\n    if len(prices) < 26:\n        return 0\n    macd = ema(prices[-26:], 12) - ema(prices[-26:], 26)\n    return 1 if macd > 0 else -1\n'
+      '# LBO value bridge workbench\n\ndef lbo_model(ebitda, entry_multiple, leverage, exit_multiple, cash_conversion):\n    enterprise_value = ebitda * entry_multiple\n    debt = ebitda * leverage\n    equity = enterprise_value - debt\n    annual_cash = ebitda * cash_conversion\n    debt_end = max(debt - annual_cash * 5, 0)\n    exit_value = ebitda * 1.18 * exit_multiple\n    exit_equity = exit_value - debt_end\n    moic = exit_equity / max(equity, 1)\n    irr = moic ** (1 / 5) - 1\n    return {\"equity\": equity, \"debt_end\": debt_end, \"moic\": moic, \"irr\": irr}\n\n\ndef signal(prices):\n    return 1 if len(prices) > 0 else 0\n'
   },
   {
-    name: 'DCF sensitivity',
-    description: 'Valuation workbench for scenario-testing growth and discount rates.',
+    name: 'Bond Ladder / Portfolio Builder · Cashflow & Rate Shock',
+    description: 'Fixed-income builder for ladder design, carry, and duration shock analysis.',
+    summary:
+      'Cashflow-led builder for treasury ladders, rate sensitivity, maturity staging, and reinvestment risk in one terminal.',
+    tags: ['Rates', 'Fixed Income', 'Portfolio'],
+    benchmark: 'UST Curve',
+    status: 'paper-ready',
+    previewStats: {
+      yield_to_worst: '4.71%',
+      duration: '7.44',
+      cash_yield: '$97k',
+      avg_coupon: '4.49%',
+      stress_pnl: '-8.6%'
+    },
+    previewProfile: {
+      benchmark: 'UST Curve',
+      universe: 'Treasury ladder',
+      horizon: '10 years',
+      shock: '+100 bps',
+      engine: 'Cashflow + DV01'
+    },
     code:
-      '# DCF sensitivity template\n\ndef valuation(free_cash_flow, growth=0.04, discount=0.1, terminal=0.025):\n    years = 5\n    cash_flows = []\n    for year in range(1, years + 1):\n        cash_flows.append(free_cash_flow * ((1 + growth) ** year))\n    present = sum(cf / ((1 + discount) ** index) for index, cf in enumerate(cash_flows, 1))\n    terminal_value = cash_flows[-1] * (1 + terminal) / (discount - terminal)\n    return present + terminal_value / ((1 + discount) ** years)\n'
+      '# Bond ladder / rate shock builder\n\ndef bond_price(coupon, maturity, ytm, face=100):\n    total = 0\n    for year in range(1, maturity + 1):\n        total += (coupon * face) / ((1 + ytm) ** year)\n    total += face / ((1 + ytm) ** maturity)\n    return total\n\n\ndef ladder_cashflows(maturities, coupons, ytm):\n    flows = []\n    for maturity, coupon in zip(maturities, coupons):\n        flows.append({\"maturity\": maturity, \"price\": bond_price(coupon, maturity, ytm)})\n    return flows\n\n\ndef signal(prices):\n    return -1 if len(prices) > 20 and prices[-1] < prices[-20] else 1\n'
+  },
+  {
+    name: 'IPO New Issue Calendar · ECM Pipeline',
+    description: 'Primary markets board for issue windows, sector heat, and aftermarket quality.',
+    summary:
+      'ECM surveillance grid for upcoming listings, sector rotation, demand appetite, and the quality of aftermarket performance.',
+    tags: ['ECM', 'IPO', 'Primary Markets'],
+    benchmark: 'IPO Index',
+    status: 'high-risk',
+    previewStats: {
+      live_deals: '36',
+      avg_return_30d: '8.4%',
+      hit_rate: '58%',
+      deal_size: '$14.2bn',
+      sectors: '11'
+    },
+    previewProfile: {
+      benchmark: 'IPO Index',
+      geography: 'US / Asia',
+      cadence: 'Daily refresh',
+      lens: 'ECM pipeline',
+      engine: 'Calendar + aftermarket'
+    },
+    code:
+      '# IPO calendar and aftermarket monitor\n\ndef score_deal(price_range_mid, demand_multiple, free_float, quality):\n    demand_score = min(demand_multiple / 4, 1.5)\n    float_score = 0.8 if free_float < 0.15 else 1.0\n    return round(price_range_mid * demand_score * float_score * quality, 2)\n\n\ndef rank_pipeline(deals):\n    ranked = []\n    for deal in deals:\n        ranked.append((deal[\"name\"], score_deal(deal[\"price\"], deal[\"demand\"], deal[\"float\"], deal[\"quality\"])))\n    return sorted(ranked, key=lambda item: item[1], reverse=True)\n\n\ndef signal(prices):\n    return 1 if len(prices) > 5 and prices[-1] > prices[-5] else 0\n'
   }
 ];
 
@@ -186,12 +280,155 @@ function modelStatusLabel(status?: string) {
   return status.replace(/-/g, ' ').replace(/\b\w/g, (letter) => letter.toUpperCase());
 }
 
+type ChartTone = 'amber' | 'teal' | 'blue' | 'violet' | 'emerald';
+
+const TONE_PALETTES: Record<
+  ChartTone,
+  {
+    equity: string;
+    benchmark: string;
+    fillStart: string;
+    fillEnd: string;
+    glow: string;
+  }
+> = {
+  amber: {
+    equity: '#e3b95b',
+    benchmark: '#7aa2ff',
+    fillStart: 'rgba(227, 185, 91, 0.30)',
+    fillEnd: 'rgba(227, 185, 91, 0.02)',
+    glow: 'rgba(227, 185, 91, 0.20)'
+  },
+  teal: {
+    equity: '#66d6c2',
+    benchmark: '#98a7cf',
+    fillStart: 'rgba(102, 214, 194, 0.24)',
+    fillEnd: 'rgba(102, 214, 194, 0.02)',
+    glow: 'rgba(102, 214, 194, 0.18)'
+  },
+  blue: {
+    equity: '#7fa9ff',
+    benchmark: '#d1a35f',
+    fillStart: 'rgba(127, 169, 255, 0.26)',
+    fillEnd: 'rgba(127, 169, 255, 0.02)',
+    glow: 'rgba(127, 169, 255, 0.18)'
+  },
+  violet: {
+    equity: '#b798ff',
+    benchmark: '#6cc9ff',
+    fillStart: 'rgba(183, 152, 255, 0.28)',
+    fillEnd: 'rgba(183, 152, 255, 0.02)',
+    glow: 'rgba(183, 152, 255, 0.18)'
+  },
+  emerald: {
+    equity: '#6edd8b',
+    benchmark: '#e4bf67',
+    fillStart: 'rgba(110, 221, 139, 0.24)',
+    fillEnd: 'rgba(110, 221, 139, 0.02)',
+    glow: 'rgba(110, 221, 139, 0.18)'
+  }
+};
+
+function hashValue(seed: string) {
+  let hash = 0;
+  for (let index = 0; index < seed.length; index += 1) {
+    hash = (hash * 31 + seed.charCodeAt(index)) >>> 0;
+  }
+  return hash;
+}
+
+function formatCompactNumber(value: number) {
+  return new Intl.NumberFormat('en-US').format(value);
+}
+
+function deriveTone(model: Pick<CommunityModel, 'name' | 'tags'>): ChartTone {
+  const text = `${model.name} ${model.tags.join(' ')}`.toLowerCase();
+  if (text.includes('bond') || text.includes('credit') || text.includes('lbo') || text.includes('ipo'))
+    return 'amber';
+  if (text.includes('ai') || text.includes('valuation') || text.includes('growth')) return 'blue';
+  if (text.includes('electricity') || text.includes('energy')) return 'emerald';
+  if (text.includes('monte') || text.includes('vix') || text.includes('volatility')) return 'teal';
+  return ['amber', 'teal', 'blue', 'violet', 'emerald'][hashValue(text) % 5] as ChartTone;
+}
+
+function buildPreviewSeries(seed: string, benchmarkLabel = 'SPY') {
+  const hash = hashValue(`${seed}-${benchmarkLabel}`);
+  const labels = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  let equity = 100;
+  let benchmark = 100;
+
+  return labels.map((label, index) => {
+    const wave = Math.sin((index + 1) * ((hash % 7) + 2) * 0.35);
+    const drift = 2.1 + (hash % 5) * 0.35;
+    const shock = ((hash >> (index % 12)) % 9) * 0.18 - 0.45;
+    const benchDrift = 1.15 + (hash % 3) * 0.18;
+    equity += drift + wave * 2.2 + shock;
+    benchmark += benchDrift + Math.cos((index + 1) * 0.42) * 0.8;
+    const drawdown = Math.min(0, equity - Math.max(100, equity));
+    return {
+      label,
+      equity: Number(equity.toFixed(2)),
+      benchmark: Number(benchmark.toFixed(2)),
+      drawdown: Number(drawdown.toFixed(2))
+    };
+  });
+}
+
+function deriveEngagement(model: Pick<CommunityModel, 'id' | 'name' | 'score'>) {
+  const seed = hashValue(`${model.id}-${model.name}-${model.score}`);
+  return {
+    likes: 380 + (seed % 1450),
+    views: 4800 + ((seed * 13) % 19000)
+  };
+}
+
+function buildBuilderPreviewModel({
+  name,
+  author,
+  summary,
+  code,
+  template,
+  result
+}: {
+  name: string;
+  author: string;
+  summary: string;
+  code: string;
+  template: BuilderTemplate;
+  result: BuilderResult | null;
+}): CommunityModel {
+  return {
+    id: 'builder-preview',
+    name: name.trim() || template.name,
+    author: author.trim() || 'Research Desk',
+    summary: summary.trim() || template.summary,
+    score: 0,
+    created_at: new Date().toISOString(),
+    tags: template.tags,
+    stats: result?.stats || template.previewStats,
+    code,
+    profile: result?.profile || template.previewProfile,
+    series:
+      result?.series ||
+      buildPreviewSeries(name.trim() || template.name, result?.profile?.benchmark || template.benchmark),
+    highlights:
+      result?.highlights || [
+        `Built from ${template.tags[0]} foundation`,
+        `Uses ${template.previewProfile.engine.toLowerCase()}`,
+        `Preview benchmark: ${result?.profile?.benchmark || template.benchmark}`
+      ],
+    status: result?.status || template.status
+  };
+}
+
 function TrendChart({
   series,
-  compact = false
+  compact = false,
+  tone = 'violet'
 }: {
   series?: Array<{ label: string; equity: number; benchmark: number; drawdown: number }>;
   compact?: boolean;
+  tone?: ChartTone;
 }) {
   if (!series?.length) return null;
 
@@ -203,7 +440,8 @@ function TrendChart({
   const bottom = 24;
   const chartWidth = width - left - right;
   const chartHeight = height - top - bottom;
-  const gradientId = `equity-fill-${compact ? 'compact' : 'full'}-${Math.round(series[0].equity)}-${Math.round(series[series.length - 1].equity)}`;
+  const gradientId = `equity-fill-${tone}-${compact ? 'compact' : 'full'}-${Math.round(series[0].equity)}-${Math.round(series[series.length - 1].equity)}`;
+  const palette = TONE_PALETTES[tone];
   const values = series.flatMap((point) => [point.equity, point.benchmark]);
   const min = Math.min(...values);
   const max = Math.max(...values);
@@ -230,9 +468,16 @@ function TrendChart({
     >
       <defs>
         <linearGradient id={gradientId} x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stopColor="rgba(126, 98, 255, 0.28)" />
-          <stop offset="100%" stopColor="rgba(126, 98, 255, 0.02)" />
+          <stop offset="0%" stopColor={palette.fillStart} />
+          <stop offset="100%" stopColor={palette.fillEnd} />
         </linearGradient>
+        <filter id={`glow-${gradientId}`}>
+          <feGaussianBlur stdDeviation={compact ? '2' : '3'} result="coloredBlur" />
+          <feMerge>
+            <feMergeNode in="coloredBlur" />
+            <feMergeNode in="SourceGraphic" />
+          </feMerge>
+        </filter>
       </defs>
       {[0, 0.5, 1].map((step) => (
         <line
@@ -245,8 +490,12 @@ function TrendChart({
         />
       ))}
       <path d={areaFill} fill={`url(#${gradientId})`} />
-      <path d={benchmarkPath} className="chartBenchmarkLine" />
-      <path d={areaPath} className="chartEquityLine" />
+      <path d={benchmarkPath} className="chartBenchmarkLine" style={{ stroke: palette.benchmark }} />
+      <path
+        d={areaPath}
+        className="chartEquityLine"
+        style={{ stroke: palette.equity, filter: `url(#glow-${gradientId})` }}
+      />
       {series.map((point, index) => (
         <text
           key={`${point.label}-${index}`}
@@ -259,6 +508,96 @@ function TrendChart({
         </text>
       ))}
     </svg>
+  );
+}
+
+function ResearchModelCard({
+  model,
+  action,
+  preview = false
+}: {
+  model: CommunityModel;
+  action?: React.ReactNode;
+  preview?: boolean;
+}) {
+  const tone = deriveTone(model);
+  const palette = TONE_PALETTES[tone];
+  const facts = Object.entries(model.profile || {}).slice(0, 5);
+  const stats = Object.entries(model.stats || {}).slice(0, 4);
+  const engagement = deriveEngagement(model);
+  const previewSeries =
+    model.series?.length
+      ? model.series
+      : buildPreviewSeries(model.name, model.profile?.benchmark || 'SPY');
+
+  return (
+    <article className={preview ? 'researchModelCard researchModelCardPreview' : 'researchModelCard'}>
+      <div className={`researchTerminal researchTerminal-${tone}`}>
+        <div className="researchTerminalBar">
+          <div className="researchTerminalTabs">
+            <span className="researchChip">QFIN</span>
+            {model.tags.slice(0, 2).map((tag) => (
+              <span key={tag} className="researchChip muted">
+                {tag}
+              </span>
+            ))}
+          </div>
+          <div className="researchTerminalMeta">
+            <span className="researchMetaDot" style={{ background: palette.equity }} />
+            <span>updated {relativeTime(model.created_at)}</span>
+          </div>
+        </div>
+
+        <div className="researchMetricStrip">
+          {stats.map(([label, value]) => (
+            <div key={label} className="researchMetricCell">
+              <span>{formatMetricLabel(label)}</span>
+              <strong>{value}</strong>
+            </div>
+          ))}
+        </div>
+
+        <div className="researchVisualRow">
+          <div className="researchPrimaryChart">
+            <div className="researchChartMeta">
+              <span>Strategy curve</span>
+              <strong>{model.profile?.benchmark || 'SPY'} benchmark</strong>
+            </div>
+            <TrendChart series={previewSeries} compact tone={tone} />
+          </div>
+
+          <div className="researchSideFacts">
+            {facts.map(([label, value]) => (
+              <div key={label} className="researchFactRow">
+                <span>{formatMetricLabel(label)}</span>
+                <strong>{value}</strong>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {!!model.highlights?.length && (
+          <div className="researchHighlightRow">
+            {model.highlights.slice(0, 2).map((highlight) => (
+              <span key={highlight}>{highlight}</span>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <div className="researchCardBody">
+        <h3>{model.name}</h3>
+        <p>{model.summary}</p>
+        <div className="researchCardFooter">
+          <div className="researchAuthorRow">
+            <span>@{model.author}</span>
+            <span>{formatCompactNumber(engagement.likes)} saves</span>
+            <span>{formatCompactNumber(engagement.views)} views</span>
+          </div>
+          {action ? <div className="researchCardAction">{action}</div> : null}
+        </div>
+      </div>
+    </article>
   );
 }
 
@@ -616,13 +955,35 @@ function App() {
   const [models, setModels] = useState<CommunityModel[]>([]);
   const [modelsLoading, setModelsLoading] = useState(false);
 
+  const [builderTemplateName, setBuilderTemplateName] = useState(TEMPLATE_SNIPPETS[0].name);
   const [builderName, setBuilderName] = useState(TEMPLATE_SNIPPETS[0].name);
+  const [builderSummary, setBuilderSummary] = useState(TEMPLATE_SNIPPETS[0].summary);
   const [builderCode, setBuilderCode] = useState(TEMPLATE_SNIPPETS[0].code);
   const [builderOutput, setBuilderOutput] = useState(
     'Output appears here after Run template or Run privately.'
   );
   const [builderResult, setBuilderResult] = useState<BuilderResult | null>(null);
   const [builderAuthor, setBuilderAuthor] = useState('James');
+  const activeTemplate =
+    TEMPLATE_SNIPPETS.find((template) => template.name === builderTemplateName) || TEMPLATE_SNIPPETS[0];
+  const builderPreviewModel = buildBuilderPreviewModel({
+    name: builderName,
+    author: builderAuthor,
+    summary: builderSummary,
+    code: builderCode,
+    template: activeTemplate,
+    result: builderResult
+  });
+
+  function applyTemplate(template: BuilderTemplate) {
+    setBuilderTemplateName(template.name);
+    setBuilderName(template.name);
+    setBuilderSummary(template.summary);
+    setBuilderCode(template.code);
+    setBuilderResult(null);
+    setBuilderOutput('Template loaded. Refine the canvas, run the model, or publish it to the gallery.');
+    setCommunityTab('builder');
+  }
 
   async function checkBackend() {
     try {
@@ -806,7 +1167,7 @@ function App() {
           name: builderName,
           code: builderCode,
           author: builderAuthor,
-          summary: 'Saved from the QFin builder.'
+          summary: builderSummary.trim() || activeTemplate.summary
         })
       },
       30000
@@ -825,7 +1186,7 @@ function App() {
     const result = data.result;
     setBuilderResult(result);
     setBuilderOutput(
-      `${result.summary}\n\nAnnual return: ${result.stats.annual_return}\nSharpe: ${result.stats.sharpe}\nMax drawdown: ${result.stats.max_drawdown}\nTurnover: ${result.stats.turnover}\nWin rate: ${result.stats.win_rate}\n\n${result.notes.join('\n')}`
+      `${result.summary}\n\nAnnual return: ${result.stats.annual_return}\nSharpe: ${result.stats.sharpe}\nMax drawdown: ${result.stats.max_drawdown}\nTurnover: ${result.stats.turnover}\nWin rate: ${result.stats.win_rate}\n\n${(result.notes || []).join('\n')}`
     );
   }
 
@@ -840,7 +1201,7 @@ function App() {
           name: builderName,
           code: builderCode,
           author: builderAuthor,
-          summary: 'Published from the QFin builder.'
+          summary: builderSummary.trim() || activeTemplate.summary
         })
       },
       30000
@@ -865,7 +1226,7 @@ function App() {
           name: builderName,
           code: builderCode,
           author: builderAuthor,
-          summary: 'Saved from the QFin builder.'
+          summary: builderSummary.trim() || activeTemplate.summary
         })
       },
       20000
@@ -1245,8 +1606,17 @@ function App() {
 
             {communityTab === 'models' && (
               <section className="communityStack">
-                <div className="sectionHeader">
-                  <h2>Models</h2>
+                <div className="sectionHeader sectionHeaderWithCopy">
+                  <div>
+                    <h2>Model gallery</h2>
+                    <p>
+                      Chart-first research terminals, deal boards, simulators, and macro monitors
+                      published by the community.
+                    </p>
+                  </div>
+                  <button type="button" className="galleryLaunchButton" onClick={() => setCommunityTab('builder')}>
+                    Open builder studio
+                  </button>
                 </div>
 
                 {modelsLoading && (
@@ -1257,74 +1627,43 @@ function App() {
                 )}
 
                 {!modelsLoading && (
-                  <section className="modelGrid">
+                  <section className="modelDeckGrid">
                     {models.map((model) => (
-                      <article key={model.id} className="modelCard">
-                        <div className="modelCardHeader">
-                          <span className="sentiment">{model.score} SCORE</span>
-                          <strong className={`statusBadge status-${model.status || 'research'}`}>
-                            {modelStatusLabel(model.status)}
-                          </strong>
-                        </div>
-                        <h2>{model.name}</h2>
-                        <p>{model.summary}</p>
-                        <div className="modelChartCard">
-                          <div className="modelChartHeader">
-                            <span>Preview curve</span>
-                            <strong>{model.profile?.benchmark || 'SPY'} benchmark</strong>
-                          </div>
-                          <TrendChart series={model.series} compact />
-                        </div>
-                        <div className="tagRow">
-                          {model.tags.map((tag) => (
-                            <span key={tag} className="tagPill">
-                              {tag}
-                            </span>
-                          ))}
-                        </div>
-                        <div className="modelStats">
-                          {Object.entries(model.stats).map(([label, value]) => (
-                            <div key={label}>
-                              <span>{label.replace(/_/g, ' ')}</span>
-                              <strong>{value}</strong>
-                            </div>
-                          ))}
-                        </div>
-                        {!!model.highlights?.length && (
-                          <ul className="modelHighlights">
-                            {model.highlights.map((highlight) => (
-                              <li key={highlight}>{highlight}</li>
-                            ))}
-                          </ul>
-                        )}
-                        {model.profile && (
-                          <dl className="modelFacts">
-                            {Object.entries(model.profile).slice(0, 4).map(([label, value]) => (
-                              <div key={label}>
-                                <dt>{formatMetricLabel(label)}</dt>
-                                <dd>{value}</dd>
-                              </div>
-                            ))}
-                          </dl>
-                        )}
-                        <div className="threadMeta">
-                          <span>{model.author}</span>
-                          <span>{relativeTime(model.created_at)}</span>
-                        </div>
-                        <div className="modelActions">
+                      <ResearchModelCard
+                        key={model.id}
+                        model={model}
+                        action={
                           <button
                             type="button"
+                            className="galleryActionButton"
                             onClick={() => {
+                              const matchedTemplate =
+                                TEMPLATE_SNIPPETS.find((template) => template.name === model.name) ||
+                                activeTemplate;
+                              setBuilderTemplateName(matchedTemplate.name);
                               setBuilderName(model.name);
+                              setBuilderAuthor(model.author);
+                              setBuilderSummary(model.summary);
                               setBuilderCode(model.code);
-                              setBuilderResult(null);
+                              setBuilderResult({
+                                name: model.name,
+                                author: model.author,
+                                summary: model.summary,
+                                stats: model.stats,
+                                profile: model.profile,
+                                series: model.series,
+                                highlights: model.highlights,
+                                status: model.status,
+                                validation: [],
+                                notes: []
+                              });
                               setCommunityTab('builder');
                             }}
                           >
                             Load in builder
                           </button>
-                        </div>
-                      </article>
+                        }
+                      />
                     ))}
                   </section>
                 )}
@@ -1332,10 +1671,16 @@ function App() {
             )}
 
             {communityTab === 'builder' && (
-              <section className="builderGrid">
-                <article className="modelEditor">
+              <section className="builderStudioShell">
+                <article className="modelEditor builderWorkbench">
                   <div className="modelToolbar">
-                    <h2>Model editor</h2>
+                    <div>
+                      <h2>Builder studio</h2>
+                      <p className="builderToolbarNote">
+                        Design a publishable research terminal, wire the logic, and validate the
+                        output before sending it to the gallery.
+                      </p>
+                    </div>
                     <div>
                       <button type="button" onClick={savePrivateBuilder}>
                         <IconSave />
@@ -1356,55 +1701,96 @@ function App() {
                     </div>
                   </div>
 
-                  <div className="builderMetaRow">
-                    <input
-                      className="forumTitleInput"
-                      value={builderName}
-                      onChange={(event) => setBuilderName(event.target.value)}
-                      placeholder="Model name"
-                    />
-                    <input
-                      className="forumAuthorInput"
-                      value={builderAuthor}
-                      onChange={(event) => setBuilderAuthor(event.target.value)}
-                      placeholder="Author"
-                    />
+                  <div className="builderStudioSplit">
+                    <div className="builderCodePane">
+                      <div className="builderMetaPanel">
+                        <label className="builderFieldGroup">
+                          <span>Model title</span>
+                          <input
+                            className="forumTitleInput"
+                            value={builderName}
+                            onChange={(event) => setBuilderName(event.target.value)}
+                            placeholder="Model name"
+                          />
+                        </label>
+                        <label className="builderFieldGroup">
+                          <span>Author</span>
+                          <input
+                            className="forumAuthorInput"
+                            value={builderAuthor}
+                            onChange={(event) => setBuilderAuthor(event.target.value)}
+                            placeholder="Author"
+                          />
+                        </label>
+                        <label className="builderFieldGroup builderFieldSpan">
+                          <span>Research note</span>
+                          <textarea
+                            className="builderSummaryInput"
+                            value={builderSummary}
+                            onChange={(event) => setBuilderSummary(event.target.value)}
+                            placeholder="Short model thesis for the published card"
+                          />
+                        </label>
+                      </div>
+
+                      <textarea
+                        className="codeEditor terminalCodeEditor"
+                        value={builderCode}
+                        onChange={(event) => setBuilderCode(event.target.value)}
+                        spellCheck={false}
+                      />
+                    </div>
+
+                    <div className="builderCanvasPane">
+                      <div className="builderCanvasIntro">
+                        <span>Foundation preview</span>
+                        <h3>{activeTemplate.name}</h3>
+                        <p>
+                          The builder should produce the same kind of dense chart-first card that
+                          appears in the model gallery.
+                        </p>
+                      </div>
+
+                      <ResearchModelCard model={builderPreviewModel} preview />
+                      <BuilderOutputPanel builderOutput={builderOutput} builderResult={builderResult} />
+                    </div>
                   </div>
-
-                  <textarea
-                    className="codeEditor"
-                    value={builderCode}
-                    onChange={(event) => setBuilderCode(event.target.value)}
-                    spellCheck={false}
-                  />
-
-                  <BuilderOutputPanel builderOutput={builderOutput} builderResult={builderResult} />
                 </article>
 
-                <aside className="templatePanel">
-                  <h2>Templates</h2>
-                  <div className="templateList">
+                <aside className="templatePanel builderLibrary">
+                  <div className="builderLibraryHeader">
+                    <h2>Foundations</h2>
+                    <p>
+                      Start from a research surface, then adapt it into your own gallery-ready
+                      terminal.
+                    </p>
+                  </div>
+                  <div className="templateGallery">
                     {TEMPLATE_SNIPPETS.map((template) => (
                       <button
                         key={template.name}
                         type="button"
-                        className="templateButton"
-                        onClick={() => {
-                          setBuilderName(template.name);
-                          setBuilderCode(template.code);
-                          setBuilderResult(null);
-                          setBuilderOutput('Template loaded. Run template, run privately, or publish it.');
-                        }}
+                        className="templateShowcase"
+                        onClick={() => applyTemplate(template)}
                       >
                         <strong>{template.name}</strong>
                         <span>{template.description}</span>
+                        <div className="templateShowcaseMeta">
+                          {template.tags.map((tag) => (
+                            <em key={tag}>{tag}</em>
+                          ))}
+                        </div>
                       </button>
                     ))}
                   </div>
-                  <p>
-                    A strong model page should show a strategy curve, benchmark comparison, risk
-                    metrics, market coverage, and a clear live-deployment note.
-                  </p>
+                  <div className="builderPrinciples">
+                    <h3>Publishing bar</h3>
+                    <ul>
+                      <li>Preview must be chart-first and instantly readable.</li>
+                      <li>Model cards need a thesis, benchmark, and risk framing.</li>
+                      <li>Builder output should be good enough to ship into the gallery.</li>
+                    </ul>
+                  </div>
                 </aside>
               </section>
             )}
