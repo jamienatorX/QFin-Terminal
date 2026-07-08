@@ -3,8 +3,8 @@ import ReactDOM from 'react-dom/client';
 import './styles.css';
 
 type View = 'home' | 'community';
-type DepthMode = 'Quick Mode' | 'Deep Mode';
 type CommunityTab = 'news' | 'forum' | 'models' | 'builder';
+type VoteDirection = 'up' | 'down';
 
 type ChatMessage = {
   id: string;
@@ -30,23 +30,47 @@ type NewsItem = {
   };
 };
 
+type ForumThread = {
+  id: string;
+  title: string;
+  body: string;
+  author: string;
+  created_at: string;
+  score: number;
+  upvotes: number;
+  downvotes: number;
+};
+
+type CommunityModel = {
+  id: string;
+  name: string;
+  author: string;
+  summary: string;
+  tags?: string[];
+  score?: number;
+  created_at?: string;
+  code: string;
+  visibility?: string;
+  stats?: Record<string, string>;
+};
+
+type BuilderResult = {
+  name: string;
+  author: string;
+  summary: string;
+  stats?: Record<string, string>;
+  notes?: string[];
+};
+
 const API_BASE_URL =
   import.meta.env.VITE_API_BASE_URL || 'https://qfin-terminal.onrender.com';
 
-const FALLBACK_GREETING =
-  'Hello, I am QFin Terminal, your AI financial analyst and quantitative finance agent. You are welcome to ask me to analyze a company, compare stocks, explain financial ratios, build a valuation view, review risks, generate market news, or answer quant finance questions.';
-
-const FAILURE_MESSAGE =
-  'QFin could not complete that reply just now. The analysis engine may still be waking up or busy. Please retry in a moment.';
-
-const AGENT_GREETING =
-  'Hi, I am QFin. Ask me for company analysis, market news, valuation help, financial ratio explanations, or quant finance ideas.';
-
-const QUICK_MODE_INSTRUCTION =
-  'Quick Mode: write only 3 to 5 short paragraphs, exactly one table or one chart, and a 2 to 3 sentence verdict. Do not include peer comparison, exhaustive risks, full statement breakdown, or multiple visuals.';
-
-const DEEP_MODE_INSTRUCTION =
-  'Deep Mode: write a full structured institutional report with Executive Summary, Revenue and Growth, Profitability, Liquidity and Solvency, Cash Flow Quality, Valuation Snapshot, Key Risks, and Final Verdict Table.';
+const CHAT_FAILURE_MESSAGE =
+  'QFin could not complete that reply just now. Please retry in a moment.';
+const NEWS_FAILURE_MESSAGE = 'News unavailable. Please retry.';
+const FORUM_FAILURE_MESSAGE = 'Forum is unavailable right now. Please retry.';
+const MODELS_FAILURE_MESSAGE = 'Models are unavailable right now. Please retry.';
+const BUILDER_FAILURE_MESSAGE = 'Builder request failed. Please retry.';
 
 const SUGGESTED_PROMPTS = [
   'Analyze Alibaba',
@@ -66,141 +90,32 @@ const COMMUNITY_TABS: Array<{ id: CommunityTab; label: string }> = [
 const TEMPLATE_SNIPPETS = [
   {
     name: 'RSI indicator',
+    author: 'System template',
+    summary: 'Simple momentum reversal template using RSI thresholds.',
     code:
-      '# QFin Terminal - model template\n# Numbers must come from backend-provided data.\n\ndef signal(prices):\n    window = 14\n    if len(prices) < window:\n        return 0\n    gains = []\n    losses = []\n    for index in range(1, window):\n        move = prices[-index] - prices[-index - 1]\n        gains.append(max(move, 0))\n        losses.append(abs(min(move, 0)))\n    avg_gain = sum(gains) / window\n    avg_loss = sum(losses) / window or 1\n    rsi = 100 - (100 / (1 + avg_gain / avg_loss))\n    return 1 if rsi < 30 else -1 if rsi > 70 else 0\n'
+      '# QFin Terminal - model template\n\ndef signal(prices):\n    window = 14\n    if len(prices) < window:\n        return 0\n\n    gains = []\n    losses = []\n    for index in range(1, window):\n        move = prices[-index] - prices[-index - 1]\n        gains.append(max(move, 0))\n        losses.append(abs(min(move, 0)))\n\n    avg_gain = sum(gains) / window\n    avg_loss = sum(losses) / window or 1\n    rsi = 100 - (100 / (1 + avg_gain / avg_loss))\n    return 1 if rsi < 30 else -1 if rsi > 70 else 0\n'
   },
   {
     name: 'MACD',
+    author: 'System template',
+    summary: 'Trend-following template using moving-average convergence divergence.',
     code:
-      '# QFin Terminal - MACD template\n# Execution runs only in a backend sandbox.\n\ndef ema(values, span):\n    weight = 2 / (span + 1)\n    result = values[0]\n    for value in values[1:]:\n        result = value * weight + result * (1 - weight)\n    return result\n\ndef signal(prices):\n    if len(prices) < 26:\n        return 0\n    macd = ema(prices[-26:], 12) - ema(prices[-26:], 26)\n    return 1 if macd > 0 else -1\n'
+      '# QFin Terminal - MACD template\n\ndef ema(values, span):\n    weight = 2 / (span + 1)\n    result = values[0]\n    for value in values[1:]:\n        result = value * weight + result * (1 - weight)\n    return result\n\ndef signal(prices):\n    if len(prices) < 26:\n        return 0\n    macd = ema(prices[-26:], 12) - ema(prices[-26:], 26)\n    return 1 if macd > 0 else -1\n'
   },
   {
     name: 'DCF sensitivity',
+    author: 'System template',
+    summary: 'Valuation scaffold that keeps discount and terminal assumptions explicit.',
     code:
-      '# QFin Terminal - DCF sensitivity template\n# Use backend financials; keep assumptions visible.\n\ndef valuation(free_cash_flow, growth=0.04, discount=0.1, terminal=0.025):\n    years = 5\n    cash_flows = []\n    for year in range(1, years + 1):\n        cash_flows.append(free_cash_flow * ((1 + growth) ** year))\n    present = sum(cf / ((1 + discount) ** index) for index, cf in enumerate(cash_flows, 1))\n    terminal_value = cash_flows[-1] * (1 + terminal) / (discount - terminal)\n    return present + terminal_value / ((1 + discount) ** years)\n'
+      '# QFin Terminal - DCF template\n\ndef valuation(free_cash_flow, growth=0.04, discount=0.10, terminal=0.025):\n    years = 5\n    cash_flows = []\n    for year in range(1, years + 1):\n        cash_flows.append(free_cash_flow * ((1 + growth) ** year))\n\n    present = sum(cf / ((1 + discount) ** index) for index, cf in enumerate(cash_flows, 1))\n    terminal_value = cash_flows[-1] * (1 + terminal) / (discount - terminal)\n    return present + terminal_value / ((1 + discount) ** years)\n'
   }
-];
-
-const ANALYSIS_SIGNAL_PATTERNS = [
-  /^(analyze|analyse|review|check|research)\b/i,
-  /^(quick analysis|brief|summary|overview)\b/i,
-  /^tell me about\b/i,
-  /^(how's|hows|how is)\b/i
 ];
 
 function makeId() {
   return Math.random().toString(36).slice(2) + Date.now().toString(36);
 }
 
-function detectDepthMode(text: string): DepthMode {
-  const lower = text.toLowerCase();
-
-  const deepSignals = [
-    'thoroughly',
-    'in-depth',
-    'in depth',
-    'deep dive',
-    'comprehensive',
-    'full analysis',
-    'detailed',
-    'complete breakdown',
-    "don't hold back",
-    'dont hold back',
-    'give me everything'
-  ];
-
-  return deepSignals.some((signal) => lower.includes(signal))
-    ? 'Deep Mode'
-    : 'Quick Mode';
-}
-
-function shouldUseAnalysisMode(text: string) {
-  return (
-    detectDepthMode(text) === 'Deep Mode' ||
-    ANALYSIS_SIGNAL_PATTERNS.some((pattern) => pattern.test(text.trim()))
-  );
-}
-
-function appendModeInstruction(message: string, mode: DepthMode) {
-  if (/quick mode:|deep mode:/i.test(message)) {
-    return message;
-  }
-
-  const instruction = mode === 'Deep Mode' ? DEEP_MODE_INSTRUCTION : QUICK_MODE_INSTRUCTION;
-  return `${message}. ${instruction}`;
-}
-
-function buildChatMessage(input: string) {
-  const clean = input.trim();
-
-  if (!clean || !shouldUseAnalysisMode(clean)) {
-    return {
-      mode: undefined,
-      message: clean
-    };
-  }
-
-  const mode = detectDepthMode(clean);
-
-  return {
-    mode,
-    message: appendModeInstruction(clean, mode)
-  };
-}
-
-function isCasualGreeting(input: string) {
-  return /^(hi|hello|hey|yo|gm|good morning|good afternoon|good evening)[!. ]*$/i.test(
-    input.trim()
-  );
-}
-
-function isHelpPrompt(input: string) {
-  return /^(help|what can you do|what do you do|how does this work)[?.! ]*$/i.test(
-    input.trim()
-  );
-}
-
-function isLocalTimePrompt(input: string) {
-  const normalized = input
-    .trim()
-    .toLowerCase()
-    .replace(/[?.!]+$/g, '')
-    .replace(/\s+/g, ' ');
-
-  return [
-    'what day is today',
-    'what date is today',
-    'what is the date today',
-    'what is today',
-    'what time is it',
-    "what's the date",
-    "what's the date today",
-    "what's today",
-    'today date',
-    "today's date",
-    'current date',
-    'current time'
-  ].includes(normalized);
-}
-
-function buildLocalTimeReply() {
-  const now = new Date();
-  const dateText = new Intl.DateTimeFormat('en-US', {
-    weekday: 'long',
-    year: 'numeric',
-    month: 'long',
-    day: 'numeric'
-  }).format(now);
-  const timeText = new Intl.DateTimeFormat('en-US', {
-    hour: 'numeric',
-    minute: '2-digit',
-    timeZoneName: 'short'
-  }).format(now);
-
-  return `Today is ${dateText}. Your local time is ${timeText}.`;
-}
-
-function fetchWithTimeout(url: string, options: RequestInit = {}, timeoutMs = 9000) {
+function fetchWithTimeout(url: string, options: RequestInit = {}, timeoutMs = 12000) {
   const controller = new AbortController();
   const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
 
@@ -208,38 +123,6 @@ function fetchWithTimeout(url: string, options: RequestInit = {}, timeoutMs = 90
     ...options,
     signal: controller.signal
   }).finally(() => window.clearTimeout(timeoutId));
-}
-
-function removeExactInstruction(text: string, instruction: string) {
-  return text.split(instruction).join('');
-}
-
-function sanitizeAssistantText(text: string) {
-  const withoutInstructions = removeExactInstruction(
-    removeExactInstruction(text, QUICK_MODE_INSTRUCTION),
-    DEEP_MODE_INSTRUCTION
-  );
-
-  return withoutInstructions
-    .split('\n')
-    .filter((line) => {
-      const clean = line.trim();
-      if (!clean) return true;
-      if (clean === '---') return false;
-      return !(
-        clean === 'QFin Terminal real analysis started.' ||
-        /^Step \d\/\d:/i.test(clean) ||
-        /^Resolved ticker:/i.test(clean) ||
-        /^Data fetch complete/i.test(clean) ||
-        /^Completed in \d+(\.\d+)?s\./i.test(clean)
-      );
-    })
-    .join('\n')
-    .replace(/Quick Mode:\s*/gi, '')
-    .replace(/Deep Mode:\s*/gi, '')
-    .replace(/Do not include peer comparison, exhaustive risks, full statement breakdown, or multiple visuals\./gi, '')
-    .replace(/[ \t]{2,}/g, ' ')
-    .trim();
 }
 
 function renderInlineMarkdown(text: string) {
@@ -268,6 +151,17 @@ function parseTableLine(line: string) {
 function isTableSeparator(line: string) {
   const cells = parseTableLine(line);
   return cells.length > 1 && cells.every((cell) => /^:?-{3,}:?$/.test(cell.replace(/\s/g, '')));
+}
+
+function formatDate(value?: string) {
+  if (!value) return '';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return new Intl.DateTimeFormat('en-US', {
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric'
+  }).format(date);
 }
 
 function MessageBody({ content }: { content: string }) {
@@ -499,30 +393,49 @@ function IconPlusBox() {
 
 function App() {
   const [view, setView] = useState<View>('home');
+  const [communityTab, setCommunityTab] = useState<CommunityTab>('news');
+
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [prompt, setPrompt] = useState('');
   const [loading, setLoading] = useState(false);
+  const [selectedFileName, setSelectedFileName] = useState('');
+
   const [backendStatus, setBackendStatus] = useState('Checking QFin backend...');
   const [backendOnline, setBackendOnline] = useState(false);
-  const [selectedFileName, setSelectedFileName] = useState('');
 
   const [newsCategory, setNewsCategory] =
     useState<(typeof NEWS_CATEGORIES)[number]>('Crypto');
-  const [communityTab, setCommunityTab] = useState<CommunityTab>('news');
   const [news, setNews] = useState<NewsItem[]>([]);
   const [newsLoading, setNewsLoading] = useState(false);
   const [newsError, setNewsError] = useState('');
   const [expandedNewsId, setExpandedNewsId] = useState<string | null>(null);
+
+  const [topThread, setTopThread] = useState<ForumThread | null>(null);
+  const [forumThreads, setForumThreads] = useState<ForumThread[]>([]);
+  const [forumLoading, setForumLoading] = useState(false);
+  const [forumError, setForumError] = useState('');
+  const [forumTitle, setForumTitle] = useState('');
+  const [forumBody, setForumBody] = useState('');
+  const [forumAuthor, setForumAuthor] = useState('');
+  const [forumPosting, setForumPosting] = useState(false);
+
+  const [communityModels, setCommunityModels] = useState<CommunityModel[]>([]);
+  const [modelsLoading, setModelsLoading] = useState(false);
+  const [modelsError, setModelsError] = useState('');
+
+  const [builderName, setBuilderName] = useState('Volatility Regime Switcher');
+  const [builderAuthor, setBuilderAuthor] = useState('Private workspace');
+  const [builderSummary, setBuilderSummary] = useState('A regime-aware trading model for sandbox runs and publishing.');
   const [builderCode, setBuilderCode] = useState(TEMPLATE_SNIPPETS[0].code);
   const [builderOutput, setBuilderOutput] = useState(
-    'Output appears here after Run template or Run backtest.'
+    'Output appears here after Run template or Run privately.'
   );
+  const [builderBusy, setBuilderBusy] = useState(false);
 
   async function checkBackend() {
     try {
       const response = await fetchWithTimeout(`${API_BASE_URL}/health`, {}, 7000);
       const data = await response.json();
-
       if (response.ok && data.status === 'ok') {
         setBackendOnline(true);
         setBackendStatus('QFin backend connected');
@@ -540,84 +453,63 @@ function App() {
     checkBackend();
   }, []);
 
-  function addLocalAgentReply(userMessage: string, assistantMessage: string) {
-    setMessages((current) => [
-      ...current,
-      {
-        id: makeId(),
-        role: 'user',
-        content: userMessage
-      },
-      {
-        id: makeId(),
-        role: 'assistant',
-        content: assistantMessage
-      }
-    ]);
-  }
+  async function sendPrompt(input?: string) {
+    const message = (input ?? prompt).trim();
+    if (!message || loading) return;
 
-  async function sendToChatStream(displayMessage: string, backendMessage: string) {
-    const cleanDisplayMessage = displayMessage.trim();
-    const cleanBackendMessage = backendMessage.trim();
-    if (!cleanDisplayMessage || !cleanBackendMessage || loading) return;
+    setView('home');
+    setPrompt('');
 
     const assistantId = makeId();
-
     setMessages((current) => [
       ...current,
-      {
-        id: makeId(),
-        role: 'user',
-        content: cleanDisplayMessage
-      },
-      {
-        id: assistantId,
-        role: 'assistant',
-        content: 'QFin is working on it...'
-      }
+      { id: makeId(), role: 'user', content: message },
+      { id: assistantId, role: 'assistant', content: 'QFin is working on it...' }
     ]);
 
     setLoading(true);
 
     try {
-      const response = await fetchWithTimeout(`${API_BASE_URL}/chat/stream`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
+      const response = await fetchWithTimeout(
+        `${API_BASE_URL}/agent/chat/stream`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({ message })
         },
-        body: JSON.stringify({
-          message: cleanBackendMessage
-        })
-      }, 90000);
+        90000
+      );
 
       if (!response.ok) {
         throw new Error(`Backend returned ${response.status}`);
       }
 
-      const text = await response.text();
-      const finalText = text.trim() ? sanitizeAssistantText(text) : FALLBACK_GREETING;
+      const text = (await response.text()).trim();
+      const finalText = text || CHAT_FAILURE_MESSAGE;
 
       setMessages((current) =>
-        current.map((message) =>
-          message.id === assistantId
+        current.map((entry) =>
+          entry.id === assistantId
             ? {
-                ...message,
+                ...entry,
                 content: finalText,
                 error: false
               }
-            : message
+            : entry
         )
       );
     } catch {
       setMessages((current) =>
-        current.map((message) =>
-          message.id === assistantId
+        current.map((entry) =>
+          entry.id === assistantId
             ? {
-                ...message,
-                content: FAILURE_MESSAGE,
+                ...entry,
+                content: CHAT_FAILURE_MESSAGE,
                 error: true
               }
-            : message
+            : entry
         )
       );
     } finally {
@@ -625,62 +517,238 @@ function App() {
     }
   }
 
-  function submitPrompt(input = prompt) {
-    const cleanInput = input.trim();
-    if (!cleanInput) return;
-
-    setView('home');
-    setPrompt('');
-
-    if (isCasualGreeting(cleanInput) || isHelpPrompt(cleanInput)) {
-      addLocalAgentReply(cleanInput, AGENT_GREETING);
-      return;
-    }
-
-    if (isLocalTimePrompt(cleanInput)) {
-      addLocalAgentReply(cleanInput, buildLocalTimeReply());
-      return;
-    }
-
-    const request = buildChatMessage(cleanInput);
-    sendToChatStream(cleanInput, request.message);
-  }
-
   async function loadNews(category: string) {
     setNewsLoading(true);
     setNewsError('');
-    setNews([]);
 
-    const primaryUrl = `${API_BASE_URL}/community/news/${encodeURIComponent(category)}`;
-    const fallbackUrl = `${API_BASE_URL}/news/${encodeURIComponent(category)}`;
+    const urls = [
+      `${API_BASE_URL}/community/news/${encodeURIComponent(category)}`,
+      `${API_BASE_URL}/news/${encodeURIComponent(category)}`
+    ];
 
     try {
-      const readNews = async (url: string) => {
-        const response = await fetchWithTimeout(url, {}, 30000);
-        if (!response.ok) {
-          throw new Error(`News request failed: ${response.status}`);
+      let items: NewsItem[] = [];
+
+      for (const url of urls) {
+        try {
+          const response = await fetchWithTimeout(url, {}, 30000);
+          if (!response.ok) continue;
+          const data = await response.json();
+          if (Array.isArray(data.news) && data.news.length) {
+            items = data.news.slice(0, 5);
+            break;
+          }
+        } catch {
+          continue;
         }
-
-        const data = await response.json();
-        return Array.isArray(data.news) ? data.news.slice(0, 5) : [];
-      };
-
-      const results = await Promise.allSettled([readNews(primaryUrl), readNews(fallbackUrl)]);
-      const items =
-        results.find(
-          (result): result is PromiseFulfilledResult<NewsItem[]> =>
-            result.status === 'fulfilled' && result.value.length > 0
-        )?.value || [];
-
-      if (!items.length) {
-        throw new Error('Backend returned no news array.');
       }
 
+      if (!items.length) {
+        throw new Error('No news returned');
+      }
+
+      setExpandedNewsId(null);
       setNews(items);
     } catch {
-      setNewsError('News unavailable. Please retry.');
+      setNews([]);
+      setNewsError(NEWS_FAILURE_MESSAGE);
     } finally {
       setNewsLoading(false);
+    }
+  }
+
+  async function loadForum() {
+    setForumLoading(true);
+    setForumError('');
+
+    try {
+      const response = await fetchWithTimeout(`${API_BASE_URL}/community/forum`, {}, 15000);
+      if (!response.ok) {
+        throw new Error(`Forum returned ${response.status}`);
+      }
+
+      const data = await response.json();
+      setTopThread(data.top_today?.[0] || null);
+      setForumThreads(Array.isArray(data.threads) ? data.threads : []);
+    } catch {
+      setForumError(FORUM_FAILURE_MESSAGE);
+      setTopThread(null);
+      setForumThreads([]);
+    } finally {
+      setForumLoading(false);
+    }
+  }
+
+  async function submitForumThread(event?: React.FormEvent) {
+    event?.preventDefault();
+    if (!forumTitle.trim() || !forumBody.trim() || forumPosting) return;
+
+    setForumPosting(true);
+    setForumError('');
+
+    try {
+      const response = await fetchWithTimeout(
+        `${API_BASE_URL}/community/forum`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({
+            title: forumTitle,
+            body: forumBody,
+            author: forumAuthor
+          })
+        },
+        15000
+      );
+
+      if (!response.ok) {
+        throw new Error(`Forum returned ${response.status}`);
+      }
+
+      const data = await response.json();
+      const thread = data.thread as ForumThread;
+      setForumThreads((current) => [thread, ...current]);
+      setTopThread((current) => {
+        if (!current || thread.score >= current.score) return thread;
+        return current;
+      });
+      setForumTitle('');
+      setForumBody('');
+      setForumAuthor('');
+    } catch {
+      setForumError(FORUM_FAILURE_MESSAGE);
+    } finally {
+      setForumPosting(false);
+    }
+  }
+
+  async function voteThread(threadId: string, direction: VoteDirection) {
+    try {
+      const response = await fetchWithTimeout(
+        `${API_BASE_URL}/community/forum/${encodeURIComponent(threadId)}/vote`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({ direction })
+        },
+        12000
+      );
+
+      if (!response.ok) {
+        throw new Error('Vote failed');
+      }
+
+      const data = await response.json();
+      const thread = data.thread as ForumThread;
+      setForumThreads((current) =>
+        current
+          .map((entry) => (entry.id === thread.id ? thread : entry))
+          .sort((a, b) => b.score - a.score)
+      );
+      setTopThread((current) => {
+        if (!current || current.id === thread.id || thread.score >= current.score) return thread;
+        return current;
+      });
+    } catch {
+      setForumError(FORUM_FAILURE_MESSAGE);
+    }
+  }
+
+  async function loadModels() {
+    setModelsLoading(true);
+    setModelsError('');
+
+    try {
+      const response = await fetchWithTimeout(`${API_BASE_URL}/community/models`, {}, 15000);
+      if (!response.ok) {
+        throw new Error(`Models returned ${response.status}`);
+      }
+
+      const data = await response.json();
+      setCommunityModels(Array.isArray(data.models) ? data.models : []);
+    } catch {
+      setModelsError(MODELS_FAILURE_MESSAGE);
+      setCommunityModels([]);
+    } finally {
+      setModelsLoading(false);
+    }
+  }
+
+  function loadModelIntoBuilder(model: CommunityModel) {
+    setBuilderName(model.name);
+    setBuilderAuthor(model.author);
+    setBuilderSummary(model.summary);
+    setBuilderCode(model.code);
+    setBuilderOutput('Model loaded into the builder. Run it privately or publish an updated version.');
+    setCommunityTab('builder');
+  }
+
+  function formatBuilderOutput(result?: BuilderResult, model?: CommunityModel) {
+    if (result) {
+      const lines = [
+        result.summary,
+        '',
+        ...(result.stats
+          ? Object.entries(result.stats).map(([key, value]) => `${key.replace(/_/g, ' ')}: ${value}`)
+          : []),
+        '',
+        ...(result.notes || [])
+      ];
+      return lines.join('\n').trim();
+    }
+
+    if (model) {
+      return `${model.name} was saved as ${model.visibility || 'community'} model by ${model.author}.`;
+    }
+
+    return BUILDER_FAILURE_MESSAGE;
+  }
+
+  async function runBuilderAction(endpoint: string) {
+    if (!builderName.trim() || !builderCode.trim() || builderBusy) return;
+
+    setBuilderBusy(true);
+    setBuilderOutput('QFin builder is processing your request...');
+
+    try {
+      const response = await fetchWithTimeout(
+        `${API_BASE_URL}${endpoint}`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({
+            name: builderName,
+            author: builderAuthor,
+            summary: builderSummary,
+            code: builderCode
+          })
+        },
+        20000
+      );
+
+      if (!response.ok) {
+        throw new Error(`Builder returned ${response.status}`);
+      }
+
+      const data = await response.json();
+      setBuilderOutput(formatBuilderOutput(data.result, data.model));
+
+      if (endpoint === '/builder/publish' || endpoint === '/community/models') {
+        loadModels();
+      }
+      if (endpoint === '/builder/publish') {
+        loadModels();
+      }
+    } catch {
+      setBuilderOutput(BUILDER_FAILURE_MESSAGE);
+    } finally {
+      setBuilderBusy(false);
     }
   }
 
@@ -689,6 +757,18 @@ function App() {
       loadNews(newsCategory);
     }
   }, [view, communityTab, newsCategory]);
+
+  useEffect(() => {
+    if (view === 'community' && communityTab === 'forum') {
+      loadForum();
+    }
+  }, [view, communityTab]);
+
+  useEffect(() => {
+    if (view === 'community' && (communityTab === 'models' || communityTab === 'builder')) {
+      loadModels();
+    }
+  }, [view, communityTab]);
 
   return (
     <div className="appShell">
@@ -712,7 +792,6 @@ function App() {
             <IconHome />
             Home
           </button>
-
           <button
             type="button"
             className={view === 'community' ? 'active' : ''}
@@ -723,9 +802,7 @@ function App() {
           </button>
         </nav>
 
-        <p className="sidebarNote">
-          Qwen-powered financial intelligence. Not investment advice.
-        </p>
+        <p className="sidebarNote">Qwen-powered financial intelligence. Not investment advice.</p>
       </aside>
 
       <main className="mainSurface">
@@ -744,7 +821,7 @@ function App() {
               <button
                 type="button"
                 className="watchlistButton"
-                onClick={() => alert('Reports & Watchlist is coming soon.')}
+                onClick={() => window.alert('Reports & Watchlist is coming soon.')}
               >
                 <IconFolder />
                 Reports & Watchlist
@@ -755,12 +832,22 @@ function App() {
               <div className="chartBand" aria-hidden="true" />
               <div className="heroCopy">
                 <h1>Ask QFin. Explore Community.</h1>
-                <p>Real financial data, computed on the backend. Qwen explains the result.</p>
+                <p>Qwen handles the language. QFin routes the work, pulls the data, and returns the result.</p>
               </div>
             </section>
 
             <section className="chatSurface" aria-label="QFin chat">
-              {!!messages.length && (
+              {!messages.length && (
+                <div className="promptChips">
+                  {SUGGESTED_PROMPTS.map((suggestion) => (
+                    <button key={suggestion} type="button" onClick={() => sendPrompt(suggestion)}>
+                      {suggestion}
+                    </button>
+                  ))}
+                </div>
+              )}
+
+              {messages.length > 0 && (
                 <div className="chatActions">
                   <button type="button" onClick={() => setMessages([])}>
                     New chat
@@ -792,21 +879,11 @@ function App() {
                 ))}
               </div>
 
-              {!messages.length && (
-                <div className="promptChips">
-                  {SUGGESTED_PROMPTS.map((suggestion) => (
-                    <button key={suggestion} type="button" onClick={() => submitPrompt(suggestion)}>
-                      {suggestion}
-                    </button>
-                  ))}
-                </div>
-              )}
-
               <form
                 className="composer"
                 onSubmit={(event) => {
                   event.preventDefault();
-                  submitPrompt();
+                  sendPrompt();
                 }}
               >
                 <textarea
@@ -815,10 +892,10 @@ function App() {
                   onKeyDown={(event) => {
                     if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
                       event.preventDefault();
-                      submitPrompt();
+                      sendPrompt();
                     }
                   }}
-                  placeholder="Ask QFin to analyze a company, explain a finance concept, or upload a financial statement..."
+                  placeholder="Ask QFin to analyze a company, compare stocks, explain a finance concept, or summarize the market..."
                 />
 
                 <div className="composerFooter">
@@ -826,9 +903,7 @@ function App() {
                     <input
                       type="file"
                       accept=".csv,.xls,.xlsx"
-                      onChange={(event) =>
-                        setSelectedFileName(event.target.files?.[0]?.name || '')
-                      }
+                      onChange={(event) => setSelectedFileName(event.target.files?.[0]?.name || '')}
                     />
                     <span>+</span>
                     {selectedFileName || 'Upload CSV or Excel'}
@@ -846,7 +921,7 @@ function App() {
               </form>
 
               <p className="supportText">
-                Supports finance questions, company analysis, market news, and Excel statement uploads.
+                QFin uses one backend chat route and keeps the prompt handling on the server side.
               </p>
             </section>
           </>
@@ -858,8 +933,8 @@ function App() {
               <p>Community</p>
               <h1>Ideas, models, and market chatter.</h1>
               <span>
-                Browse cached market news, discuss with other analysts, and remix
-                community-built model templates.
+                Browse market news, post threads, vote on the strongest ideas, and remix
+                community-built trading templates.
               </span>
             </header>
 
@@ -961,15 +1036,94 @@ function App() {
               <section className="communityStack">
                 <div className="sectionHeader">
                   <h2>Forum</h2>
-                  <button type="button" className="darkButton">
+                  <button type="button" className="darkButton" onClick={() => setForumTitle('')}>
                     <IconPlusBox />
                     New thread
                   </button>
                 </div>
-                <article className="emptyState">
-                  <h2>No threads yet</h2>
-                  <p>Community discussions will appear here after posting is enabled.</p>
-                </article>
+
+                {topThread && (
+                  <article className="topThreadCard">
+                    <span>Top thread today</span>
+                    <h3>{topThread.title}</h3>
+                    <p>{topThread.body}</p>
+                    <div className="threadMeta">
+                      <span>{topThread.author}</span>
+                      <span>{topThread.score} score</span>
+                      <span>{formatDate(topThread.created_at)}</span>
+                    </div>
+                  </article>
+                )}
+
+                <form className="forumComposer" onSubmit={submitForumThread}>
+                  <div className="forumComposerBody">
+                    <input
+                      className="forumTitleInput"
+                      value={forumTitle}
+                      onChange={(event) => setForumTitle(event.target.value)}
+                      placeholder="Thread title"
+                    />
+                    <input
+                      className="forumAuthorInput"
+                      value={forumAuthor}
+                      onChange={(event) => setForumAuthor(event.target.value)}
+                      placeholder="Your name (optional)"
+                    />
+                    <textarea
+                      className="forumTextArea"
+                      value={forumBody}
+                      onChange={(event) => setForumBody(event.target.value)}
+                      placeholder="Share a trade idea, question, or market take..."
+                    />
+                  </div>
+                  <div className="modelActions">
+                    <button type="submit" className="darkButton" disabled={forumPosting}>
+                      {forumPosting ? 'Posting...' : 'Post thread'}
+                    </button>
+                  </div>
+                </form>
+
+                {forumError && (
+                  <article className="emptyState">
+                    <h2>{forumError}</h2>
+                    <button type="button" onClick={loadForum}>
+                      Retry
+                    </button>
+                  </article>
+                )}
+
+                {forumLoading && !forumThreads.length && (
+                  <article className="emptyState">
+                    <h2>Loading threads...</h2>
+                  </article>
+                )}
+
+                {!forumLoading && !forumError && (
+                  <div className="forumGrid">
+                    {forumThreads.map((thread) => (
+                      <article key={thread.id} className="threadCard">
+                        <div className="voteRail">
+                          <button type="button" onClick={() => voteThread(thread.id, 'up')}>
+                            ▲
+                          </button>
+                          <strong>{thread.score}</strong>
+                          <button type="button" onClick={() => voteThread(thread.id, 'down')}>
+                            ▼
+                          </button>
+                        </div>
+                        <div className="threadContent">
+                          <h3>{thread.title}</h3>
+                          <p>{thread.body}</p>
+                          <div className="threadMeta">
+                            <span>{thread.author}</span>
+                            <span>{thread.upvotes} up / {thread.downvotes} down</span>
+                            <span>{formatDate(thread.created_at)}</span>
+                          </div>
+                        </div>
+                      </article>
+                    ))}
+                  </div>
+                )}
               </section>
             )}
 
@@ -978,10 +1132,56 @@ function App() {
                 <div className="sectionHeader">
                   <h2>Models</h2>
                 </div>
-                <article className="emptyState">
-                  <h2>No published models yet</h2>
-                  <p>Forkable valuation, backtest, and quant templates will appear here.</p>
-                </article>
+
+                {modelsError && (
+                  <article className="emptyState">
+                    <h2>{modelsError}</h2>
+                    <button type="button" onClick={loadModels}>
+                      Retry
+                    </button>
+                  </article>
+                )}
+
+                {modelsLoading && !communityModels.length && (
+                  <article className="emptyState">
+                    <h2>Loading models...</h2>
+                  </article>
+                )}
+
+                {!modelsLoading && !modelsError && (
+                  <div className="modelGrid">
+                    {communityModels.map((model) => (
+                      <article key={model.id} className="modelCard">
+                        <div className="threadMeta">
+                          <span>{model.author}</span>
+                          <span>{model.score || 0} score</span>
+                        </div>
+                        <h3>{model.name}</h3>
+                        <p>{model.summary}</p>
+                        <div className="tagRow">
+                          {(model.tags || []).map((tag) => (
+                            <span key={tag} className="tagPill">
+                              {tag}
+                            </span>
+                          ))}
+                        </div>
+                        <div className="modelStats">
+                          {Object.entries(model.stats || {}).map(([key, value]) => (
+                            <div key={key}>
+                              <span>{key.replace(/_/g, ' ')}</span>
+                              <strong>{value}</strong>
+                            </div>
+                          ))}
+                        </div>
+                        <div className="modelActions">
+                          <button type="button" onClick={() => loadModelIntoBuilder(model)}>
+                            Load in builder
+                          </button>
+                        </div>
+                      </article>
+                    ))}
+                  </div>
+                )}
               </section>
             )}
 
@@ -991,27 +1191,60 @@ function App() {
                   <div className="modelToolbar">
                     <h2>Model editor</h2>
                     <div>
-                      <button type="button" onClick={() => alert('Saved privately for this MVP.')}>
+                      <button
+                        type="button"
+                        onClick={() => runBuilderAction('/builder/save-private')}
+                        disabled={builderBusy}
+                      >
                         <IconSave />
                         Save privately
                       </button>
-                      <button type="button" onClick={() => alert('Publishing is disabled in MVP.')}>
+                      <button
+                        type="button"
+                        onClick={() => runBuilderAction('/builder/publish')}
+                        disabled={builderBusy}
+                      >
                         <IconUpload />
                         Publish
                       </button>
                       <button
                         type="button"
+                        onClick={() => runBuilderAction('/builder/run-private')}
+                        disabled={builderBusy}
+                      >
+                        <IconPlay />
+                        Run privately
+                      </button>
+                      <button
+                        type="button"
                         className="darkButton"
-                        onClick={() =>
-                          setBuilderOutput(
-                            'Template parsed successfully. Backtest execution is routed through the backend sandbox in the production flow.'
-                          )
-                        }
+                        onClick={() => runBuilderAction('/builder/run')}
+                        disabled={builderBusy}
                       >
                         <IconPlay />
                         Run template
                       </button>
                     </div>
+                  </div>
+
+                  <div className="builderMetaRow">
+                    <input
+                      value={builderName}
+                      onChange={(event) => setBuilderName(event.target.value)}
+                      placeholder="Model name"
+                    />
+                    <input
+                      value={builderAuthor}
+                      onChange={(event) => setBuilderAuthor(event.target.value)}
+                      placeholder="Author"
+                    />
+                  </div>
+                  <div className="builderMetaRow">
+                    <input
+                      value={builderSummary}
+                      onChange={(event) => setBuilderSummary(event.target.value)}
+                      placeholder="Short model summary"
+                    />
                   </div>
 
                   <textarea
@@ -1024,7 +1257,7 @@ function App() {
                   <div className="outputPanel">
                     <span>Output</span>
                     <pre>{builderOutput}</pre>
-                    <p>Hypothetical or simulated performance is not a guarantee of future results.</p>
+                    <p>Hypothetical or simulated performance shown here is not a guarantee of future results.</p>
                   </div>
                 </article>
 
@@ -1035,16 +1268,18 @@ function App() {
                       key={template.name}
                       type="button"
                       onClick={() => {
+                        setBuilderName(template.name);
+                        setBuilderAuthor(template.author);
+                        setBuilderSummary(template.summary);
                         setBuilderCode(template.code);
-                        setBuilderOutput('Template loaded. Run template to preview output.');
+                        setBuilderOutput('Template loaded. Run template to preview the backend result.');
                       }}
                     >
                       {template.name}
                     </button>
                   ))}
                   <p>
-                    Running a stranger's published model is disabled in MVP. Fork to your workspace
-                    to run privately.
+                    Published community models can be loaded here, edited, run privately, or pushed back to the public model list.
                   </p>
                 </aside>
               </section>
