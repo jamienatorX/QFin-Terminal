@@ -17,3 +17,36 @@ create table if not exists public.qfin_reports (
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
+
+create table if not exists public.qfin_forum_threads (
+  id uuid primary key default gen_random_uuid(),
+  title text not null,
+  body text not null,
+  author text not null,
+  score integer not null default 1,
+  upvotes integer not null default 1,
+  downvotes integer not null default 0,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create index if not exists qfin_forum_threads_score_created_idx
+  on public.qfin_forum_threads (score desc, created_at desc);
+
+create table if not exists public.qfin_builder_models (
+  id uuid primary key default gen_random_uuid(),
+  name text not null,
+  author text not null,
+  summary text not null default '',
+  code text not null,
+  tags jsonb not null default '[]'::jsonb,
+  stats jsonb not null default '{}'::jsonb,
+  score integer not null default 0,
+  visibility text not null default 'public' check (visibility in ('public', 'private')),
+  seed_key text,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create index if not exists qfin_builder_models_visibility_score_idx
+  on public.qfin_builder_models (visibility, score desc, created_at desc);
