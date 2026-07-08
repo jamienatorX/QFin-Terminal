@@ -5,6 +5,7 @@ import hashlib
 import os
 import random
 import re
+import asyncio
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Literal, Optional
 
@@ -112,6 +113,8 @@ DETAILED_SIGNALS = [
 
 SUPABASE_FORUM_TABLE = "qfin_forum_threads"
 SUPABASE_MODEL_TABLE = "qfin_builder_models"
+FINANCIAL_DATA_CACHE_TTL_SECONDS = 900
+MODEL_PERIOD_LABELS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
 
 TICKER_RE = r"[A-Za-z0-9][A-Za-z0-9\.\-\^=]{0,17}"
 
@@ -156,6 +159,7 @@ class BuilderPublishRequest(BaseModel):
 FORUM_THREADS: List[Dict[str, Any]] = []
 COMMUNITY_MODELS: List[Dict[str, Any]] = []
 PRIVATE_MODELS: List[Dict[str, Any]] = []
+FINANCIAL_DATA_CACHE: Dict[str, Dict[str, Any]] = {}
 
 
 def make_id(prefix: str) -> str:
@@ -165,6 +169,13 @@ def make_id(prefix: str) -> str:
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def read_float_env(name: str, default: float) -> float:
+    try:
+        return float(os.getenv(name, str(default)))
+    except Exception:
+        return default
 
 
 def supabase_is_configured() -> bool:
@@ -696,6 +707,156 @@ def fetch_financial_data(ticker: str) -> Dict[str, Any]:
         return {"ticker": ticker, "data_status": "unavailable", "error": str(exc)}
 
 
+def get_cached_financial_data(ticker: str) -> Optional[Dict[str, Any]]:
+    key = ticker.strip().upper()
+    cached = FINANCIAL_DATA_CACHE.get(key)
+    if not cached:
+        return None
+    age_seconds = (datetime.now(timezone.utc) - cached["stored_at"]).total_seconds()
+    if age_seconds > FINANCIAL_DATA_CACHE_TTL_SECONDS:
+        FINANCIAL_DATA_CACHE.pop(key, None)
+        return None
+    return cached["data"]
+
+
+def store_cached_financial_data(ticker: str, data: Dict[str, Any]) -> Dict[str, Any]:
+    FINANCIAL_DATA_CACHE[ticker.strip().upper()] = {
+        "data": data,
+        "stored_at": datetime.now(timezone.utc),
+    }
+    return data
+
+
+async def fetch_financial_data_async(ticker: str, timeout_seconds: float = 25.0) -> Dict[str, Any]:
+    timeout_seconds = read_float_env("FINANCIAL_DATA_TIMEOUT_SECONDS", timeout_seconds)
+    cached = get_cached_financial_data(ticker)
+    if cached is not None:
+        return cached
+
+    try:
+        data = await asyncio.wait_for(
+            asyncio.to_thread(fetch_financial_data, ticker),
+            timeout=timeout_seconds,
+        )
+    except asyncio.TimeoutError:
+        data = {
+            "ticker": ticker,
+            "data_status": "unavailable",
+            "error": f"Financial data request timed out after {timeout_seconds:.0f}s.",
+        }
+
+    return store_cached_financial_data(ticker, data)
+
+
+def hash_slice(seed_text: str, offset: int) -> int:
+    digest = hashlib.sha256(seed_text.encode("utf-8")).hexdigest()
+    start = (offset * 2) % (len(digest) - 2)
+    return int(digest[start:start + 2], 16)
+
+
+def build_model_profile(name: str, summary: str, tags: List[str], code: str) -> Dict[str, str]:
+    text = " ".join([name, summary, " ".join(tags), code]).lower()
+
+    if "crypto" in text:
+        universe = "Large-cap crypto pairs"
+        benchmark = "BTC-USD"
+    elif "carry" in text or "basket" in text or "portfolio" in text:
+        universe = "Liquid US large-cap equities"
+        benchmark = "SPY"
+    else:
+        universe = "Liquid US equities and ETFs"
+        benchmark = "SPY"
+
+    if "macd" in text or "trend" in text or "momentum" in text:
+        horizon = "Swing horizon (3 to 15 sessions)"
+        rebalance = "Daily close review"
+        execution_style = "Trend-following"
+    elif "rsi" in text or "mean reversion" in text or "pullback" in text:
+        horizon = "Short swing horizon (2 to 8 sessions)"
+        rebalance = "Daily close review"
+        execution_style = "Mean reversion"
+    elif "dcf" in text or "valuation" in text or "quality" in text:
+        horizon = "Medium horizon (2 to 6 weeks)"
+        rebalance = "Weekly rebalance"
+        execution_style = "Fundamental overlay"
+    else:
+        horizon = "Medium horizon (1 to 4 weeks)"
+        rebalance = "Weekly rebalance"
+        execution_style = "Systematic long/short"
+
+    if "volatility" in text or "regime" in text or "risk" in text:
+        risk_style = "Adaptive risk control"
+    elif "earnings" in text or "event" in text:
+        risk_style = "Event-driven risk"
+    else:
+        risk_style = "Balanced risk budget"
+
+    data_inputs = "Daily OHLCV candles"
+    if "dcf" in text or "quality" in text or "cash" in text:
+        data_inputs += " plus company fundamentals"
+    if "vol" in text or "volatility" in text:
+        data_inputs += " and realized volatility"
+
+    live_use = "Paper trade first, then add fees, slippage, and position limits before live deployment."
+
+    return {
+        "universe": universe,
+        "benchmark": benchmark,
+        "rebalance": rebalance,
+        "horizon": horizon,
+        "execution_style": execution_style,
+        "risk_style": risk_style,
+        "data_inputs": data_inputs,
+        "live_use": live_use,
+    }
+
+
+def build_model_series(seed_text: str, periods: int = 12) -> List[Dict[str, Any]]:
+    equity = 100.0
+    benchmark = 100.0
+    peak = equity
+    series: List[Dict[str, Any]] = []
+
+    for index in range(periods):
+        alpha = ((hash_slice(seed_text, index) % 17) - 4) / 100
+        beta = ((hash_slice(seed_text, index + 17) % 11) - 3) / 100
+        equity *= 1 + alpha
+        benchmark *= 1 + beta
+        peak = max(peak, equity)
+        drawdown = max(0.0, (peak - equity) / peak * 100)
+        series.append(
+            {
+                "label": MODEL_PERIOD_LABELS[index % len(MODEL_PERIOD_LABELS)],
+                "equity": round(equity, 2),
+                "benchmark": round(benchmark, 2),
+                "drawdown": round(drawdown, 2),
+            }
+        )
+
+    return series
+
+
+def build_model_status(stats: Dict[str, str]) -> str:
+    annual_return = as_float(str(stats.get("annual_return", "")).replace("%", ""))
+    sharpe = as_float(stats.get("sharpe"))
+    max_drawdown = as_float(str(stats.get("max_drawdown", "")).replace("%", ""))
+
+    if sharpe is not None and annual_return is not None and sharpe >= 1.5 and annual_return >= 14:
+        return "paper-ready"
+    if max_drawdown is not None and abs(max_drawdown) >= 18:
+        return "high-risk"
+    return "research"
+
+
+def build_model_highlights(stats: Dict[str, str], profile: Dict[str, str]) -> List[str]:
+    return [
+        f"Universe: {profile['universe']}",
+        f"Benchmark: {profile['benchmark']}",
+        f"Cadence: {profile['rebalance']}",
+        f"Risk posture: {profile['risk_style']}",
+    ]
+
+
 def build_general_prompt(query: str) -> List[Dict[str, str]]:
     return [
         {"role": "system", "content": SYSTEM_PROMPT},
@@ -768,7 +929,13 @@ async def generate_agent_reply(query: str, provided_ticker: Optional[str] = None
         return {"route": route, "content": content, "facts": news, "used_live_data": True}
 
     if route["kind"] == "comparison":
-        facts = {ticker: fetch_financial_data(ticker) for ticker in route["tickers"]}
+        comparison_results = await asyncio.gather(
+            *(fetch_financial_data_async(ticker) for ticker in route["tickers"])
+        )
+        facts = {
+            ticker: data
+            for ticker, data in zip(route["tickers"], comparison_results)
+        }
         if not qwen_is_configured():
             content = (
                 f"Qwen is not configured, but I resolved the request to {route['tickers'][0]} and {route['tickers'][1]}. "
@@ -779,7 +946,7 @@ async def generate_agent_reply(query: str, provided_ticker: Optional[str] = None
         return {"route": route, "content": content, "facts": facts, "used_live_data": True}
 
     if route["kind"] == "company":
-        facts = fetch_financial_data(route["ticker"])
+        facts = await fetch_financial_data_async(route["ticker"])
         if not qwen_is_configured():
             content = (
                 f"I resolved this request to {route['ticker']}, but Qwen is not configured on the backend right now. "
@@ -839,6 +1006,13 @@ def build_random_model(name: str, author: str, summary: str, tags: List[str], se
     sharpe = 1 + (int(digest[2:4], 16) % 90) / 100
     max_drawdown = 6 + int(digest[4:6], 16) % 16
     win_rate = 47 + int(digest[6:8], 16) % 18
+    stats = {
+        "annual_return": f"{annual_return:.1f}%",
+        "sharpe": f"{sharpe:.2f}",
+        "max_drawdown": f"-{max_drawdown:.1f}%",
+        "win_rate": f"{win_rate:.1f}%",
+    }
+    profile = build_model_profile(name, summary, tags, seed_text)
     return {
         "id": make_id("model"),
         "name": name,
@@ -847,12 +1021,11 @@ def build_random_model(name: str, author: str, summary: str, tags: List[str], se
         "tags": tags,
         "score": 8 + int(digest[8:10], 16) % 22,
         "created_at": utc_now(),
-        "stats": {
-            "annual_return": f"{annual_return:.1f}%",
-            "sharpe": f"{sharpe:.2f}",
-            "max_drawdown": f"-{max_drawdown:.1f}%",
-            "win_rate": f"{win_rate:.1f}%",
-        },
+        "stats": stats,
+        "profile": profile,
+        "status": build_model_status(stats),
+        "series": build_model_series(f"{name}\n{seed_text}"),
+        "highlights": build_model_highlights(stats, profile),
         "code": seed_text,
         "visibility": "public",
     }
@@ -961,14 +1134,32 @@ def normalize_thread_record(record: Dict[str, Any]) -> Dict[str, Any]:
 def normalize_model_record(record: Dict[str, Any]) -> Dict[str, Any]:
     tags = record.get("tags") or []
     stats = record.get("stats") or {}
+    name = clean_text(str(record.get("name") or "Untitled model"))
+    summary = clean_text(str(record.get("summary") or ""))
+    code = str(record.get("code") or "")
+    normalized_stats = stats if isinstance(stats, dict) else {}
+    tags_value = tags if isinstance(tags, list) else []
+    profile = record.get("profile")
+    if not isinstance(profile, dict):
+        profile = build_model_profile(name, summary, tags_value, code)
+    series = record.get("series")
+    if not isinstance(series, list) or not series:
+        series = build_model_series(f"{name}\n{code}")
+    highlights = record.get("highlights")
+    if not isinstance(highlights, list) or not highlights:
+        highlights = build_model_highlights(normalized_stats, profile)
     return {
         "id": record.get("id") or make_id("model"),
-        "name": clean_text(str(record.get("name") or "Untitled model")),
+        "name": name,
         "author": clean_text(str(record.get("author") or "Unknown author")),
-        "summary": clean_text(str(record.get("summary") or "")),
-        "code": str(record.get("code") or ""),
-        "tags": tags if isinstance(tags, list) else [],
-        "stats": stats if isinstance(stats, dict) else {},
+        "summary": summary,
+        "code": code,
+        "tags": tags_value,
+        "stats": normalized_stats,
+        "profile": profile,
+        "series": series,
+        "highlights": highlights,
+        "status": str(record.get("status") or build_model_status(normalized_stats)),
         "score": int(record.get("score") or 0),
         "visibility": str(record.get("visibility") or "public"),
         "created_at": str(record.get("created_at") or utc_now()),
@@ -1157,6 +1348,14 @@ def builder_run_output(name: str, code: str, author: Optional[str]) -> Dict[str,
     max_drawdown = 5 + int(digest[4:6], 16) % 18
     turnover = 18 + int(digest[6:8], 16) % 64
     win_rate = 44 + int(digest[8:10], 16) % 22
+    stats = {
+        "annual_return": f"{annual_return:.1f}%",
+        "sharpe": f"{sharpe:.2f}",
+        "max_drawdown": f"-{max_drawdown:.1f}%",
+        "turnover": f"{turnover:.1f}%",
+        "win_rate": f"{win_rate:.1f}%",
+    }
+    profile = build_model_profile(name, "", ["builder"], code)
     return {
         "name": name,
         "author": author or "Private workspace",
@@ -1165,13 +1364,16 @@ def builder_run_output(name: str, code: str, author: Optional[str]) -> Dict[str,
             f"The current MVP runner validates structure, generates a deterministic backtest preview, "
             f"and keeps the model ready for private save or community publishing."
         ),
-        "stats": {
-            "annual_return": f"{annual_return:.1f}%",
-            "sharpe": f"{sharpe:.2f}",
-            "max_drawdown": f"-{max_drawdown:.1f}%",
-            "turnover": f"{turnover:.1f}%",
-            "win_rate": f"{win_rate:.1f}%",
-        },
+        "stats": stats,
+        "profile": profile,
+        "status": build_model_status(stats),
+        "series": build_model_series(f"{name}\n{code}"),
+        "highlights": build_model_highlights(stats, profile),
+        "validation": [
+            {"label": "Signal logic", "status": "pass", "detail": "Template parsed into a deterministic preview flow."},
+            {"label": "Market mapping", "status": "review", "detail": f"Best matched to {profile['universe']} with {profile['rebalance'].lower()}."},
+            {"label": "Live deployment", "status": "review", "detail": "Fees, slippage, and broker constraints still need to be added before live use."},
+        ],
         "notes": [
             "Signal function parsed successfully.",
             "Template is ready for sandbox execution expansion in the next backend pass.",
@@ -1202,7 +1404,7 @@ def health():
     return {
         "status": "ok",
         "service": "qfin-terminal-api",
-        "version": "qfin-agent-2.1",
+        "version": "qfin-agent-2.2",
         "qwen_configured": qwen_is_configured(),
         "supabase_configured": supabase_is_configured(),
     }
@@ -1221,6 +1423,14 @@ async def agent_chat(payload: AgentChatRequest):
             "data": result,
         }
     except (QwenClientError, KeyError, IndexError) as exc:
+        return {
+            "id": "qfin-agent-error",
+            "role": "assistant",
+            "content": f"QFin could not complete that reply just now. {exc}",
+            "answer": f"QFin could not complete that reply just now. {exc}",
+            "data": {"error": str(exc)},
+        }
+    except Exception as exc:
         return {
             "id": "qfin-agent-error",
             "role": "assistant",
@@ -1257,7 +1467,7 @@ def resolve_ticker_route(symbol: Optional[str] = None, query: Optional[str] = No
 
 @app.get("/market-data/{ticker}")
 def market_data_route(ticker: str):
-    return fetch_financial_data(ticker.strip().upper())
+    return get_cached_financial_data(ticker.strip().upper()) or fetch_financial_data(ticker.strip().upper())
 
 
 @app.post("/upload")
@@ -1354,3 +1564,4 @@ def builder_run_private(payload: BuilderPublishRequest):
 @app.post("/builder/publish")
 def builder_publish(payload: BuilderPublishRequest):
     return create_community_model(payload)
+

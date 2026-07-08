@@ -4,7 +4,6 @@ import './styles.css';
 
 type View = 'home' | 'community';
 type CommunityTab = 'news' | 'forum' | 'models' | 'builder';
-type VoteDirection = 'up' | 'down';
 
 type ChatMessage = {
   id: string;
@@ -46,34 +45,53 @@ type CommunityModel = {
   name: string;
   author: string;
   summary: string;
-  tags?: string[];
-  score?: number;
-  created_at?: string;
+  score: number;
+  created_at: string;
+  tags: string[];
+  stats: Record<string, string>;
   code: string;
-  visibility?: string;
-  stats?: Record<string, string>;
+  profile?: Record<string, string>;
+  series?: Array<{
+    label: string;
+    equity: number;
+    benchmark: number;
+    drawdown: number;
+  }>;
+  highlights?: string[];
+  status?: string;
 };
 
 type BuilderResult = {
   name: string;
   author: string;
   summary: string;
-  stats?: Record<string, string>;
+  stats: Record<string, string>;
+  profile?: Record<string, string>;
+  series?: Array<{
+    label: string;
+    equity: number;
+    benchmark: number;
+    drawdown: number;
+  }>;
+  highlights?: string[];
+  validation?: Array<{
+    label: string;
+    status: string;
+    detail: string;
+  }>;
   notes?: string[];
+  status?: string;
 };
 
 const API_BASE_URL =
   import.meta.env.VITE_API_BASE_URL || 'https://qfin-terminal.onrender.com';
+const AGENT_REQUEST_TIMEOUT_MS = Number(import.meta.env.VITE_AGENT_TIMEOUT_MS || 240000);
 
-const CHAT_FAILURE_MESSAGE =
-  'QFin could not complete that reply just now. Please retry in a moment.';
-const NEWS_FAILURE_MESSAGE = 'News unavailable. Please retry.';
-const FORUM_FAILURE_MESSAGE = 'Forum is unavailable right now. Please retry.';
-const MODELS_FAILURE_MESSAGE = 'Models are unavailable right now. Please retry.';
-const BUILDER_FAILURE_MESSAGE = 'Builder request failed. Please retry.';
+const FAILURE_MESSAGE =
+  'QFin could not complete that reply just now. The backend may still be waking up or the current route failed. Please retry in a moment.';
 
 const SUGGESTED_PROMPTS = [
-  'Analyze Alibaba',
+  'Analyze Alibaba thoroughly',
   'Explain free cash flow yield',
   "Summarize NVIDIA's last quarter",
   'Compare AAPL vs MSFT profitability'
@@ -90,24 +108,21 @@ const COMMUNITY_TABS: Array<{ id: CommunityTab; label: string }> = [
 const TEMPLATE_SNIPPETS = [
   {
     name: 'RSI indicator',
-    author: 'System template',
-    summary: 'Simple momentum reversal template using RSI thresholds.',
+    description: 'Mean-reversion template for oversold and overbought pullbacks.',
     code:
-      '# QFin Terminal - model template\n\ndef signal(prices):\n    window = 14\n    if len(prices) < window:\n        return 0\n\n    gains = []\n    losses = []\n    for index in range(1, window):\n        move = prices[-index] - prices[-index - 1]\n        gains.append(max(move, 0))\n        losses.append(abs(min(move, 0)))\n\n    avg_gain = sum(gains) / window\n    avg_loss = sum(losses) / window or 1\n    rsi = 100 - (100 / (1 + avg_gain / avg_loss))\n    return 1 if rsi < 30 else -1 if rsi > 70 else 0\n'
+      '# RSI pullback template\n\ndef signal(prices):\n    window = 14\n    if len(prices) < window:\n        return 0\n    gains = []\n    losses = []\n    for index in range(1, window):\n        move = prices[-index] - prices[-index - 1]\n        gains.append(max(move, 0))\n        losses.append(abs(min(move, 0)))\n    avg_gain = sum(gains) / window\n    avg_loss = sum(losses) / window or 1\n    rsi = 100 - (100 / (1 + avg_gain / avg_loss))\n    return 1 if rsi < 30 else -1 if rsi > 70 else 0\n'
   },
   {
-    name: 'MACD',
-    author: 'System template',
-    summary: 'Trend-following template using moving-average convergence divergence.',
+    name: 'MACD crossover',
+    description: 'Trend-following template that reacts to momentum regime shifts.',
     code:
-      '# QFin Terminal - MACD template\n\ndef ema(values, span):\n    weight = 2 / (span + 1)\n    result = values[0]\n    for value in values[1:]:\n        result = value * weight + result * (1 - weight)\n    return result\n\ndef signal(prices):\n    if len(prices) < 26:\n        return 0\n    macd = ema(prices[-26:], 12) - ema(prices[-26:], 26)\n    return 1 if macd > 0 else -1\n'
+      '# MACD crossover template\n\ndef ema(values, span):\n    weight = 2 / (span + 1)\n    result = values[0]\n    for value in values[1:]:\n        result = value * weight + result * (1 - weight)\n    return result\n\ndef signal(prices):\n    if len(prices) < 26:\n        return 0\n    macd = ema(prices[-26:], 12) - ema(prices[-26:], 26)\n    return 1 if macd > 0 else -1\n'
   },
   {
     name: 'DCF sensitivity',
-    author: 'System template',
-    summary: 'Valuation scaffold that keeps discount and terminal assumptions explicit.',
+    description: 'Valuation workbench for scenario-testing growth and discount rates.',
     code:
-      '# QFin Terminal - DCF template\n\ndef valuation(free_cash_flow, growth=0.04, discount=0.10, terminal=0.025):\n    years = 5\n    cash_flows = []\n    for year in range(1, years + 1):\n        cash_flows.append(free_cash_flow * ((1 + growth) ** year))\n\n    present = sum(cf / ((1 + discount) ** index) for index, cf in enumerate(cash_flows, 1))\n    terminal_value = cash_flows[-1] * (1 + terminal) / (discount - terminal)\n    return present + terminal_value / ((1 + discount) ** years)\n'
+      '# DCF sensitivity template\n\ndef valuation(free_cash_flow, growth=0.04, discount=0.1, terminal=0.025):\n    years = 5\n    cash_flows = []\n    for year in range(1, years + 1):\n        cash_flows.append(free_cash_flow * ((1 + growth) ** year))\n    present = sum(cf / ((1 + discount) ** index) for index, cf in enumerate(cash_flows, 1))\n    terminal_value = cash_flows[-1] * (1 + terminal) / (discount - terminal)\n    return present + terminal_value / ((1 + discount) ** years)\n'
   }
 ];
 
@@ -115,7 +130,11 @@ function makeId() {
   return Math.random().toString(36).slice(2) + Date.now().toString(36);
 }
 
-function fetchWithTimeout(url: string, options: RequestInit = {}, timeoutMs = 12000) {
+function fetchWithTimeout(url: string, options: RequestInit = {}, timeoutMs?: number | null) {
+  if (!timeoutMs || timeoutMs <= 0) {
+    return fetch(url, options);
+  }
+
   const controller = new AbortController();
   const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
 
@@ -125,12 +144,20 @@ function fetchWithTimeout(url: string, options: RequestInit = {}, timeoutMs = 12
   }).finally(() => window.clearTimeout(timeoutId));
 }
 
+function sanitizeAssistantText(text: string) {
+  return text
+    .split('\n')
+    .filter((line) => line.trim() !== '---')
+    .join('\n')
+    .replace(/[ \t]{2,}/g, ' ')
+    .trim();
+}
+
 function renderInlineMarkdown(text: string) {
   return text.split(/(\*\*[^*]+\*\*)/g).map((part, index) => {
     if (part.startsWith('**') && part.endsWith('**')) {
       return <strong key={index}>{part.slice(2, -2)}</strong>;
     }
-
     return part;
   });
 }
@@ -148,20 +175,201 @@ function parseTableLine(line: string) {
     .map((cell) => cell.trim());
 }
 
+function formatMetricLabel(label: string) {
+  return label
+    .replace(/_/g, ' ')
+    .replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
+function modelStatusLabel(status?: string) {
+  if (!status) return 'Research';
+  return status.replace(/-/g, ' ').replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
+function TrendChart({
+  series,
+  compact = false
+}: {
+  series?: Array<{ label: string; equity: number; benchmark: number; drawdown: number }>;
+  compact?: boolean;
+}) {
+  if (!series?.length) return null;
+
+  const width = compact ? 320 : 760;
+  const height = compact ? 148 : 248;
+  const left = 14;
+  const right = 14;
+  const top = 16;
+  const bottom = 24;
+  const chartWidth = width - left - right;
+  const chartHeight = height - top - bottom;
+  const gradientId = `equity-fill-${compact ? 'compact' : 'full'}-${Math.round(series[0].equity)}-${Math.round(series[series.length - 1].equity)}`;
+  const values = series.flatMap((point) => [point.equity, point.benchmark]);
+  const min = Math.min(...values);
+  const max = Math.max(...values);
+  const range = Math.max(1, max - min);
+
+  const xFor = (index: number) =>
+    left + (series.length === 1 ? chartWidth / 2 : (chartWidth * index) / (series.length - 1));
+  const yFor = (value: number) => top + ((max - value) / range) * chartHeight;
+
+  const areaPath = series
+    .map((point, index) => `${index === 0 ? 'M' : 'L'} ${xFor(index)} ${yFor(point.equity)}`)
+    .join(' ');
+  const areaFill = `${areaPath} L ${xFor(series.length - 1)} ${top + chartHeight} L ${xFor(0)} ${top + chartHeight} Z`;
+  const benchmarkPath = series
+    .map((point, index) => `${index === 0 ? 'M' : 'L'} ${xFor(index)} ${yFor(point.benchmark)}`)
+    .join(' ');
+
+  return (
+    <svg
+      className={compact ? 'trendChart compact' : 'trendChart'}
+      viewBox={`0 0 ${width} ${height}`}
+      preserveAspectRatio="none"
+      aria-hidden="true"
+    >
+      <defs>
+        <linearGradient id={gradientId} x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stopColor="rgba(126, 98, 255, 0.28)" />
+          <stop offset="100%" stopColor="rgba(126, 98, 255, 0.02)" />
+        </linearGradient>
+      </defs>
+      {[0, 0.5, 1].map((step) => (
+        <line
+          key={step}
+          x1={left}
+          x2={width - right}
+          y1={top + chartHeight * step}
+          y2={top + chartHeight * step}
+          className="chartGridLine"
+        />
+      ))}
+      <path d={areaFill} fill={`url(#${gradientId})`} />
+      <path d={benchmarkPath} className="chartBenchmarkLine" />
+      <path d={areaPath} className="chartEquityLine" />
+      {series.map((point, index) => (
+        <text
+          key={`${point.label}-${index}`}
+          x={xFor(index)}
+          y={height - 6}
+          textAnchor="middle"
+          className="chartAxisLabel"
+        >
+          {point.label}
+        </text>
+      ))}
+    </svg>
+  );
+}
+
+function BuilderOutputPanel({
+  builderOutput,
+  builderResult
+}: {
+  builderOutput: string;
+  builderResult: BuilderResult | null;
+}) {
+  if (!builderResult) {
+    return (
+      <div className="outputPanel">
+        <span>Output</span>
+        <pre>{builderOutput}</pre>
+        <p>
+          Hypothetical or simulated performance shown here is part of the builder MVP and
+          not a guarantee of future results.
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="outputPanel richOutputPanel">
+      <div className="outputHeader">
+        <div>
+          <span>Simulation report</span>
+          <h3>{builderResult.name}</h3>
+          <p>{builderResult.summary}</p>
+        </div>
+        <strong className={`statusBadge status-${builderResult.status || 'research'}`}>
+          {modelStatusLabel(builderResult.status)}
+        </strong>
+      </div>
+
+      <div className="builderMetricGrid">
+        {Object.entries(builderResult.stats).map(([label, value]) => (
+          <article key={label} className="builderMetricCard">
+            <span>{formatMetricLabel(label)}</span>
+            <strong>{value}</strong>
+          </article>
+        ))}
+      </div>
+
+      <article className="builderChartCard">
+        <div className="builderPanelHeader">
+          <div>
+            <h4>Simulation curve</h4>
+            <p>
+              Strategy equity vs {builderResult.profile?.benchmark || 'benchmark'} preview over
+              the last 12 periods.
+            </p>
+          </div>
+        </div>
+        <TrendChart series={builderResult.series} />
+      </article>
+
+      <div className="builderInsightGrid">
+        <article className="builderInsightCard">
+          <h4>Real-world deployment</h4>
+          <dl className="builderFacts">
+            {Object.entries(builderResult.profile || {}).map(([label, value]) => (
+              <div key={label}>
+                <dt>{formatMetricLabel(label)}</dt>
+                <dd>{value}</dd>
+              </div>
+            ))}
+          </dl>
+        </article>
+
+        <article className="builderInsightCard">
+          <h4>Validation notes</h4>
+          <ul className="builderBulletList">
+            {(builderResult.validation || []).map((item) => (
+              <li key={item.label}>
+                <strong>{item.label}</strong>
+                <span>{item.detail}</span>
+              </li>
+            ))}
+            {(builderResult.notes || []).map((note) => (
+              <li key={note}>
+                <strong>Note</strong>
+                <span>{note}</span>
+              </li>
+            ))}
+          </ul>
+        </article>
+      </div>
+
+      {!!builderResult.highlights?.length && (
+        <div className="builderHighlights">
+          {builderResult.highlights.map((highlight) => (
+            <span key={highlight} className="tagPill">
+              {highlight}
+            </span>
+          ))}
+        </div>
+      )}
+
+      <p>
+        Hypothetical or simulated performance shown here is part of the builder MVP and
+        not a guarantee of future results.
+      </p>
+    </div>
+  );
+}
+
 function isTableSeparator(line: string) {
   const cells = parseTableLine(line);
   return cells.length > 1 && cells.every((cell) => /^:?-{3,}:?$/.test(cell.replace(/\s/g, '')));
-}
-
-function formatDate(value?: string) {
-  if (!value) return '';
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return value;
-  return new Intl.DateTimeFormat('en-US', {
-    month: 'short',
-    day: 'numeric',
-    year: 'numeric'
-  }).format(date);
 }
 
 function MessageBody({ content }: { content: string }) {
@@ -246,32 +454,12 @@ function MessageBody({ content }: { content: string }) {
       continue;
     }
 
-    const boldHeadingMatch = trimmed.match(/^\*\*([^*]+):\*\*\s*(.*)$/);
-    if (boldHeadingMatch) {
-      blocks.push(
-        <h3 className="reportHeading" key={`bold-heading-${index}`}>
-          {boldHeadingMatch[1]}
-        </h3>
-      );
-
-      if (boldHeadingMatch[2]) {
-        blocks.push(
-          <p key={`bold-paragraph-${index}`}>{renderInlineMarkdown(boldHeadingMatch[2])}</p>
-        );
-      }
-
-      index += 1;
-      continue;
-    }
-
     if (/^[-*]\s+/.test(trimmed)) {
       const items: string[] = [];
-
       while (index < lines.length && /^[-*]\s+/.test(lines[index].trim())) {
         items.push(lines[index].trim().replace(/^[-*]\s+/, ''));
         index += 1;
       }
-
       blocks.push(
         <ul className="reportList" key={`list-${index}`}>
           {items.map((item, itemIndex) => (
@@ -289,7 +477,6 @@ function MessageBody({ content }: { content: string }) {
       index < lines.length &&
       lines[index].trim() &&
       !/^#{1,4}\s+/.test(lines[index].trim()) &&
-      !/^\*\*([^*]+):\*\*/.test(lines[index].trim()) &&
       !/^[-*]\s+/.test(lines[index].trim()) &&
       !isTableLine(lines[index].trim()) &&
       !lines[index].trim().startsWith('```')
@@ -304,6 +491,17 @@ function MessageBody({ content }: { content: string }) {
   }
 
   return <>{blocks}</>;
+}
+
+function relativeTime(iso: string) {
+  const then = new Date(iso).getTime();
+  const now = Date.now();
+  const minutes = Math.max(1, Math.round((now - then) / 60000));
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.round(hours / 24);
+  return `${days}d ago`;
 }
 
 function IconLogo() {
@@ -393,49 +591,44 @@ function IconPlusBox() {
 
 function App() {
   const [view, setView] = useState<View>('home');
-  const [communityTab, setCommunityTab] = useState<CommunityTab>('news');
-
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [prompt, setPrompt] = useState('');
   const [loading, setLoading] = useState(false);
-  const [selectedFileName, setSelectedFileName] = useState('');
-
   const [backendStatus, setBackendStatus] = useState('Checking QFin backend...');
   const [backendOnline, setBackendOnline] = useState(false);
+  const [selectedFileName, setSelectedFileName] = useState('');
 
   const [newsCategory, setNewsCategory] =
     useState<(typeof NEWS_CATEGORIES)[number]>('Crypto');
+  const [communityTab, setCommunityTab] = useState<CommunityTab>('news');
   const [news, setNews] = useState<NewsItem[]>([]);
   const [newsLoading, setNewsLoading] = useState(false);
   const [newsError, setNewsError] = useState('');
   const [expandedNewsId, setExpandedNewsId] = useState<string | null>(null);
 
-  const [topThread, setTopThread] = useState<ForumThread | null>(null);
   const [forumThreads, setForumThreads] = useState<ForumThread[]>([]);
+  const [topThreads, setTopThreads] = useState<ForumThread[]>([]);
   const [forumLoading, setForumLoading] = useState(false);
-  const [forumError, setForumError] = useState('');
-  const [forumTitle, setForumTitle] = useState('');
-  const [forumBody, setForumBody] = useState('');
-  const [forumAuthor, setForumAuthor] = useState('');
-  const [forumPosting, setForumPosting] = useState(false);
+  const [threadTitle, setThreadTitle] = useState('');
+  const [threadBody, setThreadBody] = useState('');
+  const [threadAuthor, setThreadAuthor] = useState('MarketNomad');
 
-  const [communityModels, setCommunityModels] = useState<CommunityModel[]>([]);
+  const [models, setModels] = useState<CommunityModel[]>([]);
   const [modelsLoading, setModelsLoading] = useState(false);
-  const [modelsError, setModelsError] = useState('');
 
-  const [builderName, setBuilderName] = useState('Volatility Regime Switcher');
-  const [builderAuthor, setBuilderAuthor] = useState('Private workspace');
-  const [builderSummary, setBuilderSummary] = useState('A regime-aware trading model for sandbox runs and publishing.');
+  const [builderName, setBuilderName] = useState(TEMPLATE_SNIPPETS[0].name);
   const [builderCode, setBuilderCode] = useState(TEMPLATE_SNIPPETS[0].code);
   const [builderOutput, setBuilderOutput] = useState(
     'Output appears here after Run template or Run privately.'
   );
-  const [builderBusy, setBuilderBusy] = useState(false);
+  const [builderResult, setBuilderResult] = useState<BuilderResult | null>(null);
+  const [builderAuthor, setBuilderAuthor] = useState('James');
 
   async function checkBackend() {
     try {
       const response = await fetchWithTimeout(`${API_BASE_URL}/health`, {}, 7000);
       const data = await response.json();
+
       if (response.ok && data.status === 'ok') {
         setBackendOnline(true);
         setBackendStatus('QFin backend connected');
@@ -453,18 +646,19 @@ function App() {
     checkBackend();
   }, []);
 
-  async function sendPrompt(input?: string) {
-    const message = (input ?? prompt).trim();
-    if (!message || loading) return;
+  async function sendMessage(input = prompt) {
+    const cleanInput = input.trim();
+    if (!cleanInput || loading) return;
 
-    setView('home');
     setPrompt('');
+    setView('home');
 
     const assistantId = makeId();
+
     setMessages((current) => [
       ...current,
-      { id: makeId(), role: 'user', content: message },
-      { id: assistantId, role: 'assistant', content: 'QFin is working on it...' }
+      { id: makeId(), role: 'user', content: cleanInput },
+      { id: assistantId, role: 'assistant', content: 'QFin is thinking...' }
     ]);
 
     setLoading(true);
@@ -474,42 +668,32 @@ function App() {
         `${API_BASE_URL}/agent/chat/stream`,
         {
           method: 'POST',
-          headers: {
-            'Content-Type': 'application/json'
-          },
-          body: JSON.stringify({ message })
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ message: cleanInput })
         },
-        90000
+        AGENT_REQUEST_TIMEOUT_MS
       );
 
       if (!response.ok) {
         throw new Error(`Backend returned ${response.status}`);
       }
 
-      const text = (await response.text()).trim();
-      const finalText = text || CHAT_FAILURE_MESSAGE;
+      const text = await response.text();
+      const finalText = text.trim() ? sanitizeAssistantText(text) : FAILURE_MESSAGE;
 
       setMessages((current) =>
-        current.map((entry) =>
-          entry.id === assistantId
-            ? {
-                ...entry,
-                content: finalText,
-                error: false
-              }
-            : entry
+        current.map((message) =>
+          message.id === assistantId
+            ? { ...message, content: finalText, error: false }
+            : message
         )
       );
     } catch {
       setMessages((current) =>
-        current.map((entry) =>
-          entry.id === assistantId
-            ? {
-                ...entry,
-                content: CHAT_FAILURE_MESSAGE,
-                error: true
-              }
-            : entry
+        current.map((message) =>
+          message.id === assistantId
+            ? { ...message, content: FAILURE_MESSAGE, error: true }
+            : message
         )
       );
     } finally {
@@ -520,38 +704,35 @@ function App() {
   async function loadNews(category: string) {
     setNewsLoading(true);
     setNewsError('');
+    setNews([]);
 
-    const urls = [
-      `${API_BASE_URL}/community/news/${encodeURIComponent(category)}`,
-      `${API_BASE_URL}/news/${encodeURIComponent(category)}`
-    ];
+    const primaryUrl = `${API_BASE_URL}/community/news/${encodeURIComponent(category)}`;
+    const fallbackUrl = `${API_BASE_URL}/news/${encodeURIComponent(category)}`;
 
     try {
-      let items: NewsItem[] = [];
-
-      for (const url of urls) {
-        try {
-          const response = await fetchWithTimeout(url, {}, 30000);
-          if (!response.ok) continue;
-          const data = await response.json();
-          if (Array.isArray(data.news) && data.news.length) {
-            items = data.news.slice(0, 5);
-            break;
-          }
-        } catch {
-          continue;
+      const readNews = async (url: string) => {
+        const response = await fetchWithTimeout(url, {}, 30000);
+        if (!response.ok) {
+          throw new Error(`News request failed: ${response.status}`);
         }
-      }
+        const data = await response.json();
+        return Array.isArray(data.news) ? data.news.slice(0, 5) : [];
+      };
+
+      const results = await Promise.allSettled([readNews(primaryUrl), readNews(fallbackUrl)]);
+      const items =
+        results.find(
+          (result): result is PromiseFulfilledResult<NewsItem[]> =>
+            result.status === 'fulfilled' && result.value.length > 0
+        )?.value || [];
 
       if (!items.length) {
-        throw new Error('No news returned');
+        throw new Error('Backend returned no news array.');
       }
 
-      setExpandedNewsId(null);
       setNews(items);
     } catch {
-      setNews([]);
-      setNewsError(NEWS_FAILURE_MESSAGE);
+      setNewsError('News unavailable. Please retry.');
     } finally {
       setNewsLoading(false);
     }
@@ -559,216 +740,154 @@ function App() {
 
   async function loadForum() {
     setForumLoading(true);
-    setForumError('');
-
     try {
-      const response = await fetchWithTimeout(`${API_BASE_URL}/community/forum`, {}, 15000);
-      if (!response.ok) {
-        throw new Error(`Forum returned ${response.status}`);
-      }
-
+      const response = await fetchWithTimeout(`${API_BASE_URL}/community/forum`, {}, 20000);
       const data = await response.json();
-      setTopThread(data.top_today?.[0] || null);
       setForumThreads(Array.isArray(data.threads) ? data.threads : []);
-    } catch {
-      setForumError(FORUM_FAILURE_MESSAGE);
-      setTopThread(null);
-      setForumThreads([]);
+      setTopThreads(Array.isArray(data.top_today) ? data.top_today : []);
     } finally {
       setForumLoading(false);
     }
   }
 
-  async function submitForumThread(event?: React.FormEvent) {
-    event?.preventDefault();
-    if (!forumTitle.trim() || !forumBody.trim() || forumPosting) return;
-
-    setForumPosting(true);
-    setForumError('');
-
-    try {
-      const response = await fetchWithTimeout(
-        `${API_BASE_URL}/community/forum`,
-        {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json'
-          },
-          body: JSON.stringify({
-            title: forumTitle,
-            body: forumBody,
-            author: forumAuthor
-          })
-        },
-        15000
-      );
-
-      if (!response.ok) {
-        throw new Error(`Forum returned ${response.status}`);
-      }
-
-      const data = await response.json();
-      const thread = data.thread as ForumThread;
-      setForumThreads((current) => [thread, ...current]);
-      setTopThread((current) => {
-        if (!current || thread.score >= current.score) return thread;
-        return current;
-      });
-      setForumTitle('');
-      setForumBody('');
-      setForumAuthor('');
-    } catch {
-      setForumError(FORUM_FAILURE_MESSAGE);
-    } finally {
-      setForumPosting(false);
-    }
+  async function postThread() {
+    if (!threadTitle.trim() || !threadBody.trim()) return;
+    await fetchWithTimeout(
+      `${API_BASE_URL}/community/forum`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          title: threadTitle,
+          body: threadBody,
+          author: threadAuthor
+        })
+      },
+      20000
+    );
+    setThreadTitle('');
+    setThreadBody('');
+    loadForum();
   }
 
-  async function voteThread(threadId: string, direction: VoteDirection) {
-    try {
-      const response = await fetchWithTimeout(
-        `${API_BASE_URL}/community/forum/${encodeURIComponent(threadId)}/vote`,
-        {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json'
-          },
-          body: JSON.stringify({ direction })
-        },
-        12000
-      );
-
-      if (!response.ok) {
-        throw new Error('Vote failed');
-      }
-
-      const data = await response.json();
-      const thread = data.thread as ForumThread;
-      setForumThreads((current) =>
-        current
-          .map((entry) => (entry.id === thread.id ? thread : entry))
-          .sort((a, b) => b.score - a.score)
-      );
-      setTopThread((current) => {
-        if (!current || current.id === thread.id || thread.score >= current.score) return thread;
-        return current;
-      });
-    } catch {
-      setForumError(FORUM_FAILURE_MESSAGE);
-    }
+  async function voteThread(threadId: string, direction: 'up' | 'down') {
+    await fetchWithTimeout(
+      `${API_BASE_URL}/community/forum/${threadId}/vote`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ direction })
+      },
+      15000
+    );
+    loadForum();
   }
 
   async function loadModels() {
     setModelsLoading(true);
-    setModelsError('');
-
     try {
-      const response = await fetchWithTimeout(`${API_BASE_URL}/community/models`, {}, 15000);
-      if (!response.ok) {
-        throw new Error(`Models returned ${response.status}`);
-      }
-
+      const response = await fetchWithTimeout(`${API_BASE_URL}/community/models`, {}, 20000);
       const data = await response.json();
-      setCommunityModels(Array.isArray(data.models) ? data.models : []);
-    } catch {
-      setModelsError(MODELS_FAILURE_MESSAGE);
-      setCommunityModels([]);
+      setModels(Array.isArray(data.models) ? data.models : []);
     } finally {
       setModelsLoading(false);
     }
   }
 
-  function loadModelIntoBuilder(model: CommunityModel) {
-    setBuilderName(model.name);
-    setBuilderAuthor(model.author);
-    setBuilderSummary(model.summary);
-    setBuilderCode(model.code);
-    setBuilderOutput('Model loaded into the builder. Run it privately or publish an updated version.');
-    setCommunityTab('builder');
-  }
+  async function runBuilder(mode: 'run' | 'private') {
+    if (!builderName.trim() || !builderCode.trim()) return;
+    const endpoint = mode === 'private' ? '/builder/run-private' : '/builder/run';
+    const response = await fetchWithTimeout(
+      `${API_BASE_URL}${endpoint}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: builderName,
+          code: builderCode,
+          author: builderAuthor,
+          summary: 'Saved from the QFin builder.'
+        })
+      },
+      30000
+    );
+    const data = await response.json();
 
-  function formatBuilderOutput(result?: BuilderResult, model?: CommunityModel) {
-    if (result) {
-      const lines = [
-        result.summary,
-        '',
-        ...(result.stats
-          ? Object.entries(result.stats).map(([key, value]) => `${key.replace(/_/g, ' ')}: ${value}`)
-          : []),
-        '',
-        ...(result.notes || [])
-      ];
-      return lines.join('\n').trim();
-    }
-
-    if (model) {
-      return `${model.name} was saved as ${model.visibility || 'community'} model by ${model.author}.`;
-    }
-
-    return BUILDER_FAILURE_MESSAGE;
-  }
-
-  async function runBuilderAction(endpoint: string) {
-    if (!builderName.trim() || !builderCode.trim() || builderBusy) return;
-
-    setBuilderBusy(true);
-    setBuilderOutput('QFin builder is processing your request...');
-
-    try {
-      const response = await fetchWithTimeout(
-        `${API_BASE_URL}${endpoint}`,
-        {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json'
-          },
-          body: JSON.stringify({
-            name: builderName,
-            author: builderAuthor,
-            summary: builderSummary,
-            code: builderCode
-          })
-        },
-        20000
+    if (mode === 'private') {
+      const result = data.result;
+      setBuilderResult(result);
+      setBuilderOutput(
+        `${result.summary}\n\nSaved privately as ${data.model?.name || builderName}.\nAnnual return: ${result.stats.annual_return}\nSharpe: ${result.stats.sharpe}\nMax drawdown: ${result.stats.max_drawdown}\nTurnover: ${result.stats.turnover}\nWin rate: ${result.stats.win_rate}`
       );
-
-      if (!response.ok) {
-        throw new Error(`Builder returned ${response.status}`);
-      }
-
-      const data = await response.json();
-      setBuilderOutput(formatBuilderOutput(data.result, data.model));
-
-      if (endpoint === '/builder/publish' || endpoint === '/community/models') {
-        loadModels();
-      }
-      if (endpoint === '/builder/publish') {
-        loadModels();
-      }
-    } catch {
-      setBuilderOutput(BUILDER_FAILURE_MESSAGE);
-    } finally {
-      setBuilderBusy(false);
+      return;
     }
+
+    const result = data.result;
+    setBuilderResult(result);
+    setBuilderOutput(
+      `${result.summary}\n\nAnnual return: ${result.stats.annual_return}\nSharpe: ${result.stats.sharpe}\nMax drawdown: ${result.stats.max_drawdown}\nTurnover: ${result.stats.turnover}\nWin rate: ${result.stats.win_rate}\n\n${result.notes.join('\n')}`
+    );
+  }
+
+  async function publishBuilderModel() {
+    if (!builderName.trim() || !builderCode.trim()) return;
+    const response = await fetchWithTimeout(
+      `${API_BASE_URL}/builder/publish`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: builderName,
+          code: builderCode,
+          author: builderAuthor,
+          summary: 'Published from the QFin builder.'
+        })
+      },
+      30000
+    );
+    const data = await response.json();
+    setBuilderResult(null);
+    setBuilderOutput(
+      `Published to community models.\n\nModel: ${data.model?.name || builderName}\nAuthor: ${data.model?.author || builderAuthor}\nScore: ${data.model?.score ?? 0}`
+    );
+    setCommunityTab('models');
+    loadModels();
+  }
+
+  async function savePrivateBuilder() {
+    if (!builderName.trim() || !builderCode.trim()) return;
+    const response = await fetchWithTimeout(
+      `${API_BASE_URL}/builder/save-private`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: builderName,
+          code: builderCode,
+          author: builderAuthor,
+          summary: 'Saved from the QFin builder.'
+        })
+      },
+      20000
+    );
+    const data = await response.json();
+    setBuilderResult(null);
+    setBuilderOutput(
+      `Saved privately.\n\nModel: ${data.model?.name || builderName}\nAuthor: ${data.model?.author || builderAuthor}\nCreated: ${data.model?.created_at || 'just now'}`
+    );
   }
 
   useEffect(() => {
     if (view === 'community' && communityTab === 'news') {
       loadNews(newsCategory);
     }
-  }, [view, communityTab, newsCategory]);
-
-  useEffect(() => {
     if (view === 'community' && communityTab === 'forum') {
       loadForum();
     }
-  }, [view, communityTab]);
-
-  useEffect(() => {
-    if (view === 'community' && (communityTab === 'models' || communityTab === 'builder')) {
+    if (view === 'community' && communityTab === 'models') {
       loadModels();
     }
-  }, [view, communityTab]);
+  }, [view, communityTab, newsCategory]);
 
   return (
     <div className="appShell">
@@ -792,6 +911,7 @@ function App() {
             <IconHome />
             Home
           </button>
+
           <button
             type="button"
             className={view === 'community' ? 'active' : ''}
@@ -802,7 +922,9 @@ function App() {
           </button>
         </nav>
 
-        <p className="sidebarNote">Qwen-powered financial intelligence. Not investment advice.</p>
+        <p className="sidebarNote">
+          Qwen-powered financial intelligence. Not investment advice.
+        </p>
       </aside>
 
       <main className="mainSurface">
@@ -821,7 +943,7 @@ function App() {
               <button
                 type="button"
                 className="watchlistButton"
-                onClick={() => window.alert('Reports & Watchlist is coming soon.')}
+                onClick={() => alert('Reports & Watchlist is coming soon.')}
               >
                 <IconFolder />
                 Reports & Watchlist
@@ -832,22 +954,12 @@ function App() {
               <div className="chartBand" aria-hidden="true" />
               <div className="heroCopy">
                 <h1>Ask QFin. Explore Community.</h1>
-                <p>Qwen handles the language. QFin routes the work, pulls the data, and returns the result.</p>
+                <p>Qwen handles the language. QFin routes the finance work and brings back the data.</p>
               </div>
             </section>
 
             <section className="chatSurface" aria-label="QFin chat">
-              {!messages.length && (
-                <div className="promptChips">
-                  {SUGGESTED_PROMPTS.map((suggestion) => (
-                    <button key={suggestion} type="button" onClick={() => sendPrompt(suggestion)}>
-                      {suggestion}
-                    </button>
-                  ))}
-                </div>
-              )}
-
-              {messages.length > 0 && (
+              {!!messages.length && (
                 <div className="chatActions">
                   <button type="button" onClick={() => setMessages([])}>
                     New chat
@@ -858,10 +970,9 @@ function App() {
               <div className="chatTranscript" aria-live="polite">
                 {!messages.length && (
                   <div className="emptyChat">
-                    <h2>What would you like to analyze?</h2>
+                    <h2>What would you like to ask?</h2>
                     <p>
-                      Ask for a company analysis, valuation explanation, market update, or a quant
-                      finance idea.
+                      Ask a normal question, a finance concept, a company deep dive, or a ticker comparison.
                     </p>
                   </div>
                 )}
@@ -879,11 +990,21 @@ function App() {
                 ))}
               </div>
 
+              {!messages.length && (
+                <div className="promptChips">
+                  {SUGGESTED_PROMPTS.map((suggestion) => (
+                    <button key={suggestion} type="button" onClick={() => sendMessage(suggestion)}>
+                      {suggestion}
+                    </button>
+                  ))}
+                </div>
+              )}
+
               <form
                 className="composer"
                 onSubmit={(event) => {
                   event.preventDefault();
-                  sendPrompt();
+                  sendMessage();
                 }}
               >
                 <textarea
@@ -892,10 +1013,10 @@ function App() {
                   onKeyDown={(event) => {
                     if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
                       event.preventDefault();
-                      sendPrompt();
+                      sendMessage();
                     }
                   }}
-                  placeholder="Ask QFin to analyze a company, compare stocks, explain a finance concept, or summarize the market..."
+                  placeholder="Ask QFin anything. For finance questions, it will route the data work and let Qwen write the final answer."
                 />
 
                 <div className="composerFooter">
@@ -903,7 +1024,9 @@ function App() {
                     <input
                       type="file"
                       accept=".csv,.xls,.xlsx"
-                      onChange={(event) => setSelectedFileName(event.target.files?.[0]?.name || '')}
+                      onChange={(event) =>
+                        setSelectedFileName(event.target.files?.[0]?.name || '')
+                      }
                     />
                     <span>+</span>
                     {selectedFileName || 'Upload CSV or Excel'}
@@ -921,7 +1044,7 @@ function App() {
               </form>
 
               <p className="supportText">
-                QFin uses one backend chat route and keeps the prompt handling on the server side.
+                Basic chat routes to Qwen. Finance questions route through QFin tools and come back as a final narrated answer.
               </p>
             </section>
           </>
@@ -933,8 +1056,7 @@ function App() {
               <p>Community</p>
               <h1>Ideas, models, and market chatter.</h1>
               <span>
-                Browse market news, post threads, vote on the strongest ideas, and remix
-                community-built trading templates.
+                Browse market news, post forum threads, upvote the strongest ideas, and publish builder models into the shared feed.
               </span>
             </header>
 
@@ -1036,79 +1158,72 @@ function App() {
               <section className="communityStack">
                 <div className="sectionHeader">
                   <h2>Forum</h2>
-                  <button type="button" className="darkButton" onClick={() => setForumTitle('')}>
-                    <IconPlusBox />
-                    New thread
-                  </button>
                 </div>
 
-                {topThread && (
-                  <article className="topThreadCard">
-                    <span>Top thread today</span>
-                    <h3>{topThread.title}</h3>
-                    <p>{topThread.body}</p>
+                <article className="modelEditor forumComposer">
+                  <div className="modelToolbar">
+                    <h2>Start a thread</h2>
+                    <div>
+                      <input
+                        className="forumAuthorInput"
+                        value={threadAuthor}
+                        onChange={(event) => setThreadAuthor(event.target.value)}
+                        placeholder="Author name"
+                      />
+                      <button type="button" className="darkButton" onClick={postThread}>
+                        <IconPlusBox />
+                        Post thread
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="forumComposerBody">
+                    <input
+                      className="forumTitleInput"
+                      value={threadTitle}
+                      onChange={(event) => setThreadTitle(event.target.value)}
+                      placeholder="Thread title"
+                    />
+                    <textarea
+                      className="forumTextArea"
+                      value={threadBody}
+                      onChange={(event) => setThreadBody(event.target.value)}
+                      placeholder="Write your thesis, question, setup, or observation."
+                    />
+                  </div>
+                </article>
+
+                {!!topThreads.length && (
+                  <article className="newsCard topThreadCard">
+                    <span className="sentiment">MOST UPVOTED TODAY</span>
+                    <h2>{topThreads[0].title}</h2>
+                    <p>{topThreads[0].body}</p>
                     <div className="threadMeta">
-                      <span>{topThread.author}</span>
-                      <span>{topThread.score} score</span>
-                      <span>{formatDate(topThread.created_at)}</span>
+                      <span>{topThreads[0].author}</span>
+                      <span>{topThreads[0].score} score</span>
+                      <span>{relativeTime(topThreads[0].created_at)}</span>
                     </div>
                   </article>
                 )}
 
-                <form className="forumComposer" onSubmit={submitForumThread}>
-                  <div className="forumComposerBody">
-                    <input
-                      className="forumTitleInput"
-                      value={forumTitle}
-                      onChange={(event) => setForumTitle(event.target.value)}
-                      placeholder="Thread title"
-                    />
-                    <input
-                      className="forumAuthorInput"
-                      value={forumAuthor}
-                      onChange={(event) => setForumAuthor(event.target.value)}
-                      placeholder="Your name (optional)"
-                    />
-                    <textarea
-                      className="forumTextArea"
-                      value={forumBody}
-                      onChange={(event) => setForumBody(event.target.value)}
-                      placeholder="Share a trade idea, question, or market take..."
-                    />
-                  </div>
-                  <div className="modelActions">
-                    <button type="submit" className="darkButton" disabled={forumPosting}>
-                      {forumPosting ? 'Posting...' : 'Post thread'}
-                    </button>
-                  </div>
-                </form>
-
-                {forumError && (
+                {forumLoading && (
                   <article className="emptyState">
-                    <h2>{forumError}</h2>
-                    <button type="button" onClick={loadForum}>
-                      Retry
-                    </button>
+                    <h2>Loading forum</h2>
+                    <p>Fetching the latest threads and daily ranking.</p>
                   </article>
                 )}
 
-                {forumLoading && !forumThreads.length && (
-                  <article className="emptyState">
-                    <h2>Loading threads...</h2>
-                  </article>
-                )}
-
-                {!forumLoading && !forumError && (
-                  <div className="forumGrid">
+                {!forumLoading && (
+                  <section className="forumGrid">
                     {forumThreads.map((thread) => (
                       <article key={thread.id} className="threadCard">
                         <div className="voteRail">
                           <button type="button" onClick={() => voteThread(thread.id, 'up')}>
-                            ▲
+                            +1
                           </button>
                           <strong>{thread.score}</strong>
                           <button type="button" onClick={() => voteThread(thread.id, 'down')}>
-                            ▼
+                            -1
                           </button>
                         </div>
                         <div className="threadContent">
@@ -1116,13 +1231,14 @@ function App() {
                           <p>{thread.body}</p>
                           <div className="threadMeta">
                             <span>{thread.author}</span>
-                            <span>{thread.upvotes} up / {thread.downvotes} down</span>
-                            <span>{formatDate(thread.created_at)}</span>
+                            <span>{thread.upvotes} up</span>
+                            <span>{thread.downvotes} down</span>
+                            <span>{relativeTime(thread.created_at)}</span>
                           </div>
                         </div>
                       </article>
                     ))}
-                  </div>
+                  </section>
                 )}
               </section>
             )}
@@ -1133,54 +1249,84 @@ function App() {
                   <h2>Models</h2>
                 </div>
 
-                {modelsError && (
+                {modelsLoading && (
                   <article className="emptyState">
-                    <h2>{modelsError}</h2>
-                    <button type="button" onClick={loadModels}>
-                      Retry
-                    </button>
+                    <h2>Loading models</h2>
+                    <p>Fetching community-published trading models.</p>
                   </article>
                 )}
 
-                {modelsLoading && !communityModels.length && (
-                  <article className="emptyState">
-                    <h2>Loading models...</h2>
-                  </article>
-                )}
-
-                {!modelsLoading && !modelsError && (
-                  <div className="modelGrid">
-                    {communityModels.map((model) => (
+                {!modelsLoading && (
+                  <section className="modelGrid">
+                    {models.map((model) => (
                       <article key={model.id} className="modelCard">
-                        <div className="threadMeta">
-                          <span>{model.author}</span>
-                          <span>{model.score || 0} score</span>
+                        <div className="modelCardHeader">
+                          <span className="sentiment">{model.score} SCORE</span>
+                          <strong className={`statusBadge status-${model.status || 'research'}`}>
+                            {modelStatusLabel(model.status)}
+                          </strong>
                         </div>
-                        <h3>{model.name}</h3>
+                        <h2>{model.name}</h2>
                         <p>{model.summary}</p>
+                        <div className="modelChartCard">
+                          <div className="modelChartHeader">
+                            <span>Preview curve</span>
+                            <strong>{model.profile?.benchmark || 'SPY'} benchmark</strong>
+                          </div>
+                          <TrendChart series={model.series} compact />
+                        </div>
                         <div className="tagRow">
-                          {(model.tags || []).map((tag) => (
+                          {model.tags.map((tag) => (
                             <span key={tag} className="tagPill">
                               {tag}
                             </span>
                           ))}
                         </div>
                         <div className="modelStats">
-                          {Object.entries(model.stats || {}).map(([key, value]) => (
-                            <div key={key}>
-                              <span>{key.replace(/_/g, ' ')}</span>
+                          {Object.entries(model.stats).map(([label, value]) => (
+                            <div key={label}>
+                              <span>{label.replace(/_/g, ' ')}</span>
                               <strong>{value}</strong>
                             </div>
                           ))}
                         </div>
+                        {!!model.highlights?.length && (
+                          <ul className="modelHighlights">
+                            {model.highlights.map((highlight) => (
+                              <li key={highlight}>{highlight}</li>
+                            ))}
+                          </ul>
+                        )}
+                        {model.profile && (
+                          <dl className="modelFacts">
+                            {Object.entries(model.profile).slice(0, 4).map(([label, value]) => (
+                              <div key={label}>
+                                <dt>{formatMetricLabel(label)}</dt>
+                                <dd>{value}</dd>
+                              </div>
+                            ))}
+                          </dl>
+                        )}
+                        <div className="threadMeta">
+                          <span>{model.author}</span>
+                          <span>{relativeTime(model.created_at)}</span>
+                        </div>
                         <div className="modelActions">
-                          <button type="button" onClick={() => loadModelIntoBuilder(model)}>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setBuilderName(model.name);
+                              setBuilderCode(model.code);
+                              setBuilderResult(null);
+                              setCommunityTab('builder');
+                            }}
+                          >
                             Load in builder
                           </button>
                         </div>
                       </article>
                     ))}
-                  </div>
+                  </section>
                 )}
               </section>
             )}
@@ -1191,36 +1337,19 @@ function App() {
                   <div className="modelToolbar">
                     <h2>Model editor</h2>
                     <div>
-                      <button
-                        type="button"
-                        onClick={() => runBuilderAction('/builder/save-private')}
-                        disabled={builderBusy}
-                      >
+                      <button type="button" onClick={savePrivateBuilder}>
                         <IconSave />
                         Save privately
                       </button>
-                      <button
-                        type="button"
-                        onClick={() => runBuilderAction('/builder/publish')}
-                        disabled={builderBusy}
-                      >
+                      <button type="button" onClick={publishBuilderModel}>
                         <IconUpload />
                         Publish
                       </button>
-                      <button
-                        type="button"
-                        onClick={() => runBuilderAction('/builder/run-private')}
-                        disabled={builderBusy}
-                      >
+                      <button type="button" onClick={() => runBuilder('private')}>
                         <IconPlay />
                         Run privately
                       </button>
-                      <button
-                        type="button"
-                        className="darkButton"
-                        onClick={() => runBuilderAction('/builder/run')}
-                        disabled={builderBusy}
-                      >
+                      <button type="button" className="darkButton" onClick={() => runBuilder('run')}>
                         <IconPlay />
                         Run template
                       </button>
@@ -1229,21 +1358,16 @@ function App() {
 
                   <div className="builderMetaRow">
                     <input
+                      className="forumTitleInput"
                       value={builderName}
                       onChange={(event) => setBuilderName(event.target.value)}
                       placeholder="Model name"
                     />
                     <input
+                      className="forumAuthorInput"
                       value={builderAuthor}
                       onChange={(event) => setBuilderAuthor(event.target.value)}
                       placeholder="Author"
-                    />
-                  </div>
-                  <div className="builderMetaRow">
-                    <input
-                      value={builderSummary}
-                      onChange={(event) => setBuilderSummary(event.target.value)}
-                      placeholder="Short model summary"
                     />
                   </div>
 
@@ -1254,32 +1378,32 @@ function App() {
                     spellCheck={false}
                   />
 
-                  <div className="outputPanel">
-                    <span>Output</span>
-                    <pre>{builderOutput}</pre>
-                    <p>Hypothetical or simulated performance shown here is not a guarantee of future results.</p>
-                  </div>
+                  <BuilderOutputPanel builderOutput={builderOutput} builderResult={builderResult} />
                 </article>
 
                 <aside className="templatePanel">
                   <h2>Templates</h2>
-                  {TEMPLATE_SNIPPETS.map((template) => (
-                    <button
-                      key={template.name}
-                      type="button"
-                      onClick={() => {
-                        setBuilderName(template.name);
-                        setBuilderAuthor(template.author);
-                        setBuilderSummary(template.summary);
-                        setBuilderCode(template.code);
-                        setBuilderOutput('Template loaded. Run template to preview the backend result.');
-                      }}
-                    >
-                      {template.name}
-                    </button>
-                  ))}
+                  <div className="templateList">
+                    {TEMPLATE_SNIPPETS.map((template) => (
+                      <button
+                        key={template.name}
+                        type="button"
+                        className="templateButton"
+                        onClick={() => {
+                          setBuilderName(template.name);
+                          setBuilderCode(template.code);
+                          setBuilderResult(null);
+                          setBuilderOutput('Template loaded. Run template, run privately, or publish it.');
+                        }}
+                      >
+                        <strong>{template.name}</strong>
+                        <span>{template.description}</span>
+                      </button>
+                    ))}
+                  </div>
                   <p>
-                    Published community models can be loaded here, edited, run privately, or pushed back to the public model list.
+                    A strong model page should show a strategy curve, benchmark comparison, risk
+                    metrics, market coverage, and a clear live-deployment note.
                   </p>
                 </aside>
               </section>
