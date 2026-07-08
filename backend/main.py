@@ -19,7 +19,7 @@ from pydantic import BaseModel
 from news_module import generate_news, normalize_category
 from qwen_client import QwenClientError, call_qwen, qwen_is_configured
 
-app = FastAPI(title="QFin Terminal API", version="qfin-agent-2.1")
+app = FastAPI(title="QFin Terminal API", version="qfin-agent-2.5")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -91,23 +91,102 @@ ALIASES = {
     "merdeka gold": "MDKA.JK",
     "merdeka battery": "MBMA.JK",
     "mbma": "MBMA.JK",
+    "dbs": "D05.SI",
+    "dbs group": "D05.SI",
+    "ocbc": "O39.SI",
+    "uob": "U11.SI",
+    "singtel": "Z74.SI",
+    "sea limited": "SE",
+    "maybank": "1155.KL",
+    "cimb": "1023.KL",
+    "public bank": "1295.KL",
+    "tenaga nasional": "5347.KL",
+    "petronas chemicals": "5183.KL",
+    "asml": "ASML",
+    "lvmh": "MC.PA",
+    "totalenergies": "TTE.PA",
+    "sap": "SAP",
+    "siemens": "SIE.DE",
+    "shell": "SHEL",
+    "hsbc": "HSBC",
+    "nestle": "NESN.SW",
+    "novartis": "NVS",
+    "roche": "ROG.SW",
 }
 
-IDX_SYMBOLS = {
+US_SYMBOLS = {
+    "AAPL", "ABBV", "ABNB", "ABT", "ACN", "ADBE", "AMD", "AMGN", "AMZN",
+    "AVGO", "AXP", "BA", "BAC", "BRK-B", "CAT", "COST", "CRM", "CSCO",
+    "CVX", "DIS", "GOOG", "GOOGL", "HD", "IBM", "INTC", "JNJ", "JPM",
+    "KO", "LIN", "LLY", "MA", "MCD", "META", "MRK", "MS", "MSFT", "NFLX",
+    "NVDA", "ORCL", "PEP", "PFE", "PG", "PLTR", "PYPL", "QCOM", "SE",
+    "T", "TSLA", "UNH", "V", "WMT", "XOM",
+}
+
+MARKET_SYMBOLS = {
+    ".JK": {
     "AALI", "ACES", "ADRO", "AKRA", "AMMN", "ANTM", "ARTO", "ASII", "BBCA",
     "BBNI", "BBRI", "BBTN", "BMRI", "BRIS", "BRPT", "BUKA", "CPIN", "EMTK",
     "ESSA", "EXCL", "GGRM", "GOTO", "HRUM", "ICBP", "INCO", "INDF", "INKP",
     "INTP", "ITMG", "JPFA", "KLBF", "MDKA", "MEDC", "MIKA", "PGAS", "PTBA",
     "SIDO", "SMGR", "TLKM", "TOWR", "UNTR", "UNVR", "WIKA",
+    },
+    ".SI": {
+        "D05", "O39", "U11", "Z74", "C6L", "S68", "C09", "G13", "F34",
+        "BN4", "BS6", "Y92", "A17U", "C38U", "ME8U", "AJBU", "M44U",
+    },
+    ".KL": {
+        "1023", "1066", "1155", "1295", "2445", "3182", "3816", "4197",
+        "4715", "4863", "5183", "5296", "5347", "5681", "5819", "6012",
+        "6033", "6888", "6947", "7084", "7277", "8869",
+    },
+    ".L": {"BARC", "BP", "GSK", "HSBA", "LLOY", "RIO", "SHEL", "ULVR", "VOD"},
+    ".PA": {"AI", "AIR", "BN", "CS", "MC", "OR", "RMS", "SAN", "SU", "TTE"},
+    ".DE": {"ADS", "ALV", "BAS", "BAYN", "BMW", "DTE", "MBG", "SAP", "SIE", "VOW3"},
+    ".AS": {"ADYEN", "ASML", "HEIA", "INGA", "PHIA", "REN"},
+    ".MI": {"ENEL", "ENI", "ISP", "RACE", "STLAM", "UCG"},
+    ".MC": {"BBVA", "IBE", "ITX", "SAN", "TEF"},
+    ".SW": {"ABBN", "CFR", "NESN", "NOVN", "ROG", "UBSG", "ZURN"},
 }
 
-INDONESIA_CONTEXT_WORDS = {
-    "indonesia", "indonesian", "idx", "bei", "jakarta", "rupiah", "idr", "tbk",
+MARKET_CONTEXTS = {
+    "": {"us", "usa", "u s", "united states", "american", "nasdaq", "nyse", "amex", "sp500", "s p 500", "s&p 500"},
+    ".SI": {"singapore", "sgx", "straits times"},
+    ".KL": {"malaysia", "malaysian", "bursa", "kuala lumpur", "klse"},
+    ".JK": {"indonesia", "indonesian", "idx", "bei", "jakarta", "rupiah", "idr", "tbk"},
+    ".L": {"uk", "u k", "britain", "british", "london", "lse", "ftse"},
+    ".PA": {"france", "french", "paris", "euronext paris", "cac"},
+    ".DE": {"germany", "german", "xetra", "deutsche boerse", "dax"},
+    ".F": {"frankfurt"},
+    ".AS": {"netherlands", "dutch", "amsterdam", "euronext amsterdam", "aex"},
+    ".MI": {"italy", "italian", "milan", "borsa italiana"},
+    ".MC": {"spain", "spanish", "madrid", "ibex"},
+    ".SW": {"switzerland", "swiss", "six swiss", "zurich"},
+    ".ST": {"sweden", "swedish", "stockholm", "omx stockholm"},
+    ".CO": {"denmark", "danish", "copenhagen"},
+    ".OL": {"norway", "norwegian", "oslo"},
+    ".HE": {"finland", "finnish", "helsinki"},
+    ".BR": {"belgium", "brussels"},
+    ".VI": {"austria", "vienna"},
+    ".LS": {"portugal", "lisbon"},
+    ".IR": {"ireland", "irish"},
+    ".AX": {"australia", "australian", "asx"},
+    ".NZ": {"new zealand", "nzx"},
+    ".HK": {"hong kong", "hkex"},
+    ".T": {"japan", "japanese", "tokyo", "nikkei"},
+    ".KS": {"korea", "korean", "kospi"},
+    ".KQ": {"kosdaq"},
+    ".TW": {"taiwan", "taiwanese", "twse"},
+    ".BK": {"thailand", "thai", "set index"},
+    ".TO": {"canada", "canadian", "tsx", "toronto"},
+    ".V": {"tsxv", "tsx venture"},
+    ".SA": {"brazil", "brazilian", "b3 exchange", "bovespa"},
+    ".MX": {"mexico", "mexican", "bolsa mexicana"},
 }
 
 STOP = {
     "AI", "API", "CEO", "CFO", "GDP", "CPI", "USD", "IDR", "THE", "AND", "YOU",
-    "HELLO", "HI", "HEY", "OK", "YES", "NO", "MODE", "QFIN"
+    "HELLO", "HI", "HEY", "OK", "YES", "NO", "MODE", "QFIN", "S", "P", "SP", "VS"
 }
 
 FINANCE_WORDS = [
@@ -326,21 +405,67 @@ def finance_intent(text: str) -> bool:
     lower = text.lower()
     return any(word in lower for word in FINANCE_WORDS) or any(
         re.search(rf"\b{re.escape(alias)}\b", lower) for alias in ALIASES
-    )
+    ) or has_symbol_like_token(text) or has_market_context(text)
 
 
-def has_indonesia_context(text: str) -> bool:
+def preferred_market_suffixes(text: str) -> List[str]:
     normalized = normalize_user_text(text)
-    return any(re.search(rf"\b{re.escape(word)}\b", normalized) for word in INDONESIA_CONTEXT_WORDS)
+    suffixes: List[str] = []
+    for suffix, words in MARKET_CONTEXTS.items():
+        if any(re.search(rf"\b{re.escape(word)}\b", normalized) for word in words):
+            suffixes.append(suffix)
+    return suffixes
+
+
+def has_market_context(text: str) -> bool:
+    return bool(preferred_market_suffixes(text))
+
+
+def has_symbol_like_token(text: str) -> bool:
+    return bool(
+        re.search(r"\$[A-Za-z0-9\.\-]{1,12}\b", text)
+        or re.search(r"\b[A-Z]{2,5}(?:[.\-][A-Z0-9]{1,4})?\b", text)
+    )
 
 
 def normalize_market_symbol(symbol: str, text: str = "") -> str:
     normalized = norm_symbol(symbol)
-    if "." not in normalized and normalized in IDX_SYMBOLS:
-        return f"{normalized}.JK"
-    if "." not in normalized and has_indonesia_context(text):
-        return f"{normalized}.JK"
+    if "." in normalized:
+        return normalized
+
+    for suffix in preferred_market_suffixes(text):
+        if suffix == "":
+            return normalized
+        if normalized in MARKET_SYMBOLS.get(suffix, set()):
+            return f"{normalized}{suffix}"
+
+    for suffix, symbols in MARKET_SYMBOLS.items():
+        if normalized in symbols:
+            return f"{normalized}{suffix}"
+
     return normalized
+
+
+def should_accept_direct_symbol(symbol: str, text: str) -> bool:
+    if symbol in STOP or len(symbol) <= 1:
+        return False
+    if "." in symbol:
+        return True
+    suffixes = [suffix for suffix in preferred_market_suffixes(text) if suffix]
+    if suffixes:
+        return any(symbol.endswith(suffix) for suffix in suffixes) or any(
+            symbol in MARKET_SYMBOLS.get(suffix, set()) for suffix in suffixes
+        )
+    return symbol in US_SYMBOLS or bool(re.fullmatch(r"[A-Z]{1,5}(?:-[A-Z])?", symbol))
+
+
+def is_known_market_symbol(symbol: str) -> bool:
+    if symbol in US_SYMBOLS:
+        return True
+    base = symbol.split(".")[0]
+    if base in US_SYMBOLS:
+        return True
+    return any(symbol.endswith(suffix) or base in symbols for suffix, symbols in MARKET_SYMBOLS.items())
 
 
 def needs_detail(text: str) -> bool:
@@ -359,15 +484,93 @@ def extract_symbol_candidates(text: str) -> List[str]:
 
     for token in re.findall(r"\$([A-Za-z0-9\.\-]{1,12})\b", text):
         symbol = normalize_market_symbol(token, text)
-        if symbol not in STOP and symbol not in found:
+        if should_accept_direct_symbol(symbol, text) and symbol not in found:
+            found.append(symbol)
+
+    for token in re.findall(r"\b[A-Za-z0-9]{1,6}(?:[.\-][A-Za-z0-9]{1,4})?\b", text):
+        symbol = normalize_market_symbol(token, text)
+        if is_known_market_symbol(symbol) and should_accept_direct_symbol(symbol, text) and symbol not in found:
             found.append(symbol)
 
     for token in re.findall(r"\b[A-Z]{1,5}(?:[.\-][A-Z0-9]{1,4})?\b", text):
         symbol = normalize_market_symbol(token, text)
-        if symbol not in STOP and symbol not in found:
+        if should_accept_direct_symbol(symbol, text) and symbol not in found:
             found.append(symbol)
 
+    if has_market_context(text):
+        for token in re.findall(r"\b[A-Z0-9]{2,6}(?:[.\-][A-Z0-9]{1,4})?\b", text):
+            symbol = normalize_market_symbol(token, text)
+            if should_accept_direct_symbol(symbol, text) and symbol not in found:
+                found.append(symbol)
+
     return found
+
+
+def yahoo_quote_score(item: Dict[str, Any], query: str) -> int:
+    symbol = norm_symbol(str(item.get("symbol") or ""))
+    name = " ".join(
+        str(item.get(field) or "")
+        for field in ("shortname", "longname", "name", "exchDisp", "exchange")
+    ).lower()
+    normalized_query = normalize_user_text(query)
+    query_words = [word for word in normalized_query.split() if len(word) > 2]
+    suffixes = preferred_market_suffixes(query)
+    score = 0
+
+    if symbol:
+        score += 5
+    for index, suffix in enumerate(suffixes):
+        if suffix == "" and "." not in symbol:
+            score += 55 - index
+        elif suffix and symbol.endswith(suffix):
+            score += 60 - index
+    if not suffixes and "." not in symbol:
+        score += 20
+
+    if item.get("quoteType") == "EQUITY":
+        score += 10
+    exchange_text = f"{item.get('exchDisp', '')} {item.get('exchange', '')}".lower()
+    if not suffixes and any(exchange in exchange_text for exchange in ("nasdaq", "nyse", "american")):
+        score += 15
+    if any(word in name for word in query_words):
+        score += sum(3 for word in query_words if word in name)
+    if suffixes and "." in symbol and not any(symbol.endswith(suffix) for suffix in suffixes if suffix):
+        score -= 20
+    return score
+
+
+def pick_best_yahoo_quote(quotes: List[Dict[str, Any]], query: str) -> Optional[str]:
+    if not quotes:
+        return None
+    ranked = sorted(quotes, key=lambda item: yahoo_quote_score(item, query), reverse=True)
+    best = ranked[0]
+    if yahoo_quote_score(best, query) <= 0:
+        return None
+    return norm_symbol(str(best["symbol"]))
+
+
+def search_yahoo_quotes(query: str, quotes_count: int = 25) -> List[Dict[str, Any]]:
+    try:
+        response = httpx.get(
+            "https://query2.finance.yahoo.com/v1/finance/search",
+            params={
+                "q": query,
+                "quotesCount": quotes_count,
+                "newsCount": 0,
+                "enableFuzzyQuery": True,
+            },
+            headers={"User-Agent": "Mozilla/5.0"},
+            timeout=15.0,
+        )
+        if response.status_code >= 400:
+            return []
+        return [
+            item
+            for item in response.json().get("quotes", [])
+            if item.get("symbol") and item.get("quoteType") in {"EQUITY", "ETF", "MUTUALFUND", "INDEX"}
+        ]
+    except Exception:
+        return []
 
 
 def yahoo_symbol_search(query: str) -> Optional[str]:
@@ -384,32 +587,17 @@ def yahoo_symbol_search(query: str) -> Optional[str]:
         direct_candidates = extract_symbol_candidates(cleaned)
         if direct_candidates:
             return direct_candidates[0]
-        response = httpx.get(
-            "https://query2.finance.yahoo.com/v1/finance/search",
-            params={
-                "q": cleaned,
-                "quotesCount": 10,
-                "newsCount": 0,
-                "enableFuzzyQuery": True,
-            },
-            headers={"User-Agent": "Mozilla/5.0"},
-            timeout=15.0,
-        )
-        if response.status_code >= 400:
-            return None
-        quotes = [
-            item
-            for item in response.json().get("quotes", [])
-            if item.get("symbol") and item.get("quoteType") in {"EQUITY", "ETF", "MUTUALFUND", "INDEX"}
-        ]
-        if has_indonesia_context(query):
-            for item in quotes:
-                symbol = norm_symbol(item["symbol"])
-                if symbol.endswith(".JK"):
-                    return symbol
-        for item in quotes:
-            if item.get("symbol") and item.get("quoteType") in {"EQUITY", "ETF", "MUTUALFUND", "INDEX"}:
-                return norm_symbol(item["symbol"])
+
+        quotes = search_yahoo_quotes(cleaned)
+        best = pick_best_yahoo_quote(quotes, query)
+        if best:
+            return best
+
+        for suffix in preferred_market_suffixes(query):
+            if suffix:
+                best = pick_best_yahoo_quote(search_yahoo_quotes(f"{cleaned} {suffix}"), query)
+                if best:
+                    return best
     except Exception:
         return None
     return None
@@ -1755,7 +1943,7 @@ def health():
     return {
         "status": "ok",
         "service": "qfin-terminal-api",
-        "version": "qfin-agent-2.4",
+        "version": "qfin-agent-2.5",
         "qwen_configured": qwen_is_configured(),
         "supabase_configured": supabase_is_configured(),
     }
