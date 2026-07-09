@@ -79,15 +79,6 @@ def _detect_task_type(messages: List[Dict[str, Any]]) -> str:
     if any(signal in text for signal in vision_signals):
         return "vision"
 
-    news_signals = [
-        "internal route: market news summary",
-        "summarize the five news items",
-        "headline",
-        "market sentiment",
-    ]
-    if any(signal in text for signal in news_signals):
-        return "news"
-
     deep_signals = [
         "internal route: exact ticker comparison",
         "internal route: single company analysis",
@@ -103,6 +94,15 @@ def _detect_task_type(messages: List[Dict[str, Any]]) -> str:
     ]
     if any(signal in text for signal in deep_signals):
         return "deep"
+
+    news_signals = [
+        "internal route: market news summary",
+        "summarize the five news items",
+        "headline",
+        "market sentiment",
+    ]
+    if any(signal in text for signal in news_signals):
+        return "news"
 
     public_or_summary_signals = [
         "public api facts",
