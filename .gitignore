@@ -2,11 +2,17 @@
 .env
 .env.local
 .env.*.local
+!.env.example
+!backend/.env.example
+!frontend/.env.example
 
 # Python
 .venv/
 __pycache__/
 *.pyc
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
 
 # Node
 node_modules/
