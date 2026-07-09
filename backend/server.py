@@ -1,1 +1,4 @@
 from main import app
+from annual_report_routes import register_annual_report_routes
+
+register_annual_report_routes(app)
