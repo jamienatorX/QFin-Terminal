@@ -3,6 +3,7 @@ import html
 import json
 import re
 from datetime import datetime, timezone
+from io import BytesIO
 from typing import Any, Dict, List, Optional
 from urllib.parse import parse_qs, quote_plus, urljoin, urlparse
 
@@ -17,12 +18,22 @@ from main import (
     qwen_is_configured,
     resolve_single_ticker,
     supabase_is_configured,
+    supabase_request,
     supabase_upsert,
     utc_now,
 )
 
 SUPABASE_ANNUAL_REPORT_TABLE = "qfin_annual_report_sources"
+SUPABASE_BANK_KPI_TABLE = "qfin_bank_kpis"
 REPORT_KEYWORDS = ["annual", "report", "laporan", "tahunan", "ar-"]
+BANK_KPI_KEYWORDS = [
+    "roe", "return on equity", "roa", "return on assets", "nim", "net interest margin",
+    "npl", "non-performing loan", "non performing loan", "casa", "current account",
+    "saving account", "capital adequacy", "car", "loan to deposit", "ldr", "loans",
+    "deposits", "net interest income", "net profit", "net income", "total assets",
+    "total equity", "laba bersih", "kredit", "dana pihak ketiga", "rasio kredit",
+    "kecukupan modal", "beban operasional", "pendapatan operasional", "bopo",
+]
 USER_AGENT = "Mozilla/5.0 (compatible; QFinTerminal/1.0; +https://qfin-terminal.onrender.com)"
 
 
@@ -32,6 +43,16 @@ class AnnualReportSearchRequest(BaseModel):
     candidate_urls: Optional[List[str]] = None
     save: bool = True
     max_candidates: Optional[int] = 12
+
+
+class AnnualReportExtractRequest(BaseModel):
+    report_year: Optional[int] = None
+    company_name: Optional[str] = None
+    source_url: Optional[str] = None
+    save: bool = True
+    force_search: bool = True
+    max_pdf_pages: Optional[int] = 20
+    max_text_chars: Optional[int] = 65000
 
 
 def extract_json_object(text: str) -> Dict[str, Any]:
@@ -632,7 +653,452 @@ async def search_annual_report_source(symbol: str, payload: AnnualReportSearchRe
     }
 
 
+def strip_html_to_text(value: str) -> str:
+    value = re.sub(r"(?is)<script.*?</script>", " ", value or "")
+    value = re.sub(r"(?is)<style.*?</style>", " ", value)
+    value = re.sub(r"(?is)<[^>]+>", " ", value)
+    return clean_text(html.unescape(value))
+
+
+async def fetch_document(url: str, timeout_seconds: float = 35.0) -> Dict[str, Any]:
+    try:
+        async with httpx.AsyncClient(follow_redirects=True, timeout=timeout_seconds, headers={"User-Agent": USER_AGENT}) as client:
+            response = await client.get(url)
+            return {
+                "ok": response.status_code < 400,
+                "status_code": response.status_code,
+                "mime_type": response.headers.get("content-type"),
+                "url": str(response.url),
+                "content": response.content,
+                "text": response.text if "text" in (response.headers.get("content-type") or "").lower() or "html" in (response.headers.get("content-type") or "").lower() else "",
+            }
+    except Exception as exc:
+        return {"ok": False, "error": type(exc).__name__, "url": url, "content": b"", "text": ""}
+
+
+def extract_pdf_text_from_bytes(content: bytes, max_pages: int) -> Dict[str, Any]:
+    if not content:
+        return {"text": "", "pages_read": 0, "error": "empty_pdf"}
+    try:
+        from pypdf import PdfReader
+
+        reader = PdfReader(BytesIO(content))
+        page_count = len(reader.pages)
+        chunks: List[str] = []
+        for index, page in enumerate(reader.pages[:max_pages]):
+            try:
+                page_text = page.extract_text() or ""
+            except Exception:
+                page_text = ""
+            if page_text.strip():
+                chunks.append(f"\n--- PAGE {index + 1} ---\n{page_text}")
+        return {
+            "text": clean_text("\n".join(chunks)),
+            "pages_read": min(page_count, max_pages),
+            "page_count": page_count,
+            "parser": "pypdf",
+        }
+    except Exception as exc:
+        return {"text": "", "pages_read": 0, "error": type(exc).__name__, "parser": "pypdf"}
+
+
+def select_relevant_report_text(text: str, max_chars: int) -> str:
+    clean = clean_text(text or "")
+    if len(clean) <= max_chars:
+        return clean
+
+    lowered = clean.lower()
+    snippets: List[str] = []
+    for keyword in BANK_KPI_KEYWORDS:
+        start = 0
+        while len(snippets) < 30:
+            index = lowered.find(keyword.lower(), start)
+            if index < 0:
+                break
+            left = max(0, index - 1200)
+            right = min(len(clean), index + 1800)
+            snippets.append(clean[left:right])
+            start = index + len(keyword)
+
+    selected = "\n\n--- KPI SNIPPET ---\n\n".join(dict.fromkeys(snippets))
+    if selected:
+        return clean_text(selected[:max_chars])
+    return clean[:max_chars]
+
+
+def annual_report_extract_prompt(
+    symbol: str,
+    company_name: str,
+    report_year: int,
+    source: Dict[str, Any],
+    report_text: str,
+) -> List[Dict[str, str]]:
+    return [
+        {
+            "role": "system",
+            "content": (
+                "You are QFin's annual report extraction engine. Return JSON only. "
+                "Extract only figures directly supported by the supplied annual report text. "
+                "Do not guess missing metrics. For percentage ratios, return decimal form: 21.5% must be 0.215. "
+                "For currency metrics, return actual currency units, not display units: IDR 1,000 billion must be 1000000000000. "
+                "If the text states values in million/billion/trillion, convert them to actual currency units."
+            ),
+        },
+        {
+            "role": "user",
+            "content": (
+                f"Ticker: {symbol}\n"
+                f"Company: {company_name}\n"
+                f"Report year: {report_year}\n"
+                f"Source URL: {source.get('url')}\n"
+                f"Source title: {source.get('title')}\n\n"
+                "Extract bank KPIs into this exact JSON shape:\n"
+                "{\n"
+                "  \"status\": \"extracted | partial | not_found\",\n"
+                "  \"currency\": \"IDR\",\n"
+                "  \"period_end_date\": \"YYYY-MM-DD or null\",\n"
+                "  \"confidence\": 0.0,\n"
+                "  \"metrics\": {\n"
+                "    \"total_loans\": null,\n"
+                "    \"total_deposits\": null,\n"
+                "    \"customer_deposits\": null,\n"
+                "    \"net_interest_income\": null,\n"
+                "    \"non_interest_income\": null,\n"
+                "    \"operating_income\": null,\n"
+                "    \"provision_expense\": null,\n"
+                "    \"net_income\": null,\n"
+                "    \"total_assets\": null,\n"
+                "    \"total_equity\": null,\n"
+                "    \"earning_assets\": null,\n"
+                "    \"npl_amount\": null,\n"
+                "    \"nim\": null,\n"
+                "    \"roe\": null,\n"
+                "    \"roa\": null,\n"
+                "    \"npl_ratio\": null,\n"
+                "    \"loan_to_deposit_ratio\": null,\n"
+                "    \"casa_ratio\": null,\n"
+                "    \"car\": null,\n"
+                "    \"cost_to_income_ratio\": null\n"
+                "  },\n"
+                "  \"evidence\": [\n"
+                "    {\"metric\": \"roe\", \"value_text\": \"...\", \"snippet\": \"short source snippet\"}\n"
+                "  ],\n"
+                "  \"warnings\": [\"...\"]\n"
+                "}\n\n"
+                f"Annual report text:\n{report_text}"
+            ),
+        },
+    ]
+
+
+def number_or_none(value: Any) -> Optional[float]:
+    if value is None or value == "":
+        return None
+    if isinstance(value, str):
+        cleaned = value.strip().replace(",", "")
+        if cleaned.lower() in {"null", "none", "n/a", "na", "-"}:
+            return None
+        if cleaned.endswith("%"):
+            try:
+                return float(cleaned[:-1]) / 100
+            except Exception:
+                return None
+        cleaned = re.sub(r"[^0-9eE+\-.]", "", cleaned)
+        if cleaned in {"", "-", ".", "+", "+.", "-."}:
+            return None
+        value = cleaned
+    try:
+        result = float(value)
+        return None if result != result else result
+    except Exception:
+        return None
+
+
+def normalize_ratio(value: Any) -> Optional[float]:
+    number = number_or_none(value)
+    if number is None:
+        return None
+    if abs(number) > 1 and abs(number) <= 100:
+        return number / 100
+    return number
+
+
+def clean_extracted_metrics(metrics: Dict[str, Any]) -> Dict[str, Optional[float]]:
+    amount_fields = [
+        "total_loans", "total_deposits", "customer_deposits", "net_interest_income",
+        "non_interest_income", "operating_income", "provision_expense", "net_income",
+        "total_assets", "total_equity", "earning_assets", "npl_amount",
+    ]
+    ratio_fields = [
+        "nim", "roe", "roa", "npl_ratio", "loan_to_deposit_ratio",
+        "casa_ratio", "car", "cost_to_income_ratio",
+    ]
+
+    cleaned: Dict[str, Optional[float]] = {}
+    for field in amount_fields:
+        cleaned[field] = number_or_none(metrics.get(field))
+    for field in ratio_fields:
+        cleaned[field] = normalize_ratio(metrics.get(field))
+    return cleaned
+
+
+def build_bank_kpi_row(
+    symbol: str,
+    provider_symbol: str,
+    company_name: str,
+    report_year: int,
+    source: Dict[str, Any],
+    extraction: Dict[str, Any],
+) -> Optional[Dict[str, Any]]:
+    metrics = extraction.get("metrics") if isinstance(extraction.get("metrics"), dict) else {}
+    cleaned = clean_extracted_metrics(metrics)
+    if not any(value is not None for value in cleaned.values()):
+        return None
+
+    confidence = number_or_none(extraction.get("confidence"))
+    if confidence is None:
+        confidence = float(source.get("confidence") or 0.75)
+    confidence = max(0.0, min(1.0, confidence))
+
+    period_end_date = extraction.get("period_end_date")
+    if not isinstance(period_end_date, str) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", period_end_date):
+        period_end_date = f"{report_year}-12-31"
+
+    provider_payload = {
+        "annual_report_source": source,
+        "extraction": extraction,
+        "company_name": company_name,
+    }
+
+    row: Dict[str, Any] = {
+        "symbol": symbol,
+        "provider_symbol": provider_symbol,
+        "fiscal_year": report_year,
+        "fiscal_period": "FY",
+        "period_type": "annual",
+        "period_end_date": period_end_date,
+        "currency": clean_text(str(extraction.get("currency") or "IDR"))[:10],
+        "source": "annual_report_qwen",
+        "source_confidence": confidence,
+        "provider_payload": provider_payload,
+        "retrieved_at": utc_now(),
+        "updated_at": utc_now(),
+        "note": "Bank KPIs extracted from annual report source by Qwen and saved for warehouse use.",
+        **cleaned,
+    }
+    row["return_on_assets"] = cleaned.get("roa")
+    row["return_on_equity"] = cleaned.get("roe")
+    row["loan_to_deposit"] = cleaned.get("loan_to_deposit_ratio")
+    row["efficiency_ratio"] = cleaned.get("cost_to_income_ratio")
+    return row
+
+
+def select_saved_source(symbol: str, report_year: int) -> Optional[Dict[str, Any]]:
+    if not supabase_is_configured():
+        return None
+    try:
+        rows = supabase_request(
+            "GET",
+            SUPABASE_ANNUAL_REPORT_TABLE,
+            params={
+                "select": "*",
+                "symbol": f"eq.{symbol}",
+                "report_year": f"eq.{report_year}",
+                "order": "is_valid.desc,confidence.desc,candidate_rank.asc,updated_at.desc",
+                "limit": "1",
+            },
+        ) or []
+        if rows:
+            return rows[0]
+    except Exception:
+        return None
+    return None
+
+
+async def resolve_extraction_source(
+    symbol: str,
+    company_name: str,
+    report_year: int,
+    payload: AnnualReportExtractRequest,
+) -> Dict[str, Any]:
+    if payload.source_url:
+        candidate = candidate_from_url(
+            payload.source_url,
+            title=f"Annual Report source {report_year}",
+            year=report_year,
+            confidence=0.72,
+            reason="User supplied extraction source URL.",
+            provider="user_candidate",
+            source_kind="user_supplied",
+        )
+        if candidate:
+            allowed = official_annual_report_domains(symbol, company_name)
+            return await validate_annual_report_candidate(candidate, allowed)
+
+    saved = select_saved_source(symbol, report_year)
+    if saved:
+        return saved
+
+    if payload.force_search:
+        search_result = await search_annual_report_source(
+            symbol,
+            AnnualReportSearchRequest(
+                report_year=report_year,
+                company_name=company_name,
+                candidate_urls=[],
+                save=True,
+                max_candidates=12,
+            ),
+        )
+        source = search_result.get("recommended_source")
+        if isinstance(source, dict):
+            return source
+
+    return {}
+
+
+async def load_source_text(source: Dict[str, Any], report_year: int, max_pdf_pages: int, max_text_chars: int) -> Dict[str, Any]:
+    url = source.get("url")
+    if not url:
+        return {"status": "failed", "error": "missing_source_url", "text": ""}
+
+    document = await fetch_document(str(url))
+    if not document.get("ok"):
+        return {"status": "failed", "error": document.get("error") or document.get("status_code"), "text": "", "source": source}
+
+    mime_type = document.get("mime_type") or ""
+    final_url = document.get("url") or url
+    is_pdf = "pdf" in mime_type.lower() or str(final_url).lower().endswith(".pdf")
+
+    if is_pdf:
+        parsed = await asyncio.to_thread(extract_pdf_text_from_bytes, document.get("content") or b"", max_pdf_pages)
+        text = parsed.get("text") or ""
+        return {
+            "status": "loaded" if text else "failed",
+            "text": select_relevant_report_text(text, max_text_chars),
+            "raw_text_chars": len(text),
+            "mime_type": mime_type,
+            "final_url": final_url,
+            "parser": parsed.get("parser"),
+            "pages_read": parsed.get("pages_read"),
+            "page_count": parsed.get("page_count"),
+            "error": parsed.get("error"),
+        }
+
+    text = strip_html_to_text(document.get("text") or "")
+    if len(text) < 1000:
+        links = extract_links_from_html(str(final_url), document.get("text") or "", report_year)
+        pdf_links = [item for item in links if item.get("url", "").lower().endswith(".pdf") or item.get("source_kind") == "pdf"]
+        if pdf_links:
+            best_pdf = sorted(pdf_links, key=lambda item: float(item.get("confidence") or 0), reverse=True)[0]
+            return await load_source_text(best_pdf, report_year, max_pdf_pages, max_text_chars)
+
+    return {
+        "status": "loaded" if text else "failed",
+        "text": select_relevant_report_text(text, max_text_chars),
+        "raw_text_chars": len(text),
+        "mime_type": mime_type,
+        "final_url": final_url,
+        "parser": "html",
+    }
+
+
+async def extract_annual_report_kpis(symbol: str, payload: AnnualReportExtractRequest) -> Dict[str, Any]:
+    resolved = resolve_single_ticker(symbol, allow_search=False) or resolve_single_ticker(symbol) or norm_symbol(symbol)
+    snapshot = load_warehouse_snapshot(resolved)
+    profile = snapshot.get("profile") if isinstance(snapshot, dict) else None
+    company_name = clean_text(
+        payload.company_name
+        or (profile or {}).get("company_name")
+        or (profile or {}).get("name")
+        or resolved
+    )
+    report_year = payload.report_year or datetime.now(timezone.utc).year - 1
+    provider_symbol = norm_symbol(str((profile or {}).get("provider_symbol") or resolved))
+    source = await resolve_extraction_source(resolved, company_name, report_year, payload)
+    if not source:
+        return {
+            "status": "no_source",
+            "symbol": resolved,
+            "company_name": company_name,
+            "report_year": report_year,
+            "message": "No annual report source is available yet. Run /annual-report/search first or provide source_url.",
+        }
+
+    max_pdf_pages = max(3, min(int(payload.max_pdf_pages or 20), 80))
+    max_text_chars = max(12000, min(int(payload.max_text_chars or 65000), 120000))
+    loaded = await load_source_text(source, report_year, max_pdf_pages, max_text_chars)
+    report_text = loaded.get("text") or ""
+    if loaded.get("status") != "loaded" or len(report_text) < 800:
+        return {
+            "status": "source_loaded_but_not_extractable",
+            "symbol": resolved,
+            "company_name": company_name,
+            "report_year": report_year,
+            "source": source,
+            "load_result": {key: value for key, value in loaded.items() if key != "text"},
+            "message": "The source was found but QFin could not extract enough readable text from it.",
+        }
+
+    if not qwen_is_configured():
+        return {
+            "status": "qwen_not_configured",
+            "symbol": resolved,
+            "company_name": company_name,
+            "report_year": report_year,
+            "source": source,
+            "load_result": {key: value for key, value in loaded.items() if key != "text"},
+            "message": "DASHSCOPE_API_KEY is required for annual-report KPI extraction.",
+        }
+
+    qwen_text = await ask_qwen(annual_report_extract_prompt(resolved, company_name, report_year, source, report_text))
+    extraction = extract_json_object(qwen_text)
+    if not extraction:
+        return {
+            "status": "extraction_failed",
+            "symbol": resolved,
+            "company_name": company_name,
+            "report_year": report_year,
+            "source": source,
+            "load_result": {key: value for key, value in loaded.items() if key != "text"},
+            "message": "Qwen did not return parseable extraction JSON.",
+        }
+
+    row = build_bank_kpi_row(resolved, provider_symbol, company_name, report_year, source, extraction)
+    storage = "not_saved"
+    if payload.save and row and supabase_is_configured():
+        try:
+            supabase_upsert(
+                SUPABASE_BANK_KPI_TABLE,
+                row,
+                on_conflict="symbol,fiscal_year,fiscal_period,period_type,source",
+            )
+            storage = "supabase"
+        except Exception as exc:
+            storage = f"save_failed: {str(exc)[:220]}"
+
+    extracted_metrics = row if row else {}
+    return {
+        "status": "extracted" if row else "no_metrics_extracted",
+        "symbol": resolved,
+        "company_name": company_name,
+        "report_year": report_year,
+        "source": source,
+        "load_result": {key: value for key, value in loaded.items() if key != "text"},
+        "extraction_status": extraction.get("status"),
+        "metrics": extracted_metrics,
+        "evidence": extraction.get("evidence") or [],
+        "warnings": extraction.get("warnings") or [],
+        "storage": storage,
+        "note": "Extracted bank KPIs are saved to qfin_bank_kpis with source='annual_report_qwen' so normal company analysis can reuse them.",
+    }
+
+
 def register_annual_report_routes(app) -> None:
     @app.post("/annual-report/search/{symbol}")
     async def annual_report_search_route(symbol: str, payload: Optional[AnnualReportSearchRequest] = None) -> Dict[str, Any]:
         return await search_annual_report_source(symbol, payload or AnnualReportSearchRequest())
+
+    @app.post("/annual-report/extract/{symbol}")
+    async def annual_report_extract_route(symbol: str, payload: Optional[AnnualReportExtractRequest] = None) -> Dict[str, Any]:
+        return await extract_annual_report_kpis(symbol, payload or AnnualReportExtractRequest())
