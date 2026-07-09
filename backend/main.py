@@ -21,7 +21,7 @@ from api_registry import fetch_public_api_facts, list_public_api_registry
 from news_module import generate_news, normalize_category
 from qwen_client import QwenClientError, call_qwen, qwen_is_configured
 
-app = FastAPI(title="QFin Terminal API", version="qfin-agent-2.5")
+app = FastAPI(title="QFin Terminal API", version="qfin-agent-2.6")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -283,10 +283,38 @@ class BuilderPublishRequest(BaseModel):
     ticker: Optional[str] = None
 
 
+class EvidenceItem(BaseModel):
+    kind: str
+    label: str
+    source: str
+    freshness: str = "live"
+    summary: str
+    payload: Optional[Any] = None
+
+
+class EvidencePacket(BaseModel):
+    trace_id: str
+    query: str
+    route: Dict[str, Any]
+    gathered_at: str
+    items: List[EvidenceItem] = []
+    used_live_data: bool = False
+    gaps: List[str] = []
+    warnings: List[str] = []
+
+
+class AgentRiskReview(BaseModel):
+    status: Literal["pass", "review"]
+    warnings: List[str] = []
+    missing_data: List[str] = []
+    allowed_tickers: List[str] = []
+
+
 FORUM_THREADS: List[Dict[str, Any]] = []
 COMMUNITY_MODELS: List[Dict[str, Any]] = []
 PRIVATE_MODELS: List[Dict[str, Any]] = []
 FINANCIAL_DATA_CACHE: Dict[str, Dict[str, Any]] = {}
+AGENT_SESSION_LOGS: List[Dict[str, Any]] = []
 
 
 def make_id(prefix: str) -> str:
@@ -1046,6 +1074,14 @@ def classify_message(text: str, provided_ticker: Optional[str] = None) -> Dict[s
     if compare:
         return compare
 
+    if re.search(r"\b(headlines?|breaking|top stories|latest)\b", text, flags=re.I) and re.search(r"\b(news|market|markets|stocks?|crypto|bonds?|etfs?)\b", text, flags=re.I):
+        category = "Stocks"
+        for option in ["Crypto", "Stocks", "Bonds", "ETFs", "Other"]:
+            if option.lower() in text.lower():
+                category = option
+                break
+        return {"kind": "headlines", "category": category}
+
     if "news" in text.lower():
         category = "Stocks"
         for option in ["Crypto", "Stocks", "Bonds", "ETFs", "Other"]:
@@ -1555,6 +1591,155 @@ def build_finance_prompt(query: str, route: Dict[str, Any], facts: Any) -> List[
     ]
 
 
+def build_headline_digest(news: Dict[str, Any], limit: int = 5) -> str:
+    lines = ["Here are the latest market headlines I found:"]
+    for item in news.get("news", [])[:limit]:
+        headline = clean_text(str(item.get("headline") or "Market update"))
+        source = item.get("source") or {}
+        source_name = clean_text(str(source.get("name") or "Aggregated market commentary"))
+        teaser = clean_text(str(item.get("teaser") or ""))
+        lines.append(f"- {headline} ({source_name})")
+        if teaser:
+            lines.append(f"  {teaser}")
+    return "\n".join(lines)
+
+
+def build_evidence_packet(query: str, route: Dict[str, Any], facts: Any, used_live_data: bool) -> EvidencePacket:
+    items: List[EvidenceItem] = []
+    gaps: List[str] = []
+    warnings: List[str] = []
+
+    if route["kind"] in {"company", "comparison"}:
+        fact_map = facts if isinstance(facts, dict) else {}
+        if route["kind"] == "company":
+            fact_map = {route["ticker"]: facts}
+        for ticker, payload in fact_map.items():
+            payload = payload or {}
+            data_status = payload.get("data_status")
+            if data_status != "available":
+                gaps.append(f"Live financial data was incomplete for {ticker}.")
+            items.append(
+                EvidenceItem(
+                    kind="financial_data",
+                    label=str(ticker),
+                    source=str(payload.get("source") or "Yahoo Finance via yfinance"),
+                    summary=clean_text(
+                        f"{payload.get('company_name') or ticker}: data_status={payload.get('data_status') or 'unknown'}."
+                    ),
+                    payload=payload,
+                )
+            )
+    elif route["kind"] in {"news", "headlines"}:
+        for item in (facts or {}).get("news", [])[:5]:
+            source = item.get("source") or {}
+            items.append(
+                EvidenceItem(
+                    kind="headline",
+                    label=clean_text(str(item.get("headline") or "Market update")),
+                    source=clean_text(str(source.get("name") or "Aggregated market commentary")),
+                    summary=clean_text(str(item.get("teaser") or item.get("headline") or "Market update")),
+                    payload=item,
+                )
+            )
+        if not items:
+            gaps.append("No live headlines were returned by the backend.")
+    elif isinstance(facts, dict) and facts.get("facts"):
+        for fact in facts.get("facts", []):
+            payload = fact.get("data")
+            items.append(
+                EvidenceItem(
+                    kind="public_api",
+                    label=clean_text(str(fact.get("source") or "Public API")),
+                    source=clean_text(str(fact.get("source") or "Public API")),
+                    summary=clean_text(str(payload)[:240]),
+                    payload=payload,
+                )
+            )
+        if facts.get("errors"):
+            warnings.extend(facts.get("errors")[:5])
+
+    return EvidencePacket(
+        trace_id=make_id("agent"),
+        query=query,
+        route=route,
+        gathered_at=utc_now(),
+        items=items,
+        used_live_data=used_live_data,
+        gaps=gaps,
+        warnings=warnings,
+    )
+
+
+def run_agent_risk_review(route: Dict[str, Any], facts: Any, content: str) -> AgentRiskReview:
+    allowed_tickers: List[str] = []
+    if route.get("ticker"):
+        allowed_tickers.append(route["ticker"])
+    if route.get("tickers"):
+        allowed_tickers.extend(route["tickers"])
+
+    warnings: List[str] = []
+    missing_data: List[str] = []
+
+    if route["kind"] == "company" and isinstance(facts, dict) and facts.get("data_status") != "available":
+        missing_data.append(f"Financial data for {route['ticker']} is incomplete or unavailable.")
+    elif route["kind"] == "comparison" and isinstance(facts, dict):
+        for ticker in route.get("tickers", []):
+            payload = facts.get(ticker) or {}
+            if payload.get("data_status") != "available":
+                missing_data.append(f"Financial data for {ticker} is incomplete or unavailable.")
+
+    if allowed_tickers:
+        mentioned = [symbol for symbol in extract_symbol_candidates(content) if symbol not in allowed_tickers]
+        clean_mentions = [symbol for symbol in mentioned if symbol not in STOP]
+        if clean_mentions:
+            warnings.append(
+                "Model answer mentioned extra ticker-like symbols outside the requested scope: "
+                + ", ".join(sorted(set(clean_mentions))[:6])
+            )
+
+    status: Literal["pass", "review"] = "review" if warnings or missing_data else "pass"
+    return AgentRiskReview(
+        status=status,
+        warnings=warnings,
+        missing_data=missing_data,
+        allowed_tickers=allowed_tickers,
+    )
+
+
+def finalize_agent_content(content: str, review: AgentRiskReview) -> str:
+    notes: List[str] = []
+    if review.missing_data:
+        notes.extend(review.missing_data)
+    if review.warnings:
+        notes.extend(review.warnings)
+    if not notes:
+        return content
+    note_block = "\n".join(f"- {note}" for note in notes)
+    if "Caveat" in content or "caveat" in content:
+        return content
+    return f"{content}\n\n**Caveat**\n{note_block}"
+
+
+def remember_agent_session(
+    evidence: EvidencePacket,
+    review: AgentRiskReview,
+    content: str,
+) -> None:
+    AGENT_SESSION_LOGS.insert(
+        0,
+        {
+            "trace_id": evidence.trace_id,
+            "query": evidence.query,
+            "route": evidence.route,
+            "used_live_data": evidence.used_live_data,
+            "gathered_at": evidence.gathered_at,
+            "risk_review": review.dict(),
+            "content_preview": content[:400],
+        },
+    )
+    del AGENT_SESSION_LOGS[25:]
+
+
 async def ask_qwen(messages: List[Dict[str, str]]) -> str:
     response = await call_qwen(messages)
     return clean_text(response["choices"][0]["message"]["content"])
@@ -1569,14 +1754,25 @@ async def generate_agent_reply(query: str, provided_ticker: Optional[str] = None
     if route["kind"] == "time":
         return {"route": route, "content": local_time_reply(), "facts": None, "used_live_data": False}
 
-    if route["kind"] == "news":
+    if route["kind"] in {"news", "headlines"}:
         news = await generate_news(normalize_category(route["category"]))
+        evidence = build_evidence_packet(query, route, news, used_live_data=True)
         if not qwen_is_configured():
-            headlines = [item.get("headline") for item in news.get("news", [])[:5]]
-            fallback = "Here are the latest market headlines I found:\n\n" + "\n".join(f"- {headline}" for headline in headlines if headline)
-            return {"route": route, "content": fallback, "facts": news, "used_live_data": True}
-        content = await ask_qwen(build_finance_prompt(query, route, news))
-        return {"route": route, "content": content, "facts": news, "used_live_data": True}
+            content = build_headline_digest(news)
+        else:
+            prompt_route = {**route, "kind": "news"}
+            content = await ask_qwen(build_finance_prompt(query, prompt_route, news))
+        review = run_agent_risk_review(route, news, content)
+        content = finalize_agent_content(content, review)
+        remember_agent_session(evidence, review, content)
+        return {
+            "route": route,
+            "content": content,
+            "facts": news,
+            "used_live_data": True,
+            "evidence": evidence.dict(),
+            "risk_review": review.dict(),
+        }
 
     if route["kind"] == "comparison":
         comparison_results = await asyncio.gather(
@@ -1586,25 +1782,47 @@ async def generate_agent_reply(query: str, provided_ticker: Optional[str] = None
             ticker: data
             for ticker, data in zip(route["tickers"], comparison_results)
         }
+        evidence = build_evidence_packet(query, route, facts, used_live_data=True)
         if not qwen_is_configured():
             content = (
                 f"Qwen is not configured, but I resolved the request to {route['tickers'][0]} and {route['tickers'][1]}. "
                 "Connect the DashScope key to let QFin write the full comparison."
             )
-            return {"route": route, "content": content, "facts": facts, "used_live_data": True}
-        content = await ask_qwen(build_finance_prompt(query, route, facts))
-        return {"route": route, "content": content, "facts": facts, "used_live_data": True}
+        else:
+            content = await ask_qwen(build_finance_prompt(query, route, facts))
+        review = run_agent_risk_review(route, facts, content)
+        content = finalize_agent_content(content, review)
+        remember_agent_session(evidence, review, content)
+        return {
+            "route": route,
+            "content": content,
+            "facts": facts,
+            "used_live_data": True,
+            "evidence": evidence.dict(),
+            "risk_review": review.dict(),
+        }
 
     if route["kind"] == "company":
         facts = await fetch_financial_data_async(route["ticker"])
+        evidence = build_evidence_packet(query, route, facts, used_live_data=True)
         if not qwen_is_configured():
             content = (
                 f"I resolved this request to {route['ticker']}, but Qwen is not configured on the backend right now. "
                 "Add the DashScope key in Render so I can write the full report."
             )
-            return {"route": route, "content": content, "facts": facts, "used_live_data": True}
-        content = await ask_qwen(build_finance_prompt(query, route, facts))
-        return {"route": route, "content": content, "facts": facts, "used_live_data": True}
+        else:
+            content = await ask_qwen(build_finance_prompt(query, route, facts))
+        review = run_agent_risk_review(route, facts, content)
+        content = finalize_agent_content(content, review)
+        remember_agent_session(evidence, review, content)
+        return {
+            "route": route,
+            "content": content,
+            "facts": facts,
+            "used_live_data": True,
+            "evidence": evidence.dict(),
+            "risk_review": review.dict(),
+        }
 
     if route["kind"] == "finance_concept":
         if not qwen_is_configured():
@@ -1615,7 +1833,18 @@ async def generate_agent_reply(query: str, provided_ticker: Optional[str] = None
                 "used_live_data": False,
             }
         content = await ask_qwen(build_finance_prompt(query, route, None))
-        return {"route": route, "content": content, "facts": None, "used_live_data": False}
+        review = run_agent_risk_review(route, None, content)
+        content = finalize_agent_content(content, review)
+        evidence = build_evidence_packet(query, route, None, used_live_data=False)
+        remember_agent_session(evidence, review, content)
+        return {
+            "route": route,
+            "content": content,
+            "facts": None,
+            "used_live_data": False,
+            "evidence": evidence.dict(),
+            "risk_review": review.dict(),
+        }
 
     if not qwen_is_configured():
         return {
@@ -1628,10 +1857,33 @@ async def generate_agent_reply(query: str, provided_ticker: Optional[str] = None
     public_facts = await fetch_public_api_facts(query)
     if public_facts.get("facts"):
         content = await ask_qwen(build_public_data_prompt(query, public_facts))
-        return {"route": {**route, "public_data": True}, "content": content, "facts": public_facts, "used_live_data": True}
+        route = {**route, "public_data": True}
+        evidence = build_evidence_packet(query, route, public_facts, used_live_data=True)
+        review = run_agent_risk_review(route, public_facts, content)
+        content = finalize_agent_content(content, review)
+        remember_agent_session(evidence, review, content)
+        return {
+            "route": route,
+            "content": content,
+            "facts": public_facts,
+            "used_live_data": True,
+            "evidence": evidence.dict(),
+            "risk_review": review.dict(),
+        }
 
     content = await ask_qwen(build_general_prompt(query))
-    return {"route": route, "content": content, "facts": None, "used_live_data": False}
+    review = run_agent_risk_review(route, None, content)
+    content = finalize_agent_content(content, review)
+    evidence = build_evidence_packet(query, route, None, used_live_data=False)
+    remember_agent_session(evidence, review, content)
+    return {
+        "route": route,
+        "content": content,
+        "facts": None,
+        "used_live_data": False,
+        "evidence": evidence.dict(),
+        "risk_review": review.dict(),
+    }
 
 
 def default_forum_threads() -> List[Dict[str, Any]]:
@@ -2359,17 +2611,24 @@ def health():
     return {
         "status": "ok",
         "service": "qfin-terminal-api",
-        "version": "qfin-agent-2.5",
+        "version": "qfin-agent-2.6",
         "qwen_configured": qwen_is_configured(),
         "supabase_configured": supabase_is_configured(),
         "symbol_master_table": SUPABASE_SYMBOL_TABLE,
         "public_api_registry": "enabled",
+        "agent_runtime": "router-evidence-risk-v1",
+        "recent_agent_sessions": len(AGENT_SESSION_LOGS),
     }
 
 
 @app.get("/agent/api-registry")
 def agent_api_registry():
     return list_public_api_registry()
+
+
+@app.get("/agent/sessions/recent")
+def agent_recent_sessions():
+    return {"sessions": AGENT_SESSION_LOGS[:10], "count": len(AGENT_SESSION_LOGS)}
 
 
 @app.post("/agent/chat")

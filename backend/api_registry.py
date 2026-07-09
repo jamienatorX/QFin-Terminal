@@ -64,6 +64,22 @@ PUBLIC_API_REGISTRY: List[Dict[str, Any]] = [
         "status": "active",
     },
     {
+        "name": "DictionaryAPI.dev",
+        "domain": "dictionaries",
+        "auth": "none",
+        "purpose": "Dictionary definitions, phonetics, and usage examples.",
+        "qfin_use": "General word-definition questions without adding API keys.",
+        "status": "active",
+    },
+    {
+        "name": "GitHub REST API",
+        "domain": "open-source",
+        "auth": "none",
+        "purpose": "Public repository metadata, stars, language, and update activity.",
+        "qfin_use": "Open-source repository lookup for user questions about AI agent repos and tools.",
+        "status": "active",
+    },
+    {
         "name": "World Bank Indicators",
         "domain": "macro",
         "auth": "none",
@@ -283,10 +299,88 @@ async def _book_lookup(query: str) -> Optional[Dict[str, Any]]:
     ])
 
 
+async def _dictionary_lookup(query: str) -> Optional[Dict[str, Any]]:
+    if not re.search(r"\b(define|definition|meaning|what does)\b", query, re.I):
+        return None
+
+    word = _extract_after_marker(query, ["define ", "definition of ", "meaning of ", "what does "]) or query
+    word = re.sub(r"\b(mean|means|definition|define|what|does|the|word|of)\b", " ", word, flags=re.I)
+    word = _trim_query(word).split(" ")[0]
+    if len(word) < 2:
+        return None
+
+    url = f"https://api.dictionaryapi.dev/api/v2/entries/en/{word}"
+    rows = await _get_json(url)
+    if not rows:
+        return None
+    row = rows[0]
+    meanings = row.get("meanings") or []
+    compact_meanings = []
+    for meaning in meanings[:3]:
+        definitions = meaning.get("definitions") or []
+        compact_meanings.append(
+            {
+                "part_of_speech": meaning.get("partOfSpeech"),
+                "definitions": [
+                    {
+                        "definition": item.get("definition"),
+                        "example": item.get("example"),
+                    }
+                    for item in definitions[:2]
+                ],
+            }
+        )
+    return _source(
+        "DictionaryAPI.dev",
+        url,
+        {
+            "word": row.get("word") or word,
+            "phonetic": row.get("phonetic"),
+            "meanings": compact_meanings,
+        },
+    )
+
+
+async def _github_repo_lookup(query: str) -> Optional[Dict[str, Any]]:
+    repo_match = re.search(r"(?:github\.com/|@)?([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)", query)
+    if not repo_match and not re.search(r"\b(github|repo|repository|open source)\b", query, re.I):
+        return None
+    if not repo_match:
+        return None
+
+    repo = repo_match.group(1).strip().strip("/.")
+    if repo.count("/") != 1:
+        return None
+
+    url = f"https://api.github.com/repos/{repo}"
+    data = await _get_json(url)
+    return _source(
+        "GitHub REST API",
+        url,
+        {
+            "full_name": data.get("full_name"),
+            "description": data.get("description"),
+            "language": data.get("language"),
+            "stargazers_count": data.get("stargazers_count"),
+            "forks_count": data.get("forks_count"),
+            "open_issues_count": data.get("open_issues_count"),
+            "updated_at": data.get("updated_at"),
+            "html_url": data.get("html_url"),
+        },
+    )
+
+
 async def fetch_public_api_facts(query: str) -> Dict[str, Any]:
     facts: List[Dict[str, Any]] = []
     errors: List[str] = []
-    for fetcher in (_weather_lookup, _country_lookup, _book_lookup, _wikipedia_summary):
+    for fetcher in (
+        _weather_lookup,
+        _country_lookup,
+        _book_lookup,
+        _dictionary_lookup,
+        _github_repo_lookup,
+        _wikipedia_summary,
+    ):
         try:
             result = await fetcher(query)
             if result:
