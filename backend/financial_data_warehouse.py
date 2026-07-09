@@ -199,12 +199,13 @@ async def discover_annual_report(company_name: str, symbol: str, website: Option
     symbol = _clean_symbol(symbol)
     website = website or ""
     trusted_host = _host(website)
+    base_symbol = symbol.split(".", 1)[0]
 
     search_queries = [
         f'"{company_name}" "annual report" pdf',
         f'"{company_name}" "laporan tahunan" pdf',
         f'"{symbol}" "annual report" pdf',
-        f'"{symbol.split(".", 1)[0]}" "laporan tahunan" pdf',
+        f'"{base_symbol}" "laporan tahunan" pdf',
     ]
 
     async with httpx.AsyncClient(timeout=ANNUAL_REPORT_TIMEOUT, follow_redirects=True) as client:
@@ -220,7 +221,6 @@ async def discover_annual_report(company_name: str, symbol: str, website: Option
             if not url.startswith(("http://", "https://")):
                 continue
             url_host = _host(url)
-            text = f"{url} {title}".lower()
             trusted = bool(trusted_host and trusted_host in url_host) or any(host in url_host for host in ["idx.co.id", "bca.co.id"])
             if not trusted and symbol.endswith(".JK"):
                 continue
@@ -239,7 +239,6 @@ async def discover_annual_report(company_name: str, symbol: str, website: Option
             try:
                 page_html = await _download_text(client, url)
                 for link in _extract_links(page_html, url):
-                    text = f"{link.get('url', '')} {link.get('title', '')}".lower()
                     if _is_pdf_url(link.get("url", "")) and _annual_report_score(link.get("url", ""), link.get("title", "")) > 20:
                         pdf_candidates.append(link)
             except Exception:
