@@ -10,10 +10,15 @@ import httpx
 FMP_BASE_URL = "https://financialmodelingprep.com/stable"
 FMP_TIMEOUT = httpx.Timeout(20.0, connect=5.0)
 FMP_USER_AGENT = "QFin-Terminal/1.0"
+SOURCE_CONFIDENCE = 0.70
 
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def today_iso() -> str:
+    return datetime.now(timezone.utc).date().isoformat()
 
 
 def fmp_is_configured() -> bool:
@@ -146,6 +151,23 @@ def _fiscal_period(row: Dict[str, Any]) -> str:
     return period or "FY"
 
 
+def _safe_fiscal_year(value: Any, fallback_date: Optional[str]) -> int:
+    if value is not None and str(value).isdigit():
+        return int(value)
+    if fallback_date and len(fallback_date) >= 4 and fallback_date[:4].isdigit():
+        return int(fallback_date[:4])
+    return datetime.now(timezone.utc).year
+
+
+def _metric_unit(statement_type: str, metric_name: str) -> str:
+    lowered = metric_name.lower()
+    if statement_type == "ratios" or "ratio" in lowered or "margin" in lowered or "yield" in lowered or "returnon" in lowered:
+        return "ratio"
+    if "shares" in lowered or "employees" in lowered:
+        return "count"
+    return "currency"
+
+
 def normalize_profile(symbol: str, bundle: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     profile = _first_list_row((bundle.get("endpoints") or {}).get("profile"))
     if not profile:
@@ -154,8 +176,9 @@ def normalize_profile(symbol: str, bundle: Dict[str, Any]) -> Optional[Dict[str,
     return {
         "symbol": _clean_symbol(symbol),
         "provider_symbol": _clean_symbol(str(profile.get("symbol") or bundle.get("resolved_symbol") or symbol)),
-        "company_name": profile.get("companyName") or profile.get("companyNameLong") or profile.get("name"),
+        "company_name": profile.get("companyName") or profile.get("companyNameLong") or profile.get("name") or _clean_symbol(symbol),
         "exchange": profile.get("exchange") or profile.get("exchangeShortName"),
+        "market": profile.get("exchangeShortName") or profile.get("exchange"),
         "sector": profile.get("sector"),
         "industry": profile.get("industry"),
         "country": profile.get("country"),
@@ -163,7 +186,9 @@ def normalize_profile(symbol: str, bundle: Dict[str, Any]) -> Optional[Dict[str,
         "ipo_date": _iso_date(profile.get("ipoDate")),
         "website": profile.get("website"),
         "description": profile.get("description"),
+        "provider_payload": profile,
         "source": "fmp",
+        "source_confidence": SOURCE_CONFIDENCE,
         "retrieved_at": bundle.get("retrieved_at") or utc_now(),
         "updated_at": utc_now(),
     }
@@ -174,7 +199,10 @@ def normalize_statement_rows(symbol: str, bundle: Dict[str, Any]) -> List[Dict[s
     source = "fmp"
     base_symbol = _clean_symbol(symbol)
     profile = _first_list_row(endpoint_rows.get("profile"))
-    currency = profile.get("currency") if isinstance(profile, dict) else None
+    company_name = profile.get("companyName") or profile.get("name") or ""
+    currency = profile.get("currency") or ""
+    retrieved_at = bundle.get("retrieved_at") or utc_now()
+    default_date = _iso_date(retrieved_at) or today_iso()
     statement_map = {
         "income_statement": "income_statement",
         "balance_sheet_statement": "balance_sheet",
@@ -191,32 +219,39 @@ def normalize_statement_rows(symbol: str, bundle: Dict[str, Any]) -> List[Dict[s
         for item in payload:
             if not isinstance(item, dict):
                 continue
-            fiscal_year = item.get("calendarYear") or item.get("fiscalYear")
-            report_date = _iso_date(item.get("date") or item.get("fillingDate"))
-            accepted_date = _iso_date(item.get("acceptedDate"))
+            report_date = _iso_date(item.get("date") or item.get("fillingDate")) or default_date
+            accepted_date = _iso_date(item.get("acceptedDate")) or report_date
+            fiscal_year = _safe_fiscal_year(item.get("calendarYear") or item.get("fiscalYear"), report_date)
             period_type = _period_type(item)
             fiscal_period = _fiscal_period(item)
+            provider_symbol = _clean_symbol(str(item.get("symbol") or bundle.get("resolved_symbol") or symbol))
             for metric_name, metric_value in item.items():
                 numeric_value = _number(metric_value)
                 if numeric_value is None:
                     continue
+                metric_key = str(metric_name)
                 rows.append(
                     {
                         "symbol": base_symbol,
-                        "provider_symbol": _clean_symbol(
-                            str(item.get("symbol") or bundle.get("resolved_symbol") or symbol)
-                        ),
-                        "fiscal_year": int(fiscal_year) if str(fiscal_year).isdigit() else None,
+                        "provider_symbol": provider_symbol,
+                        "company_name": company_name,
+                        "fiscal_year": fiscal_year,
                         "fiscal_period": fiscal_period,
                         "period_type": period_type,
+                        "period_end_date": report_date,
                         "statement_type": statement_type,
-                        "metric_name": str(metric_name),
+                        "metric_name": metric_key,
+                        "metric_label": metric_key,
                         "metric_value": numeric_value,
-                        "report_date": report_date,
-                        "accepted_date": accepted_date,
+                        "metric_unit": _metric_unit(statement_type, metric_key),
                         "currency": currency,
                         "source": source,
-                        "retrieved_at": bundle.get("retrieved_at") or utc_now(),
+                        "source_url": "",
+                        "source_confidence": SOURCE_CONFIDENCE,
+                        "provider_payload": {},
+                        "report_date": report_date,
+                        "accepted_date": accepted_date,
+                        "retrieved_at": retrieved_at,
                         "updated_at": utc_now(),
                     }
                 )
@@ -232,35 +267,27 @@ def calculate_valuation_snapshot(symbol: str, bundle: Dict[str, Any]) -> Optiona
         return None
 
     profile = _first_list_row(endpoints.get("profile"))
-    snapshot_date = _iso_date(enterprise.get("date")) or _iso_date(bundle.get("retrieved_at")) or utc_now()[:10]
+    snapshot_date = _iso_date(enterprise.get("date")) or _iso_date(bundle.get("retrieved_at")) or today_iso()
     fiscal_period = str(enterprise.get("period") or "TTM").upper()
 
     return {
         "symbol": _clean_symbol(symbol),
-        "provider_symbol": _clean_symbol(
-            str(profile.get("symbol") or bundle.get("resolved_symbol") or symbol)
-        ),
+        "provider_symbol": _clean_symbol(str(profile.get("symbol") or bundle.get("resolved_symbol") or symbol)),
         "snapshot_date": snapshot_date,
         "fiscal_period": fiscal_period,
         "market_cap": _number(enterprise.get("marketCapitalization")),
         "enterprise_value": _number(enterprise.get("enterpriseValue")),
         "shares_outstanding": _number(enterprise.get("numberOfShares")),
-        "pe_ratio": _number(ratios_ttm.get("priceEarningsRatioTTM"))
-        or _number(ratios_ttm.get("priceEarningsRatio")),
-        "pb_ratio": _number(ratios_ttm.get("priceToBookRatioTTM"))
-        or _number(ratios_ttm.get("priceToBookRatio")),
-        "ps_ratio": _number(ratios_ttm.get("priceToSalesRatioTTM"))
-        or _number(ratios_ttm.get("priceToSalesRatio")),
-        "ev_ebitda": _number(metrics_ttm.get("enterpriseValueOverEBITDATTM"))
-        or _number(metrics_ttm.get("enterpriseValueOverEBITDA")),
-        "dividend_yield": _number(ratios_ttm.get("dividendYieldTTM"))
-        or _number(ratios_ttm.get("dividendYield")),
-        "roe": _number(ratios_ttm.get("returnOnEquityTTM"))
-        or _number(ratios_ttm.get("returnOnEquity")),
-        "roa": _number(ratios_ttm.get("returnOnAssetsTTM"))
-        or _number(ratios_ttm.get("returnOnAssets")),
+        "pe_ratio": _number(ratios_ttm.get("priceEarningsRatioTTM")) or _number(ratios_ttm.get("priceEarningsRatio")),
+        "pb_ratio": _number(ratios_ttm.get("priceToBookRatioTTM")) or _number(ratios_ttm.get("priceToBookRatio")),
+        "ps_ratio": _number(ratios_ttm.get("priceToSalesRatioTTM")) or _number(ratios_ttm.get("priceToSalesRatio")),
+        "ev_ebitda": _number(metrics_ttm.get("enterpriseValueOverEBITDATTM")) or _number(metrics_ttm.get("enterpriseValueOverEBITDA")),
+        "dividend_yield": _number(ratios_ttm.get("dividendYieldTTM")) or _number(ratios_ttm.get("dividendYield")),
+        "roe": _number(ratios_ttm.get("returnOnEquityTTM")) or _number(ratios_ttm.get("returnOnEquity")),
+        "roa": _number(ratios_ttm.get("returnOnAssetsTTM")) or _number(ratios_ttm.get("returnOnAssets")),
         "data_quality": "ttm" if metrics_ttm or ratios_ttm else "annual_only",
         "source": "fmp",
+        "source_confidence": SOURCE_CONFIDENCE,
         "retrieved_at": bundle.get("retrieved_at") or utc_now(),
         "updated_at": utc_now(),
     }
@@ -284,14 +311,14 @@ def calculate_bank_kpi_row(symbol: str, bundle: Dict[str, Any]) -> Optional[Dict
     if not ratios and not metrics:
         return None
 
-    fiscal_year = ratios.get("calendarYear") or metrics.get("calendarYear")
+    fiscal_year = _safe_fiscal_year(ratios.get("calendarYear") or metrics.get("calendarYear"), _iso_date(ratios.get("date") or metrics.get("date")))
     fiscal_period = str(ratios.get("period") or metrics.get("period") or "FY").upper()
     period_type = "quarterly" if fiscal_period in {"Q1", "Q2", "Q3", "Q4"} else "annual"
 
     return {
         "symbol": _clean_symbol(symbol),
         "provider_symbol": _clean_symbol(str(profile.get("provider_symbol") or symbol)),
-        "fiscal_year": int(fiscal_year) if str(fiscal_year).isdigit() else None,
+        "fiscal_year": fiscal_year,
         "fiscal_period": fiscal_period,
         "period_type": period_type,
         "return_on_assets": _number(ratios.get("returnOnAssets")),
@@ -303,6 +330,7 @@ def calculate_bank_kpi_row(symbol: str, bundle: Dict[str, Any]) -> Optional[Dict
         "loan_to_deposit": None,
         "efficiency_ratio": None,
         "source": "fmp",
+        "source_confidence": SOURCE_CONFIDENCE,
         "note": "FMP coverage for bank-specific KPIs is partial; blank fields indicate provider gaps.",
         "retrieved_at": bundle.get("retrieved_at") or utc_now(),
         "updated_at": utc_now(),
@@ -343,6 +371,8 @@ def build_metric_coverage(
     coverage_rows: List[Dict[str, Any]] = []
     now = utc_now()
     any_statement_data = bool(statement_rows)
+    latest_year = years[0] if years else datetime.now(timezone.utc).year
+
     for year in years:
         for metric_group, metric_map in requirements.items():
             for metric_name, aliases in metric_map.items():
@@ -357,41 +387,48 @@ def build_metric_coverage(
                         "fiscal_period": "FY",
                         "metric_group": metric_group,
                         "metric_name": metric_name,
-                        "status": "present" if matched else ("missing" if any_statement_data else "provider_gap"),
-                        "note": None if matched else "Provider did not return this metric for the selected symbol/year.",
+                        "status": "available" if matched else ("missing" if any_statement_data else "not_applicable"),
+                        "note": "" if matched else "Provider did not return this metric for the selected symbol/year.",
                         "source": "fmp",
+                        "source_confidence": SOURCE_CONFIDENCE,
                         "updated_at": now,
                     }
                 )
 
     valuation_metrics = {
-        "valuation": {
-            "market_cap": valuation.get("market_cap") if valuation else None,
-            "pe_ratio": valuation.get("pe_ratio") if valuation else None,
-            "pb_ratio": valuation.get("pb_ratio") if valuation else None,
-            "ps_ratio": valuation.get("ps_ratio") if valuation else None,
-            "ev_ebitda": valuation.get("ev_ebitda") if valuation else None,
-        }
+        "market_cap": valuation.get("market_cap") if valuation else None,
+        "pe_ratio": valuation.get("pe_ratio") if valuation else None,
+        "pb_ratio": valuation.get("pb_ratio") if valuation else None,
+        "ps_ratio": valuation.get("ps_ratio") if valuation else None,
+        "ev_ebitda": valuation.get("ev_ebitda") if valuation else None,
     }
-    latest_year = years[0] if years else datetime.now(timezone.utc).year
-    for metric_group, metric_map in valuation_metrics.items():
-        for metric_name, metric_value in metric_map.items():
-            coverage_rows.append(
-                {
-                    "symbol": _clean_symbol(symbol),
-                    "fiscal_year": latest_year,
-                    "fiscal_period": "TTM",
-                    "metric_group": metric_group,
-                    "metric_name": metric_name,
-                    "status": "present" if metric_value is not None else ("missing" if valuation else "provider_gap"),
-                    "note": None if metric_value is not None else "TTM valuation metric is unavailable from the provider.",
-                    "source": "fmp",
-                    "updated_at": now,
-                }
-            )
+    for metric_name, metric_value in valuation_metrics.items():
+        coverage_rows.append(
+            {
+                "symbol": _clean_symbol(symbol),
+                "fiscal_year": latest_year,
+                "fiscal_period": "TTM",
+                "metric_group": "valuation",
+                "metric_name": metric_name,
+                "status": "available" if metric_value is not None else ("missing" if valuation else "not_applicable"),
+                "note": "" if metric_value is not None else "TTM valuation metric is unavailable from the provider.",
+                "source": "fmp",
+                "source_confidence": SOURCE_CONFIDENCE,
+                "updated_at": now,
+            }
+        )
 
     if bank_kpi:
-        for metric_name in ["return_on_assets", "return_on_equity", "debt_to_equity", "price_to_book", "tier1_proxy", "nim", "loan_to_deposit", "efficiency_ratio"]:
+        for metric_name in [
+            "return_on_assets",
+            "return_on_equity",
+            "debt_to_equity",
+            "price_to_book",
+            "tier1_proxy",
+            "nim",
+            "loan_to_deposit",
+            "efficiency_ratio",
+        ]:
             metric_value = bank_kpi.get(metric_name)
             coverage_rows.append(
                 {
@@ -400,9 +437,10 @@ def build_metric_coverage(
                     "fiscal_period": bank_kpi.get("fiscal_period") or "FY",
                     "metric_group": "bank_kpi",
                     "metric_name": metric_name,
-                    "status": "present" if metric_value is not None else "missing",
-                    "note": None if metric_value is not None else "Provider did not return this bank KPI.",
+                    "status": "available" if metric_value is not None else "missing",
+                    "note": "" if metric_value is not None else "Provider did not return this bank KPI.",
                     "source": "fmp",
+                    "source_confidence": SOURCE_CONFIDENCE,
                     "updated_at": now,
                 }
             )
