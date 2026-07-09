@@ -10,10 +10,18 @@ services:
         sync: false
       - key: DASHSCOPE_BASE_URL
         value: https://dashscope-intl.aliyuncs.com/compatible-mode/v1
-      - key: DASHSCOPE_MODEL
+      - key: DASHSCOPE_MODEL_DEEP
+        value: qwen3.7-max
+      - key: DASHSCOPE_MODEL_FAST
+        value: qwen3.7-plus
+      - key: DASHSCOPE_MODEL_FLASH
+        value: qwen3.6-flash
+      - key: DASHSCOPE_MODEL_VISION
         value: qwen3.7-plus
       - key: DASHSCOPE_NEWS_MODEL
-        value: qwen-plus
+        value: qwen3.7-plus
+      - key: DASHSCOPE_TIMEOUT_SECONDS
+        value: "120"
       - key: NEWSAPI_KEY
         sync: false
       - key: SUPABASE_URL
