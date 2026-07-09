@@ -6,3 +6,4 @@ httpx
 python-multipart
 yfinance
 pandas
+pypdf
