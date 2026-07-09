@@ -3,6 +3,7 @@ load_dotenv()
 
 import hashlib
 import json
+import logging
 import math
 import os
 import random
@@ -29,6 +30,8 @@ from financial_data_warehouse import (
 )
 from news_module import generate_news, normalize_category
 from qwen_client import QwenClientError, call_qwen, qwen_is_configured
+
+logger = logging.getLogger("qfin")
 
 app = FastAPI(title="QFin Terminal API", version="qfin-agent-2.7")
 app.add_middleware(
@@ -3125,20 +3128,24 @@ async def agent_chat(payload: AgentChatRequest):
             "data": result,
         }
     except (QwenClientError, KeyError, IndexError) as exc:
+        logger.exception("QFin agent handled error: %s", type(exc).__name__)
+        safe_message = "QFin could not complete that reply just now. Please try again."
         return {
             "id": "qfin-agent-error",
             "role": "assistant",
-            "content": f"QFin could not complete that reply just now. {exc}",
-            "answer": f"QFin could not complete that reply just now. {exc}",
-            "data": {"error": str(exc)},
+            "content": safe_message,
+            "answer": safe_message,
+            "data": {"error": "agent_error"},
         }
     except Exception as exc:
+        logger.exception("QFin agent unexpected error: %s", type(exc).__name__)
+        safe_message = "QFin could not complete that reply just now. Please try again."
         return {
             "id": "qfin-agent-error",
             "role": "assistant",
-            "content": f"QFin could not complete that reply just now. {exc}",
-            "answer": f"QFin could not complete that reply just now. {exc}",
-            "data": {"error": str(exc)},
+            "content": safe_message,
+            "answer": safe_message,
+            "data": {"error": "internal_error"},
         }
 
 
