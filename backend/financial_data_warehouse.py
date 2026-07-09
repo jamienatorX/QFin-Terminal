@@ -19,6 +19,7 @@ ANNUAL_REPORT_TIMEOUT = httpx.Timeout(25.0, connect=8.0)
 MAX_ANNUAL_REPORT_BYTES = 18_000_000
 MAX_REPORT_TEXT_CHARS = 70_000
 MAX_TABLE_TEXT_CHARS = 80_000
+
 GLOBAL_REPORT_HOSTS = {
     "annualreports.com",
     "sec.gov",
@@ -34,12 +35,39 @@ GLOBAL_REPORT_HOSTS = {
     "euronext.com",
 }
 
+REPORT_PAGE_PATHS = [
+    "/",
+    "/investor-relations",
+    "/investors",
+    "/investor",
+    "/ir",
+    "/financials",
+    "/reports",
+    "/annual-report",
+    "/annual-reports",
+    "/integrated-report",
+    "/financial-reports",
+    "/shareholder-information",
+    "/en/investor-relations",
+    "/en/investors",
+    "/en/annual-report",
+    "/en/annual-reports",
+    "/en/financial-reports",
+    "/id/investor-relations",
+    "/id/hubungan-investor",
+    "/id/laporan-tahunan",
+    "/id/tentang-bca/hubungan-investor/laporan-tahunan",
+    "/id/tentang-bca/Hubungan-Investor/Laporan-Tahunan",
+    "/en/about-bca/investor-relations/annual-report",
+    "/en/about-bca/Investor-Relations/Annual-Report",
+    "/laporan-tahunan",
+]
 
 BANK_KPI_ALIASES = {
     "nim": ["net interest margin", "nim", "marjin bunga bersih"],
     "npl_ratio": ["non-performing loan", "non performing loan", "npl ratio", "gross npl", "rasio kredit bermasalah", "kredit bermasalah"],
     "casa_ratio": ["casa ratio", "casa", "current account saving account", "current account savings account", "giro dan tabungan"],
-    "car": ["capital adequacy ratio", "car", "rasio kecukupan modal", "kewajiban penyediaan modal minimum", "kpm m", "kpmm"],
+    "car": ["capital adequacy ratio", "car", "rasio kecukupan modal", "kewajiban penyediaan modal minimum", "kpmm"],
     "loan_to_deposit_ratio": ["loan to deposit ratio", "loan-to-deposit", "ldr", "loan deposit ratio", "rasio kredit terhadap dana pihak ketiga"],
     "cost_to_income_ratio": ["cost to income ratio", "cost-to-income", "cir", "efficiency ratio", "rasio biaya terhadap pendapatan", "cost/income"],
     "roe": ["return on equity", "roe", "imbal hasil ekuitas"],
@@ -118,14 +146,14 @@ def _annual_report_score(url: str, title: str = "", official_host: str = "") -> 
     text = f"{url} {title}".lower()
     host = _host(url)
     score = 0
-    for token in ["annual-report", "annual report", "annual_report", "form-10-k", "10-k", "20-f", "laporan-tahunan", "laporan tahunan", "integrated-report", "integrated report"]:
+    for token in ["annual-report", "annual report", "annual_report", "form-10-k", "10-k", "20-f", "laporan-tahunan", "laporan tahunan", "integrated-report", "integrated report", "ar-20", "ar_20"]:
         if token in text:
             score += 38
     if ".pdf" in text:
         score += 30
     if "financial" in text or "keuangan" in text or "investor" in text or "shareholder" in text:
         score += 10
-    if official_host and official_host in host:
+    if official_host and (official_host == host or host.endswith(f".{official_host}")):
         score += 35
     if _is_known_report_host(url):
         score += 28
@@ -138,7 +166,7 @@ def _annual_report_score(url: str, title: str = "", official_host: str = "") -> 
 
 
 def _normalize_search_url(href: str) -> str:
-    href = html.unescape(href or "")
+    href = html.unescape(href or "").replace("\\/", "/")
     if not href:
         return ""
     if href.startswith("//"):
@@ -152,20 +180,44 @@ def _normalize_search_url(href: str) -> str:
     return href
 
 
+def _extract_raw_urls(text: str, base_url: str = "") -> List[Dict[str, str]]:
+    cleaned = html.unescape(text or "").replace("\\/", "/")
+    urls = set(re.findall(r"https?://[^\s\"'<>\\)]+", cleaned))
+    if base_url:
+        for raw in re.findall(r"[\"']([^\"']+\.pdf(?:\?[^\"']*)?)[\"']", cleaned, flags=re.I):
+            urls.add(urljoin(base_url, raw))
+    return [{"url": url.strip().rstrip(".,;"), "title": "raw-url"} for url in urls]
+
+
 def _extract_links(html_text: str, base_url: str = "") -> List[Dict[str, str]]:
     links: List[Dict[str, str]] = []
-    pattern = re.compile(r'<a[^>]+href=["\']([^"\']+)["\'][^>]*>(.*?)</a>', re.I | re.S)
-    for href, label in pattern.findall(html_text or ""):
+    attr_pattern = re.compile(r"(?:href|src|data-href|data-url|data-file|data-download)=[\"']([^\"']+)[\"']", re.I)
+    for href in attr_pattern.findall(html_text or ""):
         normalized = _normalize_search_url(href)
         if base_url:
             normalized = urljoin(base_url, normalized)
         normalized = normalized.strip()
+        if normalized.startswith(("http://", "https://")):
+            links.append({"url": normalized, "title": "attribute-url"})
+
+    anchor_pattern = re.compile(r'<a[^>]+href=["\']([^"\']+)["\'][^>]*>(.*?)</a>', re.I | re.S)
+    for href, label in anchor_pattern.findall(html_text or ""):
+        normalized = _normalize_search_url(href)
+        if base_url:
+            normalized = urljoin(base_url, normalized)
         if not normalized.startswith(("http://", "https://")):
             continue
         clean_label = re.sub(r"<[^>]+>", " ", label)
         clean_label = re.sub(r"\s+", " ", html.unescape(clean_label)).strip()
         links.append({"url": normalized, "title": clean_label})
-    return links
+
+    links.extend(_extract_raw_urls(html_text, base_url))
+    deduped: Dict[str, Dict[str, str]] = {}
+    for link in links:
+        url = link.get("url", "")
+        if url:
+            deduped[url] = link
+    return list(deduped.values())
 
 
 async def _download_text(client: httpx.AsyncClient, url: str) -> str:
@@ -216,39 +268,14 @@ def _extract_pdf_content(pdf_bytes: bytes, max_pages: int = 45) -> Dict[str, Any
                     pass
 
                 try:
-                    tables = page.extract_tables(
-                        table_settings={
-                            "vertical_strategy": "lines",
-                            "horizontal_strategy": "lines",
-                            "intersection_tolerance": 5,
-                            "snap_tolerance": 3,
-                            "join_tolerance": 3,
-                            "edge_min_length": 3,
-                        }
-                    ) or []
+                    tables = page.extract_tables(table_settings={"vertical_strategy": "lines", "horizontal_strategy": "lines", "intersection_tolerance": 5, "snap_tolerance": 3, "join_tolerance": 3, "edge_min_length": 3}) or []
                     if not tables:
-                        tables = page.extract_tables(
-                            table_settings={
-                                "vertical_strategy": "text",
-                                "horizontal_strategy": "text",
-                                "intersection_tolerance": 5,
-                                "snap_tolerance": 3,
-                                "join_tolerance": 3,
-                                "min_words_vertical": 2,
-                                "min_words_horizontal": 1,
-                            }
-                        ) or []
+                        tables = page.extract_tables(table_settings={"vertical_strategy": "text", "horizontal_strategy": "text", "intersection_tolerance": 5, "snap_tolerance": 3, "join_tolerance": 3, "min_words_vertical": 2, "min_words_horizontal": 1}) or []
                     for table_index, table in enumerate(tables, start=1):
                         rows = _table_to_markdown_rows(table)
                         if not rows:
                             continue
-                        structured_tables.append(
-                            {
-                                "page": page_number,
-                                "table_index": table_index,
-                                "rows": rows[:80],
-                            }
-                        )
+                        structured_tables.append({"page": page_number, "table_index": table_index, "rows": rows[:80]})
                         table_text_chunks.append(f"TABLE page={page_number} index={table_index}\n" + "\n".join(rows[:80]))
                 except Exception:
                     pass
@@ -276,27 +303,58 @@ def _extract_pdf_content(pdf_bytes: bytes, max_pages: int = 45) -> Dict[str, Any
 
     text_excerpt = re.sub(r"\s+", " ", "\n".join(text_chunks)).strip()[:MAX_REPORT_TEXT_CHARS]
     table_text = re.sub(r"\s+", " ", "\n".join(table_text_chunks)).strip()[:MAX_TABLE_TEXT_CHARS]
-    return {
-        "text_excerpt": text_excerpt,
-        "table_text": table_text,
-        "tables": structured_tables[:25],
-        "table_count": len(structured_tables),
-        "pages_scanned": max((table.get("page", 0) for table in structured_tables), default=0),
-        "extraction_method": extraction_method,
-    }
+    return {"text_excerpt": text_excerpt, "table_text": table_text, "tables": structured_tables[:25], "table_count": len(structured_tables), "pages_scanned": max((table.get("page", 0) for table in structured_tables), default=0), "extraction_method": extraction_method}
 
 
 async def _search_duckduckgo(client: httpx.AsyncClient, query: str) -> List[Dict[str, str]]:
     try:
-        response = await client.get(
-            "https://duckduckgo.com/html/",
-            params={"q": query},
-            headers={"User-Agent": FMP_USER_AGENT},
-        )
+        response = await client.get("https://duckduckgo.com/html/", params={"q": query}, headers={"User-Agent": FMP_USER_AGENT})
         response.raise_for_status()
         return _extract_links(response.text, "https://duckduckgo.com")
     except Exception:
         return []
+
+
+async def _sitemap_candidates(client: httpx.AsyncClient, website: str) -> List[Dict[str, str]]:
+    base = _base_url(website)
+    if not base:
+        return []
+    sitemap_urls = {urljoin(base, "/sitemap.xml"), urljoin(base, "/sitemap_index.xml"), urljoin(base, "/sitemap-main.xml")}
+    try:
+        robots = await _download_text(client, urljoin(base, "/robots.txt"))
+        for sitemap in re.findall(r"(?im)^sitemap:\s*(\S+)", robots):
+            sitemap_urls.add(sitemap.strip())
+    except Exception:
+        pass
+
+    found: List[Dict[str, str]] = []
+    seen = set()
+    queue = list(sitemap_urls)
+    depth = 0
+    while queue and depth < 3:
+        current_batch = queue[:20]
+        queue = queue[20:]
+        depth += 1
+        for sitemap_url in current_batch:
+            if sitemap_url in seen:
+                continue
+            seen.add(sitemap_url)
+            try:
+                xml = await _download_text(client, sitemap_url)
+            except Exception:
+                continue
+            locs = re.findall(r"<loc>(.*?)</loc>", xml, flags=re.I | re.S)
+            if not locs:
+                locs = [item["url"] for item in _extract_raw_urls(xml)]
+            for loc in locs:
+                url = html.unescape(loc).strip()
+                lowered = url.lower()
+                if lowered.endswith(".xml") or "sitemap" in lowered:
+                    queue.append(url)
+                    continue
+                if any(token in lowered for token in ["annual", "report", "laporan", "investor", "financial", "10-k", "20-f", ".pdf"]):
+                    found.append({"url": url, "title": "sitemap"})
+    return found
 
 
 async def _official_site_candidates(client: httpx.AsyncClient, website: str) -> List[Dict[str, str]]:
@@ -304,34 +362,30 @@ async def _official_site_candidates(client: httpx.AsyncClient, website: str) -> 
     if not base:
         return []
 
-    paths = [
-        "/",
-        "/investor-relations",
-        "/investors",
-        "/investor",
-        "/financials",
-        "/reports",
-        "/annual-report",
-        "/annual-reports",
-        "/integrated-report",
-        "/en/investor-relations",
-        "/en/investors",
-        "/en/annual-report",
-        "/id/tentang-bca/hubungan-investor/laporan-tahunan",
-        "/en/about-bca/investor-relations/annual-report",
-        "/laporan-tahunan",
-    ]
     found: List[Dict[str, str]] = []
-    for path in paths:
-        page_url = urljoin(base, path)
+    found.extend(await _sitemap_candidates(client, website))
+    pages = [urljoin(base, path) for path in REPORT_PAGE_PATHS]
+
+    for page_url in pages:
         try:
             page_html = await _download_text(client, page_url)
         except Exception:
             continue
-        for link in _extract_links(page_html, page_url):
+        page_links = _extract_links(page_html, page_url)
+        for link in page_links:
             text = f"{link.get('url', '')} {link.get('title', '')}".lower()
-            if any(token in text for token in ["annual", "report", "laporan", "10-k", "20-f", ".pdf"]):
+            if any(token in text for token in ["annual", "report", "laporan", "10-k", "20-f", "investor", "financial", ".pdf"]):
                 found.append(link)
+        for link in page_links[:60]:
+            if _is_pdf_url(link.get("url", "")):
+                continue
+            if _annual_report_score(link.get("url", ""), link.get("title", ""), _host(website)) < 35:
+                continue
+            try:
+                inner_html = await _download_text(client, link["url"])
+                found.extend(_extract_links(inner_html, link["url"]))
+            except Exception:
+                continue
     return found
 
 
@@ -367,18 +421,13 @@ async def discover_annual_report(company_name: str, symbol: str, website: Option
             if not url.startswith(("http://", "https://")):
                 continue
             score = _annual_report_score(url, title, official_host)
-            if score <= 30:
+            if score <= 25:
                 continue
             deduped[url] = {"url": url, "title": title}
 
-        ranked = sorted(
-            deduped.values(),
-            key=lambda item: _annual_report_score(item["url"], item.get("title", ""), official_host),
-            reverse=True,
-        )
-
+        ranked = sorted(deduped.values(), key=lambda item: _annual_report_score(item["url"], item.get("title", ""), official_host), reverse=True)
         pdf_candidates: List[Dict[str, str]] = []
-        for item in ranked[:20]:
+        for item in ranked[:35]:
             url = item["url"]
             if _is_pdf_url(url):
                 pdf_candidates.append(item)
@@ -387,19 +436,15 @@ async def discover_annual_report(company_name: str, symbol: str, website: Option
                 page_html = await _download_text(client, url)
                 for link in _extract_links(page_html, url):
                     score = _annual_report_score(link.get("url", ""), link.get("title", ""), official_host)
-                    if _is_pdf_url(link.get("url", "")) and score > 25:
+                    if _is_pdf_url(link.get("url", "")) and score > 20:
                         pdf_candidates.append(link)
             except Exception:
                 continue
 
         pdf_deduped: Dict[str, Dict[str, str]] = {item["url"]: item for item in pdf_candidates if item.get("url")}
-        pdf_ranked = sorted(
-            pdf_deduped.values(),
-            key=lambda item: _annual_report_score(item["url"], item.get("title", ""), official_host),
-            reverse=True,
-        )
+        pdf_ranked = sorted(pdf_deduped.values(), key=lambda item: _annual_report_score(item["url"], item.get("title", ""), official_host), reverse=True)
 
-        for item in pdf_ranked[:10]:
+        for item in pdf_ranked[:12]:
             pdf_url = item["url"]
             try:
                 pdf_bytes = await _download_bytes(client, pdf_url)
@@ -407,35 +452,15 @@ async def discover_annual_report(company_name: str, symbol: str, website: Option
                 combined_for_year = f"{item.get('title', '')} {pdf_url} {pdf_content.get('text_excerpt', '')[:1000]} {pdf_content.get('table_text', '')[:1000]}"
                 years = re.findall(r"20\d{2}", combined_for_year)
                 report_year = max([int(year) for year in years], default=None)
-                return {
-                    "status": "found",
-                    "symbol": symbol,
-                    "company_name": company_name,
-                    "report_year": report_year,
-                    "report_type": "annual_report",
-                    "source_url": pdf_url,
-                    "source_title": item.get("title") or "Annual report PDF",
-                    "source_host": _host(pdf_url),
-                    "source_confidence": SOURCE_CONFIDENCE,
-                    "downloaded_at": utc_now(),
-                    "bytes": len(pdf_bytes),
-                    **pdf_content,
-                }
+                return {"status": "found", "symbol": symbol, "company_name": company_name, "report_year": report_year, "report_type": "annual_report", "source_url": pdf_url, "source_title": item.get("title") or "Annual report PDF", "source_host": _host(pdf_url), "source_confidence": SOURCE_CONFIDENCE, "downloaded_at": utc_now(), "bytes": len(pdf_bytes), **pdf_content}
             except Exception:
                 continue
 
-    return {
-        "status": "not_found",
-        "symbol": symbol,
-        "company_name": company_name,
-        "source_confidence": 0.0,
-        "checked_at": utc_now(),
-    }
+    return {"status": "not_found", "symbol": symbol, "company_name": company_name, "source_confidence": 0.0, "checked_at": utc_now()}
 
 
 def _normalize_decimal_number(text: str) -> Optional[float]:
-    raw = (text or "").strip().replace(" ", "")
-    raw = raw.replace("%", "").replace("(", "-").replace(")", "")
+    raw = (text or "").strip().replace(" ", "").replace("%", "").replace("(", "-").replace(")", "")
     if not raw:
         return None
     if "," in raw and "." in raw:
@@ -536,8 +561,7 @@ def _year_column_indexes(table_rows: List[List[str]]) -> Dict[int, int]:
     best: Dict[int, int] = {}
     for row in table_rows[:6]:
         for index, cell in enumerate(row):
-            years = re.findall(r"20\d{2}", cell or "")
-            for year in years:
+            for year in re.findall(r"20\d{2}", cell or ""):
                 best[int(year)] = index
     return best
 
@@ -603,11 +627,7 @@ async def _fmp_get(path: str, params: Optional[Dict[str, Any]] = None) -> Any:
     query["apikey"] = api_key
 
     async with httpx.AsyncClient(timeout=FMP_TIMEOUT, follow_redirects=True) as client:
-        response = await client.get(
-            f"{FMP_BASE_URL}{path}",
-            params=query,
-            headers={"User-Agent": FMP_USER_AGENT},
-        )
+        response = await client.get(f"{FMP_BASE_URL}{path}", params=query, headers={"User-Agent": FMP_USER_AGENT})
         response.raise_for_status()
         return response.json()
 
@@ -660,11 +680,7 @@ async def fetch_fmp_bundle(symbol: str, limit: int = 5) -> Dict[str, Any]:
 
     profile = _first_list_row(endpoint_payloads.get("profile"))
     if profile:
-        annual_report = await discover_annual_report(
-            profile.get("companyName") or profile.get("name") or requested_symbol,
-            requested_symbol,
-            profile.get("website"),
-        )
+        annual_report = await discover_annual_report(profile.get("companyName") or profile.get("name") or requested_symbol, requested_symbol, profile.get("website"))
         endpoint_payloads["annual_report"] = annual_report
         if annual_report and annual_report.get("status") == "found":
             endpoint_payloads["annual_report_bank_kpis"] = extract_bank_kpis_from_annual_report(annual_report)
@@ -672,15 +688,7 @@ async def fetch_fmp_bundle(symbol: str, limit: int = 5) -> Dict[str, Any]:
         elif annual_report:
             warnings.append("annual_report: not_found")
 
-    return {
-        "provider": "fmp",
-        "requested_symbol": requested_symbol,
-        "resolved_symbol": resolved_symbol,
-        "retrieved_at": utc_now(),
-        "status": "success" if resolved_any else "provider_gap",
-        "warnings": warnings,
-        "endpoints": endpoint_payloads,
-    }
+    return {"provider": "fmp", "requested_symbol": requested_symbol, "resolved_symbol": resolved_symbol, "retrieved_at": utc_now(), "status": "success" if resolved_any else "provider_gap", "warnings": warnings, "endpoints": endpoint_payloads}
 
 
 def _first_list_row(payload: Any) -> Dict[str, Any]:
@@ -748,25 +756,7 @@ def normalize_profile(symbol: str, bundle: Dict[str, Any]) -> Optional[Dict[str,
     if endpoints.get("annual_report_bank_kpis"):
         provider_payload["annual_report_bank_kpis"] = endpoints.get("annual_report_bank_kpis")
 
-    return {
-        "symbol": _clean_symbol(symbol),
-        "provider_symbol": _clean_symbol(str(profile.get("symbol") or bundle.get("resolved_symbol") or symbol)),
-        "company_name": profile.get("companyName") or profile.get("companyNameLong") or profile.get("name") or _clean_symbol(symbol),
-        "exchange": profile.get("exchange") or profile.get("exchangeShortName"),
-        "market": profile.get("exchangeShortName") or profile.get("exchange"),
-        "sector": profile.get("sector"),
-        "industry": profile.get("industry"),
-        "country": profile.get("country"),
-        "currency": profile.get("currency"),
-        "ipo_date": _iso_date(profile.get("ipoDate")),
-        "website": profile.get("website"),
-        "description": profile.get("description"),
-        "provider_payload": provider_payload,
-        "source": "fmp",
-        "source_confidence": SOURCE_CONFIDENCE,
-        "retrieved_at": bundle.get("retrieved_at") or utc_now(),
-        "updated_at": utc_now(),
-    }
+    return {"symbol": _clean_symbol(symbol), "provider_symbol": _clean_symbol(str(profile.get("symbol") or bundle.get("resolved_symbol") or symbol)), "company_name": profile.get("companyName") or profile.get("companyNameLong") or profile.get("name") or _clean_symbol(symbol), "exchange": profile.get("exchange") or profile.get("exchangeShortName"), "market": profile.get("exchangeShortName") or profile.get("exchange"), "sector": profile.get("sector"), "industry": profile.get("industry"), "country": profile.get("country"), "currency": profile.get("currency"), "ipo_date": _iso_date(profile.get("ipoDate")), "website": profile.get("website"), "description": profile.get("description"), "provider_payload": provider_payload, "source": "fmp", "source_confidence": SOURCE_CONFIDENCE, "retrieved_at": bundle.get("retrieved_at") or utc_now(), "updated_at": utc_now()}
 
 
 def normalize_statement_rows(symbol: str, bundle: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -778,13 +768,7 @@ def normalize_statement_rows(symbol: str, bundle: Dict[str, Any]) -> List[Dict[s
     currency = profile.get("currency") or ""
     retrieved_at = bundle.get("retrieved_at") or utc_now()
     default_date = _iso_date(retrieved_at) or today_iso()
-    statement_map = {
-        "income_statement": "income_statement",
-        "balance_sheet_statement": "balance_sheet",
-        "cash_flow_statement": "cash_flow",
-        "key_metrics": "key_metrics",
-        "ratios": "ratios",
-    }
+    statement_map = {"income_statement": "income_statement", "balance_sheet_statement": "balance_sheet", "cash_flow_statement": "cash_flow", "key_metrics": "key_metrics", "ratios": "ratios"}
 
     rows: List[Dict[str, Any]] = []
     for endpoint_name, statement_type in statement_map.items():
@@ -805,31 +789,7 @@ def normalize_statement_rows(symbol: str, bundle: Dict[str, Any]) -> List[Dict[s
                 if numeric_value is None:
                     continue
                 metric_key = str(metric_name)
-                rows.append(
-                    {
-                        "symbol": base_symbol,
-                        "provider_symbol": provider_symbol,
-                        "company_name": company_name,
-                        "fiscal_year": fiscal_year,
-                        "fiscal_period": fiscal_period,
-                        "period_type": period_type,
-                        "period_end_date": report_date,
-                        "statement_type": statement_type,
-                        "metric_name": metric_key,
-                        "metric_label": metric_key,
-                        "metric_value": numeric_value,
-                        "metric_unit": _metric_unit(statement_type, metric_key),
-                        "currency": currency,
-                        "source": source,
-                        "source_url": "",
-                        "source_confidence": SOURCE_CONFIDENCE,
-                        "provider_payload": {},
-                        "report_date": report_date,
-                        "accepted_date": accepted_date,
-                        "retrieved_at": retrieved_at,
-                        "updated_at": utc_now(),
-                    }
-                )
+                rows.append({"symbol": base_symbol, "provider_symbol": provider_symbol, "company_name": company_name, "fiscal_year": fiscal_year, "fiscal_period": fiscal_period, "period_type": period_type, "period_end_date": report_date, "statement_type": statement_type, "metric_name": metric_key, "metric_label": metric_key, "metric_value": numeric_value, "metric_unit": _metric_unit(statement_type, metric_key), "currency": currency, "source": source, "source_url": "", "source_confidence": SOURCE_CONFIDENCE, "provider_payload": {}, "report_date": report_date, "accepted_date": accepted_date, "retrieved_at": retrieved_at, "updated_at": utc_now()})
     return rows
 
 
@@ -845,27 +805,7 @@ def calculate_valuation_snapshot(symbol: str, bundle: Dict[str, Any]) -> Optiona
     snapshot_date = _iso_date(enterprise.get("date")) or _iso_date(bundle.get("retrieved_at")) or today_iso()
     fiscal_period = str(enterprise.get("period") or "TTM").upper()
 
-    return {
-        "symbol": _clean_symbol(symbol),
-        "provider_symbol": _clean_symbol(str(profile.get("symbol") or bundle.get("resolved_symbol") or symbol)),
-        "snapshot_date": snapshot_date,
-        "fiscal_period": fiscal_period,
-        "market_cap": _number(enterprise.get("marketCapitalization")),
-        "enterprise_value": _number(enterprise.get("enterpriseValue")),
-        "shares_outstanding": _number(enterprise.get("numberOfShares")),
-        "pe_ratio": _number(ratios_ttm.get("priceEarningsRatioTTM")) or _number(ratios_ttm.get("priceEarningsRatio")),
-        "pb_ratio": _number(ratios_ttm.get("priceToBookRatioTTM")) or _number(ratios_ttm.get("priceToBookRatio")),
-        "ps_ratio": _number(ratios_ttm.get("priceToSalesRatioTTM")) or _number(ratios_ttm.get("priceToSalesRatio")),
-        "ev_ebitda": _number(metrics_ttm.get("enterpriseValueOverEBITDATTM")) or _number(metrics_ttm.get("enterpriseValueOverEBITDA")),
-        "dividend_yield": _number(ratios_ttm.get("dividendYieldTTM")) or _number(ratios_ttm.get("dividendYield")),
-        "roe": _number(ratios_ttm.get("returnOnEquityTTM")) or _number(ratios_ttm.get("returnOnEquity")),
-        "roa": _number(ratios_ttm.get("returnOnAssetsTTM")) or _number(ratios_ttm.get("returnOnAssets")),
-        "data_quality": "ttm" if metrics_ttm or ratios_ttm else "annual_only",
-        "source": "fmp",
-        "source_confidence": SOURCE_CONFIDENCE,
-        "retrieved_at": bundle.get("retrieved_at") or utc_now(),
-        "updated_at": utc_now(),
-    }
+    return {"symbol": _clean_symbol(symbol), "provider_symbol": _clean_symbol(str(profile.get("symbol") or bundle.get("resolved_symbol") or symbol)), "snapshot_date": snapshot_date, "fiscal_period": fiscal_period, "market_cap": _number(enterprise.get("marketCapitalization")), "enterprise_value": _number(enterprise.get("enterpriseValue")), "shares_outstanding": _number(enterprise.get("numberOfShares")), "pe_ratio": _number(ratios_ttm.get("priceEarningsRatioTTM")) or _number(ratios_ttm.get("priceEarningsRatio")), "pb_ratio": _number(ratios_ttm.get("priceToBookRatioTTM")) or _number(ratios_ttm.get("priceToBookRatio")), "ps_ratio": _number(ratios_ttm.get("priceToSalesRatioTTM")) or _number(ratios_ttm.get("priceToSalesRatio")), "ev_ebitda": _number(metrics_ttm.get("enterpriseValueOverEBITDATTM")) or _number(metrics_ttm.get("enterpriseValueOverEBITDA")), "dividend_yield": _number(ratios_ttm.get("dividendYieldTTM")) or _number(ratios_ttm.get("dividendYield")), "roe": _number(ratios_ttm.get("returnOnEquityTTM")) or _number(ratios_ttm.get("returnOnEquity")), "roa": _number(ratios_ttm.get("returnOnAssetsTTM")) or _number(ratios_ttm.get("returnOnAssets")), "data_quality": "ttm" if metrics_ttm or ratios_ttm else "annual_only", "source": "fmp", "source_confidence": SOURCE_CONFIDENCE, "retrieved_at": bundle.get("retrieved_at") or utc_now(), "updated_at": utc_now()}
 
 
 def _looks_like_bank(profile: Dict[str, Any]) -> bool:
@@ -900,64 +840,12 @@ def calculate_bank_kpi_row(symbol: str, bundle: Dict[str, Any]) -> Optional[Dict
     evidence = annual_report_kpis.get("_extraction_evidence", {}) if isinstance(annual_report_kpis, dict) else {}
     extraction_method = annual_report_kpis.get("_extraction_method") if isinstance(annual_report_kpis, dict) else None
 
-    row = {
-        "symbol": _clean_symbol(symbol),
-        "provider_symbol": _clean_symbol(str(profile.get("provider_symbol") or symbol)),
-        "fiscal_year": fiscal_year,
-        "fiscal_period": fiscal_period,
-        "period_type": period_type,
-        "total_loans": annual_report_kpis.get("total_loans"),
-        "total_deposits": annual_report_kpis.get("customer_deposits"),
-        "customer_deposits": annual_report_kpis.get("customer_deposits"),
-        "net_interest_income": annual_report_kpis.get("net_interest_income"),
-        "net_income": annual_report_kpis.get("net_income"),
-        "total_assets": annual_report_kpis.get("total_assets"),
-        "total_equity": annual_report_kpis.get("total_equity"),
-        "nim": annual_report_kpis.get("nim"),
-        "roe": _first_non_none(annual_report_kpis.get("roe"), _number(ratios.get("returnOnEquity"))),
-        "roa": _first_non_none(annual_report_kpis.get("roa"), _number(ratios.get("returnOnAssets"))),
-        "npl_ratio": annual_report_kpis.get("npl_ratio"),
-        "loan_to_deposit_ratio": annual_report_kpis.get("loan_to_deposit_ratio"),
-        "casa_ratio": annual_report_kpis.get("casa_ratio"),
-        "car": annual_report_kpis.get("car"),
-        "cost_to_income_ratio": annual_report_kpis.get("cost_to_income_ratio"),
-        "return_on_assets": _first_non_none(annual_report_kpis.get("roa"), _number(ratios.get("returnOnAssets"))),
-        "return_on_equity": _first_non_none(annual_report_kpis.get("roe"), _number(ratios.get("returnOnEquity"))),
-        "debt_to_equity": _number(ratios.get("debtEquityRatio")),
-        "price_to_book": _number(ratios.get("priceToBookRatio")),
-        "tier1_proxy": _number(metrics.get("tangibleAssetValue")) or _number(metrics.get("netCurrentAssetValue")),
-        "loan_to_deposit": annual_report_kpis.get("loan_to_deposit_ratio"),
-        "efficiency_ratio": annual_report_kpis.get("cost_to_income_ratio"),
-        "source": "annual_report_table+fmp" if evidence and any(value == "table" for value in evidence.values()) else ("annual_report+fmp" if annual_report_kpis else "fmp"),
-        "source_confidence": 0.88 if evidence and any(value == "table" for value in evidence.values()) else (0.82 if annual_report_kpis else SOURCE_CONFIDENCE),
-        "provider_payload": {
-            "annual_report": annual_report,
-            "annual_report_bank_kpis": annual_report_kpis,
-            "extraction_evidence": evidence,
-            "extraction_method": extraction_method,
-            "fmp_ratios_available": bool(ratios),
-            "fmp_metrics_available": bool(metrics),
-        },
-        "note": "Bank KPIs are extracted from annual-report tables/text when API coverage is incomplete; table-derived values are preferred but should still be reviewed for critical decisions." if annual_report_kpis else "FMP coverage for bank-specific KPIs is partial; blank fields indicate provider gaps.",
-        "retrieved_at": bundle.get("retrieved_at") or utc_now(),
-        "updated_at": utc_now(),
-    }
-    return row
+    table_based = bool(evidence and any(value == "table" for value in evidence.values()))
+    return {"symbol": _clean_symbol(symbol), "provider_symbol": _clean_symbol(str(profile.get("provider_symbol") or symbol)), "fiscal_year": fiscal_year, "fiscal_period": fiscal_period, "period_type": period_type, "total_loans": annual_report_kpis.get("total_loans"), "total_deposits": annual_report_kpis.get("customer_deposits"), "customer_deposits": annual_report_kpis.get("customer_deposits"), "net_interest_income": annual_report_kpis.get("net_interest_income"), "net_income": annual_report_kpis.get("net_income"), "total_assets": annual_report_kpis.get("total_assets"), "total_equity": annual_report_kpis.get("total_equity"), "nim": annual_report_kpis.get("nim"), "roe": _first_non_none(annual_report_kpis.get("roe"), _number(ratios.get("returnOnEquity"))), "roa": _first_non_none(annual_report_kpis.get("roa"), _number(ratios.get("returnOnAssets"))), "npl_ratio": annual_report_kpis.get("npl_ratio"), "loan_to_deposit_ratio": annual_report_kpis.get("loan_to_deposit_ratio"), "casa_ratio": annual_report_kpis.get("casa_ratio"), "car": annual_report_kpis.get("car"), "cost_to_income_ratio": annual_report_kpis.get("cost_to_income_ratio"), "return_on_assets": _first_non_none(annual_report_kpis.get("roa"), _number(ratios.get("returnOnAssets"))), "return_on_equity": _first_non_none(annual_report_kpis.get("roe"), _number(ratios.get("returnOnEquity"))), "debt_to_equity": _number(ratios.get("debtEquityRatio")), "price_to_book": _number(ratios.get("priceToBookRatio")), "tier1_proxy": _number(metrics.get("tangibleAssetValue")) or _number(metrics.get("netCurrentAssetValue")), "loan_to_deposit": annual_report_kpis.get("loan_to_deposit_ratio"), "efficiency_ratio": annual_report_kpis.get("cost_to_income_ratio"), "source": "annual_report_table+fmp" if table_based else ("annual_report+fmp" if annual_report_kpis else "fmp"), "source_confidence": 0.88 if table_based else (0.82 if annual_report_kpis else SOURCE_CONFIDENCE), "provider_payload": {"annual_report": annual_report, "annual_report_bank_kpis": annual_report_kpis, "extraction_evidence": evidence, "extraction_method": extraction_method, "fmp_ratios_available": bool(ratios), "fmp_metrics_available": bool(metrics)}, "note": "Bank KPIs are extracted from annual-report tables/text when API coverage is incomplete; table-derived values are preferred but should still be reviewed for critical decisions." if annual_report_kpis else "FMP coverage for bank-specific KPIs is partial; blank fields indicate provider gaps.", "retrieved_at": bundle.get("retrieved_at") or utc_now(), "updated_at": utc_now()}
 
 
-def build_metric_coverage(
-    symbol: str,
-    years: List[int],
-    statement_rows: List[Dict[str, Any]],
-    valuation: Optional[Dict[str, Any]],
-    bank_kpi: Optional[Dict[str, Any]],
-) -> List[Dict[str, Any]]:
-    requirements = {
-        "income_statement": {"revenue": {"revenue", "totalRevenue"}, "net_income": {"netIncome", "netIncomeRatio"}},
-        "balance_sheet": {"total_assets": {"totalAssets"}, "total_equity": {"totalStockholdersEquity", "totalEquity"}},
-        "cash_flow": {"operating_cash_flow": {"operatingCashFlow"}, "free_cash_flow": {"freeCashFlow"}},
-    }
-
+def build_metric_coverage(symbol: str, years: List[int], statement_rows: List[Dict[str, Any]], valuation: Optional[Dict[str, Any]], bank_kpi: Optional[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    requirements = {"income_statement": {"revenue": {"revenue", "totalRevenue"}, "net_income": {"netIncome", "netIncomeRatio"}}, "balance_sheet": {"total_assets": {"totalAssets"}, "total_equity": {"totalStockholdersEquity", "totalEquity"}}, "cash_flow": {"operating_cash_flow": {"operatingCashFlow"}, "free_cash_flow": {"freeCashFlow"}}}
     lookup = {(row.get("fiscal_year"), row.get("statement_type"), row.get("metric_name")): row for row in statement_rows}
     coverage_rows: List[Dict[str, Any]] = []
     now = utc_now()
@@ -968,80 +856,15 @@ def build_metric_coverage(
         for metric_group, metric_map in requirements.items():
             for metric_name, aliases in metric_map.items():
                 matched = any(lookup.get((year, metric_group, alias)) is not None for alias in aliases)
-                coverage_rows.append(
-                    {
-                        "symbol": _clean_symbol(symbol),
-                        "fiscal_year": year,
-                        "fiscal_period": "FY",
-                        "metric_group": metric_group,
-                        "metric_name": metric_name,
-                        "status": "available" if matched else ("missing" if any_statement_data else "not_applicable"),
-                        "note": "" if matched else "Provider did not return this metric for the selected symbol/year.",
-                        "source": "fmp",
-                        "source_confidence": SOURCE_CONFIDENCE,
-                        "updated_at": now,
-                    }
-                )
+                coverage_rows.append({"symbol": _clean_symbol(symbol), "fiscal_year": year, "fiscal_period": "FY", "metric_group": metric_group, "metric_name": metric_name, "status": "available" if matched else ("missing" if any_statement_data else "not_applicable"), "note": "" if matched else "Provider did not return this metric for the selected symbol/year.", "source": "fmp", "source_confidence": SOURCE_CONFIDENCE, "updated_at": now})
 
-    valuation_metrics = {
-        "market_cap": valuation.get("market_cap") if valuation else None,
-        "pe_ratio": valuation.get("pe_ratio") if valuation else None,
-        "pb_ratio": valuation.get("pb_ratio") if valuation else None,
-        "ps_ratio": valuation.get("ps_ratio") if valuation else None,
-        "ev_ebitda": valuation.get("ev_ebitda") if valuation else None,
-    }
+    valuation_metrics = {"market_cap": valuation.get("market_cap") if valuation else None, "pe_ratio": valuation.get("pe_ratio") if valuation else None, "pb_ratio": valuation.get("pb_ratio") if valuation else None, "ps_ratio": valuation.get("ps_ratio") if valuation else None, "ev_ebitda": valuation.get("ev_ebitda") if valuation else None}
     for metric_name, metric_value in valuation_metrics.items():
-        coverage_rows.append(
-            {
-                "symbol": _clean_symbol(symbol),
-                "fiscal_year": latest_year,
-                "fiscal_period": "TTM",
-                "metric_group": "valuation",
-                "metric_name": metric_name,
-                "status": "available" if metric_value is not None else ("missing" if valuation else "not_applicable"),
-                "note": "" if metric_value is not None else "TTM valuation metric is unavailable from the provider.",
-                "source": "fmp",
-                "source_confidence": SOURCE_CONFIDENCE,
-                "updated_at": now,
-            }
-        )
+        coverage_rows.append({"symbol": _clean_symbol(symbol), "fiscal_year": latest_year, "fiscal_period": "TTM", "metric_group": "valuation", "metric_name": metric_name, "status": "available" if metric_value is not None else ("missing" if valuation else "not_applicable"), "note": "" if metric_value is not None else "TTM valuation metric is unavailable from the provider.", "source": "fmp", "source_confidence": SOURCE_CONFIDENCE, "updated_at": now})
 
     if bank_kpi:
-        for metric_name in [
-            "return_on_assets",
-            "return_on_equity",
-            "roe",
-            "roa",
-            "nim",
-            "npl_ratio",
-            "loan_to_deposit_ratio",
-            "casa_ratio",
-            "car",
-            "cost_to_income_ratio",
-            "debt_to_equity",
-            "price_to_book",
-            "tier1_proxy",
-            "total_assets",
-            "total_equity",
-            "total_loans",
-            "customer_deposits",
-            "net_interest_income",
-            "net_income",
-        ]:
+        for metric_name in ["return_on_assets", "return_on_equity", "roe", "roa", "nim", "npl_ratio", "loan_to_deposit_ratio", "casa_ratio", "car", "cost_to_income_ratio", "debt_to_equity", "price_to_book", "tier1_proxy", "total_assets", "total_equity", "total_loans", "customer_deposits", "net_interest_income", "net_income"]:
             metric_value = bank_kpi.get(metric_name)
-            coverage_rows.append(
-                {
-                    "symbol": _clean_symbol(symbol),
-                    "fiscal_year": bank_kpi.get("fiscal_year") or latest_year,
-                    "fiscal_period": bank_kpi.get("fiscal_period") or "FY",
-                    "metric_group": "bank_kpi",
-                    "metric_name": metric_name,
-                    "status": "available" if metric_value is not None else "missing",
-                    "note": "" if metric_value is not None else "Provider/report parser did not return this bank KPI.",
-                    "source": bank_kpi.get("source") or "fmp",
-                    "source_confidence": bank_kpi.get("source_confidence") or SOURCE_CONFIDENCE,
-                    "updated_at": now,
-                }
-            )
+            coverage_rows.append({"symbol": _clean_symbol(symbol), "fiscal_year": bank_kpi.get("fiscal_year") or latest_year, "fiscal_period": bank_kpi.get("fiscal_period") or "FY", "metric_group": "bank_kpi", "metric_name": metric_name, "status": "available" if metric_value is not None else "missing", "note": "" if metric_value is not None else "Provider/report parser did not return this bank KPI.", "source": bank_kpi.get("source") or "fmp", "source_confidence": bank_kpi.get("source_confidence") or SOURCE_CONFIDENCE, "updated_at": now})
 
     return coverage_rows
