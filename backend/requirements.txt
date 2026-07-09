@@ -7,3 +7,4 @@ python-multipart
 yfinance
 pandas
 pypdf
+pdfplumber
