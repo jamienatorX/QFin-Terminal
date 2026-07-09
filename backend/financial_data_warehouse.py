@@ -5,7 +5,7 @@ import os
 import re
 from datetime import datetime, timezone
 from io import BytesIO
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import parse_qs, unquote, urljoin, urlparse
 
 import httpx
@@ -17,7 +17,8 @@ FMP_USER_AGENT = "QFin-Terminal/1.0"
 SOURCE_CONFIDENCE = 0.70
 ANNUAL_REPORT_TIMEOUT = httpx.Timeout(25.0, connect=8.0)
 MAX_ANNUAL_REPORT_BYTES = 18_000_000
-MAX_REPORT_TEXT_CHARS = 60_000
+MAX_REPORT_TEXT_CHARS = 70_000
+MAX_TABLE_TEXT_CHARS = 80_000
 GLOBAL_REPORT_HOSTS = {
     "annualreports.com",
     "sec.gov",
@@ -31,6 +32,35 @@ GLOBAL_REPORT_HOSTS = {
     "bursa-malaysia.com",
     "londonstockexchange.com",
     "euronext.com",
+}
+
+
+BANK_KPI_ALIASES = {
+    "nim": ["net interest margin", "nim", "marjin bunga bersih"],
+    "npl_ratio": ["non-performing loan", "non performing loan", "npl ratio", "gross npl", "rasio kredit bermasalah", "kredit bermasalah"],
+    "casa_ratio": ["casa ratio", "casa", "current account saving account", "current account savings account", "giro dan tabungan"],
+    "car": ["capital adequacy ratio", "car", "rasio kecukupan modal", "kewajiban penyediaan modal minimum", "kpm m", "kpmm"],
+    "loan_to_deposit_ratio": ["loan to deposit ratio", "loan-to-deposit", "ldr", "loan deposit ratio", "rasio kredit terhadap dana pihak ketiga"],
+    "cost_to_income_ratio": ["cost to income ratio", "cost-to-income", "cir", "efficiency ratio", "rasio biaya terhadap pendapatan", "cost/income"],
+    "roe": ["return on equity", "roe", "imbal hasil ekuitas"],
+    "roa": ["return on assets", "roa", "imbal hasil aset"],
+    "total_assets": ["total assets", "jumlah aset", "total aset"],
+    "total_equity": ["total equity", "total ekuitas", "jumlah ekuitas"],
+    "total_loans": ["total loans", "loans", "loan portfolio", "kredit yang diberikan", "total kredit"],
+    "customer_deposits": ["customer deposits", "total deposits", "third party funds", "dana pihak ketiga", "simpanan nasabah"],
+    "net_interest_income": ["net interest income", "pendapatan bunga bersih"],
+    "net_income": ["net income", "net profit", "profit for the year", "laba bersih", "laba tahun berjalan"],
+}
+
+RATIO_KPIS = {
+    "nim",
+    "npl_ratio",
+    "casa_ratio",
+    "car",
+    "loan_to_deposit_ratio",
+    "cost_to_income_ratio",
+    "roe",
+    "roa",
 }
 
 
@@ -153,26 +183,107 @@ async def _download_bytes(client: httpx.AsyncClient, url: str, max_bytes: int = 
     return data
 
 
-def _extract_pdf_text(pdf_bytes: bytes, max_pages: int = 40) -> str:
-    try:
-        from pypdf import PdfReader
-    except Exception:
-        return ""
+def _clean_cell(value: Any) -> str:
+    text = "" if value is None else str(value)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _table_to_markdown_rows(table: List[List[Any]]) -> List[str]:
+    rows: List[str] = []
+    for row in table or []:
+        clean = [_clean_cell(cell) for cell in row]
+        if any(clean):
+            rows.append(" | ".join(clean))
+    return rows
+
+
+def _extract_pdf_content(pdf_bytes: bytes, max_pages: int = 45) -> Dict[str, Any]:
+    text_chunks: List[str] = []
+    table_text_chunks: List[str] = []
+    structured_tables: List[Dict[str, Any]] = []
+    extraction_method = "none"
 
     try:
-        reader = PdfReader(BytesIO(pdf_bytes))
-        chunks: List[str] = []
-        for page in reader.pages[:max_pages]:
-            page_text = page.extract_text() or ""
-            if page_text.strip():
-                chunks.append(page_text)
-            if sum(len(chunk) for chunk in chunks) >= MAX_REPORT_TEXT_CHARS:
-                break
-        text = "\n".join(chunks)
-        text = re.sub(r"\s+", " ", text).strip()
-        return text[:MAX_REPORT_TEXT_CHARS]
+        import pdfplumber
+
+        with pdfplumber.open(BytesIO(pdf_bytes)) as pdf:
+            for page_number, page in enumerate(pdf.pages[:max_pages], start=1):
+                try:
+                    page_text = page.extract_text(x_tolerance=1, y_tolerance=3) or ""
+                    if page_text.strip():
+                        text_chunks.append(page_text)
+                except Exception:
+                    pass
+
+                try:
+                    tables = page.extract_tables(
+                        table_settings={
+                            "vertical_strategy": "lines",
+                            "horizontal_strategy": "lines",
+                            "intersection_tolerance": 5,
+                            "snap_tolerance": 3,
+                            "join_tolerance": 3,
+                            "edge_min_length": 3,
+                        }
+                    ) or []
+                    if not tables:
+                        tables = page.extract_tables(
+                            table_settings={
+                                "vertical_strategy": "text",
+                                "horizontal_strategy": "text",
+                                "intersection_tolerance": 5,
+                                "snap_tolerance": 3,
+                                "join_tolerance": 3,
+                                "min_words_vertical": 2,
+                                "min_words_horizontal": 1,
+                            }
+                        ) or []
+                    for table_index, table in enumerate(tables, start=1):
+                        rows = _table_to_markdown_rows(table)
+                        if not rows:
+                            continue
+                        structured_tables.append(
+                            {
+                                "page": page_number,
+                                "table_index": table_index,
+                                "rows": rows[:80],
+                            }
+                        )
+                        table_text_chunks.append(f"TABLE page={page_number} index={table_index}\n" + "\n".join(rows[:80]))
+                except Exception:
+                    pass
+
+                if sum(len(chunk) for chunk in text_chunks) >= MAX_REPORT_TEXT_CHARS and sum(len(chunk) for chunk in table_text_chunks) >= MAX_TABLE_TEXT_CHARS:
+                    break
+        extraction_method = "pdfplumber_tables" if structured_tables else "pdfplumber_text"
     except Exception:
-        return ""
+        pass
+
+    if not text_chunks:
+        try:
+            from pypdf import PdfReader
+
+            reader = PdfReader(BytesIO(pdf_bytes))
+            for page in reader.pages[:max_pages]:
+                page_text = page.extract_text() or ""
+                if page_text.strip():
+                    text_chunks.append(page_text)
+                if sum(len(chunk) for chunk in text_chunks) >= MAX_REPORT_TEXT_CHARS:
+                    break
+            extraction_method = "pypdf_text" if text_chunks else extraction_method
+        except Exception:
+            pass
+
+    text_excerpt = re.sub(r"\s+", " ", "\n".join(text_chunks)).strip()[:MAX_REPORT_TEXT_CHARS]
+    table_text = re.sub(r"\s+", " ", "\n".join(table_text_chunks)).strip()[:MAX_TABLE_TEXT_CHARS]
+    return {
+        "text_excerpt": text_excerpt,
+        "table_text": table_text,
+        "tables": structured_tables[:25],
+        "table_count": len(structured_tables),
+        "pages_scanned": max((table.get("page", 0) for table in structured_tables), default=0),
+        "extraction_method": extraction_method,
+    }
 
 
 async def _search_duckduckgo(client: httpx.AsyncClient, query: str) -> List[Dict[str, str]]:
@@ -292,8 +403,9 @@ async def discover_annual_report(company_name: str, symbol: str, website: Option
             pdf_url = item["url"]
             try:
                 pdf_bytes = await _download_bytes(client, pdf_url)
-                text_excerpt = _extract_pdf_text(pdf_bytes)
-                years = re.findall(r"20\d{2}", f"{item.get('title', '')} {pdf_url} {text_excerpt[:1000]}")
+                pdf_content = _extract_pdf_content(pdf_bytes)
+                combined_for_year = f"{item.get('title', '')} {pdf_url} {pdf_content.get('text_excerpt', '')[:1000]} {pdf_content.get('table_text', '')[:1000]}"
+                years = re.findall(r"20\d{2}", combined_for_year)
                 report_year = max([int(year) for year in years], default=None)
                 return {
                     "status": "found",
@@ -307,7 +419,7 @@ async def discover_annual_report(company_name: str, symbol: str, website: Option
                     "source_confidence": SOURCE_CONFIDENCE,
                     "downloaded_at": utc_now(),
                     "bytes": len(pdf_bytes),
-                    "text_excerpt": text_excerpt,
+                    **pdf_content,
                 }
             except Exception:
                 continue
@@ -323,6 +435,7 @@ async def discover_annual_report(company_name: str, symbol: str, website: Option
 
 def _normalize_decimal_number(text: str) -> Optional[float]:
     raw = (text or "").strip().replace(" ", "")
+    raw = raw.replace("%", "").replace("(", "-").replace(")", "")
     if not raw:
         return None
     if "," in raw and "." in raw:
@@ -357,11 +470,11 @@ def _extract_percentage_metric(text: str, aliases: List[str]) -> Optional[float]
     if not text:
         return None
     for alias in aliases:
-        pattern_after = re.compile(rf"(?:{_alias_regex(alias)})[^0-9%\-]{{0,90}}(-?\d+(?:[\.,]\d+)?)\s*%", re.I)
+        pattern_after = re.compile(rf"(?:{_alias_regex(alias)})[^0-9%\-]{{0,120}}(-?\(?\d+(?:[\.,]\d+)?\)?)[ ]*%", re.I)
         match = pattern_after.search(text)
         if match:
             return _ratio_from_percent(_normalize_decimal_number(match.group(1)))
-        pattern_before = re.compile(rf"(-?\d+(?:[\.,]\d+)?)\s*%[^A-Za-z0-9]{{0,50}}(?:{_alias_regex(alias)})", re.I)
+        pattern_before = re.compile(rf"(-?\(?\d+(?:[\.,]\d+)?\)?)[ ]*%[^A-Za-z0-9]{{0,70}}(?:{_alias_regex(alias)})", re.I)
         match = pattern_before.search(text)
         if match:
             return _ratio_from_percent(_normalize_decimal_number(match.group(1)))
@@ -384,7 +497,7 @@ def _extract_amount_metric(text: str, aliases: List[str]) -> Optional[float]:
         return None
     units = r"(trillion|triliun|billion|miliar|million|juta|bn|mn)?"
     for alias in aliases:
-        pattern = re.compile(rf"(?:{_alias_regex(alias)})[^0-9\-]{{0,100}}(-?\d[\d\.,]*)\s*{units}", re.I)
+        pattern = re.compile(rf"(?:{_alias_regex(alias)})[^0-9\-\(]{{0,140}}(-?\(?\d[\d\.,]*\)?)\s*{units}", re.I)
         match = pattern.search(text)
         if match:
             number = _normalize_decimal_number(match.group(1))
@@ -394,30 +507,91 @@ def _extract_amount_metric(text: str, aliases: List[str]) -> Optional[float]:
     return None
 
 
+def _row_contains_alias(row_text: str, aliases: List[str]) -> bool:
+    row_text = row_text.lower()
+    return any(re.search(rf"\b{_alias_regex(alias.lower())}\b", row_text) for alias in aliases)
+
+
+def _numeric_candidates_from_cells(cells: List[str], as_ratio: bool) -> List[Tuple[int, float]]:
+    candidates: List[Tuple[int, float]] = []
+    for index, cell in enumerate(cells):
+        clean = _clean_cell(cell)
+        if not clean:
+            continue
+        matches = re.findall(r"-?\(?\d[\d\.,]*\)?\s*%?", clean)
+        for match in matches:
+            value = _normalize_decimal_number(match)
+            if value is None:
+                continue
+            if as_ratio:
+                if "%" in clean or abs(value) > 1.5:
+                    value = _ratio_from_percent(value) or value
+                if abs(value) > 10:
+                    continue
+            candidates.append((index, value))
+    return candidates
+
+
+def _year_column_indexes(table_rows: List[List[str]]) -> Dict[int, int]:
+    best: Dict[int, int] = {}
+    for row in table_rows[:6]:
+        for index, cell in enumerate(row):
+            years = re.findall(r"20\d{2}", cell or "")
+            for year in years:
+                best[int(year)] = index
+    return best
+
+
+def _extract_metric_from_tables(tables: List[Dict[str, Any]], aliases: List[str], as_ratio: bool) -> Optional[float]:
+    for table in tables or []:
+        rows = table.get("rows") or []
+        split_rows = [[_clean_cell(cell) for cell in str(row).split("|")] for row in rows]
+        year_columns = _year_column_indexes(split_rows)
+        preferred_indexes = [year_columns[max(year_columns)]] if year_columns else []
+        for cells in split_rows:
+            row_text = " ".join(cells)
+            if not _row_contains_alias(row_text, aliases):
+                continue
+            numeric_cells = _numeric_candidates_from_cells(cells, as_ratio=as_ratio)
+            if not numeric_cells:
+                continue
+            for preferred_index in preferred_indexes:
+                for cell_index, value in numeric_cells:
+                    if cell_index == preferred_index:
+                        return value
+            label_side_numbers = [(index, value) for index, value in numeric_cells if index > 0]
+            if label_side_numbers:
+                return label_side_numbers[0][1]
+            return numeric_cells[0][1]
+    return None
+
+
 def extract_bank_kpis_from_annual_report(annual_report: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     if not annual_report or annual_report.get("status") != "found":
         return {}
     text = annual_report.get("text_excerpt") or ""
-    if not text:
+    table_text = annual_report.get("table_text") or ""
+    tables = annual_report.get("tables") or []
+    combined_text = f"{table_text}\n{text}"
+    if not combined_text.strip() and not tables:
         return {}
 
-    extracted = {
-        "nim": _extract_percentage_metric(text, ["net interest margin", "nim", "marjin bunga bersih"]),
-        "npl_ratio": _extract_percentage_metric(text, ["non-performing loan", "non performing loan", "npl ratio", "gross npl", "rasio kredit bermasalah", "kredit bermasalah"]),
-        "casa_ratio": _extract_percentage_metric(text, ["casa ratio", "casa", "current account saving account", "current account savings account", "giro dan tabungan"]),
-        "car": _extract_percentage_metric(text, ["capital adequacy ratio", "car", "rasio kecukupan modal"]),
-        "loan_to_deposit_ratio": _extract_percentage_metric(text, ["loan to deposit ratio", "ldr", "rasio kredit terhadap dana pihak ketiga"]),
-        "cost_to_income_ratio": _extract_percentage_metric(text, ["cost to income ratio", "cost-to-income", "cir", "efficiency ratio", "rasio biaya terhadap pendapatan"]),
-        "roe": _extract_percentage_metric(text, ["return on equity", "roe", "imbal hasil ekuitas"]),
-        "roa": _extract_percentage_metric(text, ["return on assets", "roa", "imbal hasil aset"]),
-        "total_assets": _extract_amount_metric(text, ["total assets", "jumlah aset", "total aset"]),
-        "total_equity": _extract_amount_metric(text, ["total equity", "total ekuitas", "jumlah ekuitas"]),
-        "total_loans": _extract_amount_metric(text, ["total loans", "loans", "loan portfolio", "kredit yang diberikan", "total kredit"]),
-        "customer_deposits": _extract_amount_metric(text, ["customer deposits", "total deposits", "third party funds", "dana pihak ketiga", "simpanan nasabah"]),
-        "net_interest_income": _extract_amount_metric(text, ["net interest income", "pendapatan bunga bersih"]),
-        "net_income": _extract_amount_metric(text, ["net income", "net profit", "profit for the year", "laba bersih", "laba tahun berjalan"]),
-    }
-    return {key: value for key, value in extracted.items() if value is not None}
+    extracted: Dict[str, Any] = {}
+    evidence: Dict[str, str] = {}
+    for metric, aliases in BANK_KPI_ALIASES.items():
+        as_ratio = metric in RATIO_KPIS
+        table_value = _extract_metric_from_tables(tables, aliases, as_ratio=as_ratio)
+        text_value = _extract_percentage_metric(combined_text, aliases) if as_ratio else _extract_amount_metric(combined_text, aliases)
+        value = table_value if table_value is not None else text_value
+        if value is not None:
+            extracted[metric] = value
+            evidence[metric] = "table" if table_value is not None else "text"
+
+    if extracted:
+        extracted["_extraction_evidence"] = evidence
+        extracted["_table_count"] = annual_report.get("table_count", 0)
+        extracted["_extraction_method"] = annual_report.get("extraction_method")
+    return extracted
 
 
 async def _fmp_get(path: str, params: Optional[Dict[str, Any]] = None) -> Any:
@@ -485,7 +659,6 @@ async def fetch_fmp_bundle(symbol: str, limit: int = 5) -> Dict[str, Any]:
         endpoint_payloads[endpoint_name] = result
 
     profile = _first_list_row(endpoint_payloads.get("profile"))
-    annual_report = None
     if profile:
         annual_report = await discover_annual_report(
             profile.get("companyName") or profile.get("name") or requested_symbol,
@@ -499,13 +672,12 @@ async def fetch_fmp_bundle(symbol: str, limit: int = 5) -> Dict[str, Any]:
         elif annual_report:
             warnings.append("annual_report: not_found")
 
-    status = "success" if resolved_any else "provider_gap"
     return {
         "provider": "fmp",
         "requested_symbol": requested_symbol,
         "resolved_symbol": resolved_symbol,
         "retrieved_at": utc_now(),
-        "status": status,
+        "status": "success" if resolved_any else "provider_gap",
         "warnings": warnings,
         "endpoints": endpoint_payloads,
     }
@@ -697,10 +869,7 @@ def calculate_valuation_snapshot(symbol: str, bundle: Dict[str, Any]) -> Optiona
 
 
 def _looks_like_bank(profile: Dict[str, Any]) -> bool:
-    text = " ".join(
-        str(profile.get(field) or "")
-        for field in ["sector", "industry", "company_name", "description"]
-    ).lower()
+    text = " ".join(str(profile.get(field) or "") for field in ["sector", "industry", "company_name", "description"]).lower()
     return any(token in text for token in ["bank", "banc", "financial services", "lender", "credit institution"])
 
 
@@ -728,6 +897,8 @@ def calculate_bank_kpi_row(symbol: str, bundle: Dict[str, Any]) -> Optional[Dict
     fiscal_year = _safe_fiscal_year(ratios.get("calendarYear") or metrics.get("calendarYear") or report_year, _iso_date(ratios.get("date") or metrics.get("date")))
     fiscal_period = str(ratios.get("period") or metrics.get("period") or "FY").upper()
     period_type = "quarterly" if fiscal_period in {"Q1", "Q2", "Q3", "Q4"} else "annual"
+    evidence = annual_report_kpis.get("_extraction_evidence", {}) if isinstance(annual_report_kpis, dict) else {}
+    extraction_method = annual_report_kpis.get("_extraction_method") if isinstance(annual_report_kpis, dict) else None
 
     row = {
         "symbol": _clean_symbol(symbol),
@@ -757,15 +928,17 @@ def calculate_bank_kpi_row(symbol: str, bundle: Dict[str, Any]) -> Optional[Dict
         "tier1_proxy": _number(metrics.get("tangibleAssetValue")) or _number(metrics.get("netCurrentAssetValue")),
         "loan_to_deposit": annual_report_kpis.get("loan_to_deposit_ratio"),
         "efficiency_ratio": annual_report_kpis.get("cost_to_income_ratio"),
-        "source": "annual_report+fmp" if annual_report_kpis else "fmp",
-        "source_confidence": 0.82 if annual_report_kpis else SOURCE_CONFIDENCE,
+        "source": "annual_report_table+fmp" if evidence and any(value == "table" for value in evidence.values()) else ("annual_report+fmp" if annual_report_kpis else "fmp"),
+        "source_confidence": 0.88 if evidence and any(value == "table" for value in evidence.values()) else (0.82 if annual_report_kpis else SOURCE_CONFIDENCE),
         "provider_payload": {
             "annual_report": annual_report,
             "annual_report_bank_kpis": annual_report_kpis,
+            "extraction_evidence": evidence,
+            "extraction_method": extraction_method,
             "fmp_ratios_available": bool(ratios),
             "fmp_metrics_available": bool(metrics),
         },
-        "note": "Bank KPIs are extracted from annual-report text when API coverage is incomplete; values should be reviewed for critical decisions." if annual_report_kpis else "FMP coverage for bank-specific KPIs is partial; blank fields indicate provider gaps.",
+        "note": "Bank KPIs are extracted from annual-report tables/text when API coverage is incomplete; table-derived values are preferred but should still be reviewed for critical decisions." if annual_report_kpis else "FMP coverage for bank-specific KPIs is partial; blank fields indicate provider gaps.",
         "retrieved_at": bundle.get("retrieved_at") or utc_now(),
         "updated_at": utc_now(),
     }
@@ -780,29 +953,12 @@ def build_metric_coverage(
     bank_kpi: Optional[Dict[str, Any]],
 ) -> List[Dict[str, Any]]:
     requirements = {
-        "income_statement": {
-            "revenue": {"revenue", "totalRevenue"},
-            "net_income": {"netIncome", "netIncomeRatio"},
-        },
-        "balance_sheet": {
-            "total_assets": {"totalAssets"},
-            "total_equity": {"totalStockholdersEquity", "totalEquity"},
-        },
-        "cash_flow": {
-            "operating_cash_flow": {"operatingCashFlow"},
-            "free_cash_flow": {"freeCashFlow"},
-        },
+        "income_statement": {"revenue": {"revenue", "totalRevenue"}, "net_income": {"netIncome", "netIncomeRatio"}},
+        "balance_sheet": {"total_assets": {"totalAssets"}, "total_equity": {"totalStockholdersEquity", "totalEquity"}},
+        "cash_flow": {"operating_cash_flow": {"operatingCashFlow"}, "free_cash_flow": {"freeCashFlow"}},
     }
 
-    lookup = {
-        (
-            row.get("fiscal_year"),
-            row.get("statement_type"),
-            row.get("metric_name"),
-        ): row
-        for row in statement_rows
-    }
-
+    lookup = {(row.get("fiscal_year"), row.get("statement_type"), row.get("metric_name")): row for row in statement_rows}
     coverage_rows: List[Dict[str, Any]] = []
     now = utc_now()
     any_statement_data = bool(statement_rows)
@@ -811,10 +967,7 @@ def build_metric_coverage(
     for year in years:
         for metric_group, metric_map in requirements.items():
             for metric_name, aliases in metric_map.items():
-                matched = any(
-                    lookup.get((year, metric_group, alias)) is not None
-                    for alias in aliases
-                )
+                matched = any(lookup.get((year, metric_group, alias)) is not None for alias in aliases)
                 coverage_rows.append(
                     {
                         "symbol": _clean_symbol(symbol),
