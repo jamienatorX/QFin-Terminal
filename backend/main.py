@@ -17,6 +17,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
+from api_registry import fetch_public_api_facts, list_public_api_registry
 from news_module import generate_news, normalize_category
 from qwen_client import QwenClientError, call_qwen, qwen_is_configured
 
@@ -67,6 +68,14 @@ Finance answer contract:
 AGENT_SOURCE_NOTE = """
 QFin uses a curated-tool agent pattern: backend routes gather facts first, then Qwen writes the final user-facing narrative.
 The model should sound natural, but it must respect the supplied tool outputs and uncertainty boundaries.
+""".strip()
+
+PUBLIC_DATA_PROMPT = """
+General public-data contract:
+- If public API facts are supplied, use them as grounding and cite the source names naturally.
+- If public API facts are missing, answer from general knowledge and be clear when fresh/live data is required.
+- Finance remains QFin's strongest mode; non-finance answers should be helpful, concise, and professional.
+- Do not claim QFin can access every public API. Say QFin can use a curated registry and can be expanded safely.
 """.strip()
 
 CASUAL_REPLIES = {
@@ -1479,6 +1488,19 @@ def build_general_prompt(query: str) -> List[Dict[str, str]]:
     ]
 
 
+def build_public_data_prompt(query: str, facts: Dict[str, Any]) -> List[Dict[str, str]]:
+    fact_block = serialize_agent_facts(facts)
+    user_content = (
+        f"User request: {query}\n"
+        f"Public API facts:\n{fact_block}\n"
+        "Answer the user naturally. Use the public API facts where relevant, but do not overstate them."
+    )
+    return [
+        {"role": "system", "content": f"{SYSTEM_PROMPT}\n\n{PUBLIC_DATA_PROMPT}\n\n{agent_runtime_context()}"},
+        {"role": "user", "content": user_content},
+    ]
+
+
 def serialize_agent_facts(facts: Any) -> str:
     if facts is None:
         return "No backend facts were required for this request."
@@ -1602,6 +1624,11 @@ async def generate_agent_reply(query: str, provided_ticker: Optional[str] = None
             "facts": None,
             "used_live_data": False,
         }
+
+    public_facts = await fetch_public_api_facts(query)
+    if public_facts.get("facts"):
+        content = await ask_qwen(build_public_data_prompt(query, public_facts))
+        return {"route": {**route, "public_data": True}, "content": content, "facts": public_facts, "used_live_data": True}
 
     content = await ask_qwen(build_general_prompt(query))
     return {"route": route, "content": content, "facts": None, "used_live_data": False}
@@ -2322,6 +2349,7 @@ def root(request: Request):
         "health": f"{base}/health",
         "agent_chat": f"{base}/agent/chat",
         "agent_stream": f"{base}/agent/chat/stream",
+        "api_registry": f"{base}/agent/api-registry",
         "symbol_resolve": f"{base}/symbols/resolve?query=Microsoft",
     }
 
@@ -2335,7 +2363,13 @@ def health():
         "qwen_configured": qwen_is_configured(),
         "supabase_configured": supabase_is_configured(),
         "symbol_master_table": SUPABASE_SYMBOL_TABLE,
+        "public_api_registry": "enabled",
     }
+
+
+@app.get("/agent/api-registry")
+def agent_api_registry():
+    return list_public_api_registry()
 
 
 @app.post("/agent/chat")
