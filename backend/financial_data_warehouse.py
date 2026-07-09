@@ -17,7 +17,21 @@ FMP_USER_AGENT = "QFin-Terminal/1.0"
 SOURCE_CONFIDENCE = 0.70
 ANNUAL_REPORT_TIMEOUT = httpx.Timeout(25.0, connect=8.0)
 MAX_ANNUAL_REPORT_BYTES = 18_000_000
-MAX_REPORT_TEXT_CHARS = 12_000
+MAX_REPORT_TEXT_CHARS = 60_000
+GLOBAL_REPORT_HOSTS = {
+    "annualreports.com",
+    "sec.gov",
+    "sedarplus.ca",
+    "companieshouse.gov.uk",
+    "asx.com.au",
+    "jpx.co.jp",
+    "hkexnews.hk",
+    "sgx.com",
+    "idx.co.id",
+    "bursa-malaysia.com",
+    "londonstockexchange.com",
+    "euronext.com",
+}
 
 
 def utc_now() -> str:
@@ -60,26 +74,36 @@ def _base_url(value: str) -> str:
     return f"{parsed.scheme}://{parsed.netloc}"
 
 
+def _is_known_report_host(url: str) -> bool:
+    host = _host(url)
+    return any(host == allowed or host.endswith(f".{allowed}") for allowed in GLOBAL_REPORT_HOSTS)
+
+
 def _is_pdf_url(url: str) -> bool:
     lowered = url.lower().split("?", 1)[0]
     return lowered.endswith(".pdf") or "/pdf" in lowered or "format=pdf" in url.lower()
 
 
-def _annual_report_score(url: str, title: str = "") -> int:
+def _annual_report_score(url: str, title: str = "", official_host: str = "") -> int:
     text = f"{url} {title}".lower()
+    host = _host(url)
     score = 0
-    for token in ["annual-report", "annual report", "laporan-tahunan", "laporan tahunan", "annual_report"]:
+    for token in ["annual-report", "annual report", "annual_report", "form-10-k", "10-k", "20-f", "laporan-tahunan", "laporan tahunan", "integrated-report", "integrated report"]:
         if token in text:
-            score += 40
+            score += 38
     if ".pdf" in text:
         score += 30
-    if "financial" in text or "keuangan" in text:
-        score += 8
+    if "financial" in text or "keuangan" in text or "investor" in text or "shareholder" in text:
+        score += 10
+    if official_host and official_host in host:
+        score += 35
+    if _is_known_report_host(url):
+        score += 28
     years = re.findall(r"20\d{2}", text)
     if years:
         score += max(int(year) for year in years) - 2000
-    if any(bad in text for bad in ["quarter", "quarterly", "press-release", "newsletter", "privacy", "prospectus"]):
-        score -= 15
+    if any(bad in text for bad in ["quarter", "quarterly", "press-release", "newsletter", "privacy", "prospectus", "sustainability-only"]):
+        score -= 18
     return score
 
 
@@ -129,7 +153,7 @@ async def _download_bytes(client: httpx.AsyncClient, url: str, max_bytes: int = 
     return data
 
 
-def _extract_pdf_text(pdf_bytes: bytes, max_pages: int = 12) -> str:
+def _extract_pdf_text(pdf_bytes: bytes, max_pages: int = 40) -> str:
     try:
         from pypdf import PdfReader
     except Exception:
@@ -171,13 +195,19 @@ async def _official_site_candidates(client: httpx.AsyncClient, website: str) -> 
 
     paths = [
         "/",
-        "/en/about-bca/investor-relations/annual-report",
-        "/id/tentang-bca/hubungan-investor/laporan-tahunan",
-        "/en/about-bca/investor-relations",
-        "/id/tentang-bca/hubungan-investor",
-        "/investor-relations/annual-report",
-        "/investor-relations/reports",
+        "/investor-relations",
+        "/investors",
+        "/investor",
+        "/financials",
+        "/reports",
         "/annual-report",
+        "/annual-reports",
+        "/integrated-report",
+        "/en/investor-relations",
+        "/en/investors",
+        "/en/annual-report",
+        "/id/tentang-bca/hubungan-investor/laporan-tahunan",
+        "/en/about-bca/investor-relations/annual-report",
         "/laporan-tahunan",
     ]
     found: List[Dict[str, str]] = []
@@ -189,7 +219,7 @@ async def _official_site_candidates(client: httpx.AsyncClient, website: str) -> 
             continue
         for link in _extract_links(page_html, page_url):
             text = f"{link.get('url', '')} {link.get('title', '')}".lower()
-            if any(token in text for token in ["annual", "laporan", "report", ".pdf"]):
+            if any(token in text for token in ["annual", "report", "laporan", "10-k", "20-f", ".pdf"]):
                 found.append(link)
     return found
 
@@ -198,14 +228,19 @@ async def discover_annual_report(company_name: str, symbol: str, website: Option
     company_name = (company_name or "").strip()
     symbol = _clean_symbol(symbol)
     website = website or ""
-    trusted_host = _host(website)
+    official_host = _host(website)
     base_symbol = symbol.split(".", 1)[0]
 
     search_queries = [
         f'"{company_name}" "annual report" pdf',
+        f'"{company_name}" "integrated report" pdf',
+        f'"{company_name}" "form 10-k" pdf',
+        f'"{company_name}" "20-f" pdf',
         f'"{company_name}" "laporan tahunan" pdf',
         f'"{symbol}" "annual report" pdf',
-        f'"{base_symbol}" "laporan tahunan" pdf',
+        f'"{base_symbol}" "annual report" pdf',
+        f'site:annualreports.com "{company_name}"',
+        f'site:sec.gov "{company_name}" "10-K"',
     ]
 
     async with httpx.AsyncClient(timeout=ANNUAL_REPORT_TIMEOUT, follow_redirects=True) as client:
@@ -220,18 +255,19 @@ async def discover_annual_report(company_name: str, symbol: str, website: Option
             title = item.get("title", "")
             if not url.startswith(("http://", "https://")):
                 continue
-            url_host = _host(url)
-            trusted = bool(trusted_host and trusted_host in url_host) or any(host in url_host for host in ["idx.co.id", "bca.co.id"])
-            if not trusted and symbol.endswith(".JK"):
-                continue
-            if _annual_report_score(url, title) <= 20:
+            score = _annual_report_score(url, title, official_host)
+            if score <= 30:
                 continue
             deduped[url] = {"url": url, "title": title}
 
-        ranked = sorted(deduped.values(), key=lambda item: _annual_report_score(item["url"], item.get("title", "")), reverse=True)
+        ranked = sorted(
+            deduped.values(),
+            key=lambda item: _annual_report_score(item["url"], item.get("title", ""), official_host),
+            reverse=True,
+        )
 
         pdf_candidates: List[Dict[str, str]] = []
-        for item in ranked[:15]:
+        for item in ranked[:20]:
             url = item["url"]
             if _is_pdf_url(url):
                 pdf_candidates.append(item)
@@ -239,20 +275,25 @@ async def discover_annual_report(company_name: str, symbol: str, website: Option
             try:
                 page_html = await _download_text(client, url)
                 for link in _extract_links(page_html, url):
-                    if _is_pdf_url(link.get("url", "")) and _annual_report_score(link.get("url", ""), link.get("title", "")) > 20:
+                    score = _annual_report_score(link.get("url", ""), link.get("title", ""), official_host)
+                    if _is_pdf_url(link.get("url", "")) and score > 25:
                         pdf_candidates.append(link)
             except Exception:
                 continue
 
         pdf_deduped: Dict[str, Dict[str, str]] = {item["url"]: item for item in pdf_candidates if item.get("url")}
-        pdf_ranked = sorted(pdf_deduped.values(), key=lambda item: _annual_report_score(item["url"], item.get("title", "")), reverse=True)
+        pdf_ranked = sorted(
+            pdf_deduped.values(),
+            key=lambda item: _annual_report_score(item["url"], item.get("title", ""), official_host),
+            reverse=True,
+        )
 
-        for item in pdf_ranked[:8]:
+        for item in pdf_ranked[:10]:
             pdf_url = item["url"]
             try:
                 pdf_bytes = await _download_bytes(client, pdf_url)
                 text_excerpt = _extract_pdf_text(pdf_bytes)
-                years = re.findall(r"20\d{2}", f"{item.get('title', '')} {pdf_url} {text_excerpt[:500]}")
+                years = re.findall(r"20\d{2}", f"{item.get('title', '')} {pdf_url} {text_excerpt[:1000]}")
                 report_year = max([int(year) for year in years], default=None)
                 return {
                     "status": "found",
@@ -278,6 +319,105 @@ async def discover_annual_report(company_name: str, symbol: str, website: Option
         "source_confidence": 0.0,
         "checked_at": utc_now(),
     }
+
+
+def _normalize_decimal_number(text: str) -> Optional[float]:
+    raw = (text or "").strip().replace(" ", "")
+    if not raw:
+        return None
+    if "," in raw and "." in raw:
+        if raw.rfind(",") > raw.rfind("."):
+            raw = raw.replace(".", "").replace(",", ".")
+        else:
+            raw = raw.replace(",", "")
+    elif "," in raw:
+        tail = raw.rsplit(",", 1)[-1]
+        raw = raw.replace(",", ".") if len(tail) <= 2 else raw.replace(",", "")
+    elif "." in raw:
+        tail = raw.rsplit(".", 1)[-1]
+        if len(tail) == 3 and len(raw.split(".")[0]) <= 3:
+            raw = raw.replace(".", "")
+    try:
+        return float(raw)
+    except Exception:
+        return None
+
+
+def _ratio_from_percent(value: Optional[float]) -> Optional[float]:
+    if value is None:
+        return None
+    return value / 100 if abs(value) > 1.5 else value
+
+
+def _alias_regex(alias: str) -> str:
+    return re.escape(alias).replace(r"\ ", r"\s+")
+
+
+def _extract_percentage_metric(text: str, aliases: List[str]) -> Optional[float]:
+    if not text:
+        return None
+    for alias in aliases:
+        pattern_after = re.compile(rf"(?:{_alias_regex(alias)})[^0-9%\-]{{0,90}}(-?\d+(?:[\.,]\d+)?)\s*%", re.I)
+        match = pattern_after.search(text)
+        if match:
+            return _ratio_from_percent(_normalize_decimal_number(match.group(1)))
+        pattern_before = re.compile(rf"(-?\d+(?:[\.,]\d+)?)\s*%[^A-Za-z0-9]{{0,50}}(?:{_alias_regex(alias)})", re.I)
+        match = pattern_before.search(text)
+        if match:
+            return _ratio_from_percent(_normalize_decimal_number(match.group(1)))
+    return None
+
+
+def _amount_multiplier(unit: str) -> float:
+    unit = (unit or "").lower()
+    if unit in {"trillion", "triliun"}:
+        return 1_000_000_000_000
+    if unit in {"billion", "miliar", "bn"}:
+        return 1_000_000_000
+    if unit in {"million", "juta", "mn"}:
+        return 1_000_000
+    return 1
+
+
+def _extract_amount_metric(text: str, aliases: List[str]) -> Optional[float]:
+    if not text:
+        return None
+    units = r"(trillion|triliun|billion|miliar|million|juta|bn|mn)?"
+    for alias in aliases:
+        pattern = re.compile(rf"(?:{_alias_regex(alias)})[^0-9\-]{{0,100}}(-?\d[\d\.,]*)\s*{units}", re.I)
+        match = pattern.search(text)
+        if match:
+            number = _normalize_decimal_number(match.group(1))
+            if number is None:
+                continue
+            return number * _amount_multiplier(match.group(2) or "")
+    return None
+
+
+def extract_bank_kpis_from_annual_report(annual_report: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    if not annual_report or annual_report.get("status") != "found":
+        return {}
+    text = annual_report.get("text_excerpt") or ""
+    if not text:
+        return {}
+
+    extracted = {
+        "nim": _extract_percentage_metric(text, ["net interest margin", "nim", "marjin bunga bersih"]),
+        "npl_ratio": _extract_percentage_metric(text, ["non-performing loan", "non performing loan", "npl ratio", "gross npl", "rasio kredit bermasalah", "kredit bermasalah"]),
+        "casa_ratio": _extract_percentage_metric(text, ["casa ratio", "casa", "current account saving account", "current account savings account", "giro dan tabungan"]),
+        "car": _extract_percentage_metric(text, ["capital adequacy ratio", "car", "rasio kecukupan modal"]),
+        "loan_to_deposit_ratio": _extract_percentage_metric(text, ["loan to deposit ratio", "ldr", "rasio kredit terhadap dana pihak ketiga"]),
+        "cost_to_income_ratio": _extract_percentage_metric(text, ["cost to income ratio", "cost-to-income", "cir", "efficiency ratio", "rasio biaya terhadap pendapatan"]),
+        "roe": _extract_percentage_metric(text, ["return on equity", "roe", "imbal hasil ekuitas"]),
+        "roa": _extract_percentage_metric(text, ["return on assets", "roa", "imbal hasil aset"]),
+        "total_assets": _extract_amount_metric(text, ["total assets", "jumlah aset", "total aset"]),
+        "total_equity": _extract_amount_metric(text, ["total equity", "total ekuitas", "jumlah ekuitas"]),
+        "total_loans": _extract_amount_metric(text, ["total loans", "loans", "loan portfolio", "kredit yang diberikan", "total kredit"]),
+        "customer_deposits": _extract_amount_metric(text, ["customer deposits", "total deposits", "third party funds", "dana pihak ketiga", "simpanan nasabah"]),
+        "net_interest_income": _extract_amount_metric(text, ["net interest income", "pendapatan bunga bersih"]),
+        "net_income": _extract_amount_metric(text, ["net income", "net profit", "profit for the year", "laba bersih", "laba tahun berjalan"]),
+    }
+    return {key: value for key, value in extracted.items() if value is not None}
 
 
 async def _fmp_get(path: str, params: Optional[Dict[str, Any]] = None) -> Any:
@@ -354,6 +494,7 @@ async def fetch_fmp_bundle(symbol: str, limit: int = 5) -> Dict[str, Any]:
         )
         endpoint_payloads["annual_report"] = annual_report
         if annual_report and annual_report.get("status") == "found":
+            endpoint_payloads["annual_report_bank_kpis"] = extract_bank_kpis_from_annual_report(annual_report)
             resolved_any = True
         elif annual_report:
             warnings.append("annual_report: not_found")
@@ -429,10 +570,11 @@ def normalize_profile(symbol: str, bundle: Dict[str, Any]) -> Optional[Dict[str,
     if not profile:
         return None
 
-    annual_report = endpoints.get("annual_report")
     provider_payload = {"profile": profile}
-    if annual_report:
-        provider_payload["annual_report"] = annual_report
+    if endpoints.get("annual_report"):
+        provider_payload["annual_report"] = endpoints.get("annual_report")
+    if endpoints.get("annual_report_bank_kpis"):
+        provider_payload["annual_report_bank_kpis"] = endpoints.get("annual_report_bank_kpis")
 
     return {
         "symbol": _clean_symbol(symbol),
@@ -559,43 +701,75 @@ def _looks_like_bank(profile: Dict[str, Any]) -> bool:
         str(profile.get(field) or "")
         for field in ["sector", "industry", "company_name", "description"]
     ).lower()
-    return any(token in text for token in ["bank", "banc", "financial services", "lender"])
+    return any(token in text for token in ["bank", "banc", "financial services", "lender", "credit institution"])
+
+
+def _first_non_none(*values: Any) -> Any:
+    for value in values:
+        if value is not None:
+            return value
+    return None
 
 
 def calculate_bank_kpi_row(symbol: str, bundle: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    endpoints = bundle.get("endpoints") or {}
     profile = normalize_profile(symbol, bundle) or {}
-    if not _looks_like_bank(profile):
+    annual_report = endpoints.get("annual_report") or {}
+    annual_report_kpis = endpoints.get("annual_report_bank_kpis") or extract_bank_kpis_from_annual_report(annual_report)
+    if not _looks_like_bank(profile) and not annual_report_kpis:
         return None
 
-    ratios = _first_list_row((bundle.get("endpoints") or {}).get("ratios"))
-    metrics = _first_list_row((bundle.get("endpoints") or {}).get("key_metrics"))
-    if not ratios and not metrics:
+    ratios = _first_list_row(endpoints.get("ratios"))
+    metrics = _first_list_row(endpoints.get("key_metrics"))
+    if not ratios and not metrics and not annual_report_kpis:
         return None
 
-    fiscal_year = _safe_fiscal_year(ratios.get("calendarYear") or metrics.get("calendarYear"), _iso_date(ratios.get("date") or metrics.get("date")))
+    report_year = annual_report.get("report_year") if isinstance(annual_report, dict) else None
+    fiscal_year = _safe_fiscal_year(ratios.get("calendarYear") or metrics.get("calendarYear") or report_year, _iso_date(ratios.get("date") or metrics.get("date")))
     fiscal_period = str(ratios.get("period") or metrics.get("period") or "FY").upper()
     period_type = "quarterly" if fiscal_period in {"Q1", "Q2", "Q3", "Q4"} else "annual"
 
-    return {
+    row = {
         "symbol": _clean_symbol(symbol),
         "provider_symbol": _clean_symbol(str(profile.get("provider_symbol") or symbol)),
         "fiscal_year": fiscal_year,
         "fiscal_period": fiscal_period,
         "period_type": period_type,
-        "return_on_assets": _number(ratios.get("returnOnAssets")),
-        "return_on_equity": _number(ratios.get("returnOnEquity")),
+        "total_loans": annual_report_kpis.get("total_loans"),
+        "total_deposits": annual_report_kpis.get("customer_deposits"),
+        "customer_deposits": annual_report_kpis.get("customer_deposits"),
+        "net_interest_income": annual_report_kpis.get("net_interest_income"),
+        "net_income": annual_report_kpis.get("net_income"),
+        "total_assets": annual_report_kpis.get("total_assets"),
+        "total_equity": annual_report_kpis.get("total_equity"),
+        "nim": annual_report_kpis.get("nim"),
+        "roe": _first_non_none(annual_report_kpis.get("roe"), _number(ratios.get("returnOnEquity"))),
+        "roa": _first_non_none(annual_report_kpis.get("roa"), _number(ratios.get("returnOnAssets"))),
+        "npl_ratio": annual_report_kpis.get("npl_ratio"),
+        "loan_to_deposit_ratio": annual_report_kpis.get("loan_to_deposit_ratio"),
+        "casa_ratio": annual_report_kpis.get("casa_ratio"),
+        "car": annual_report_kpis.get("car"),
+        "cost_to_income_ratio": annual_report_kpis.get("cost_to_income_ratio"),
+        "return_on_assets": _first_non_none(annual_report_kpis.get("roa"), _number(ratios.get("returnOnAssets"))),
+        "return_on_equity": _first_non_none(annual_report_kpis.get("roe"), _number(ratios.get("returnOnEquity"))),
         "debt_to_equity": _number(ratios.get("debtEquityRatio")),
         "price_to_book": _number(ratios.get("priceToBookRatio")),
         "tier1_proxy": _number(metrics.get("tangibleAssetValue")) or _number(metrics.get("netCurrentAssetValue")),
-        "nim": None,
-        "loan_to_deposit": None,
-        "efficiency_ratio": None,
-        "source": "fmp",
-        "source_confidence": SOURCE_CONFIDENCE,
-        "note": "FMP coverage for bank-specific KPIs is partial; blank fields indicate provider gaps.",
+        "loan_to_deposit": annual_report_kpis.get("loan_to_deposit_ratio"),
+        "efficiency_ratio": annual_report_kpis.get("cost_to_income_ratio"),
+        "source": "annual_report+fmp" if annual_report_kpis else "fmp",
+        "source_confidence": 0.82 if annual_report_kpis else SOURCE_CONFIDENCE,
+        "provider_payload": {
+            "annual_report": annual_report,
+            "annual_report_bank_kpis": annual_report_kpis,
+            "fmp_ratios_available": bool(ratios),
+            "fmp_metrics_available": bool(metrics),
+        },
+        "note": "Bank KPIs are extracted from annual-report text when API coverage is incomplete; values should be reviewed for critical decisions." if annual_report_kpis else "FMP coverage for bank-specific KPIs is partial; blank fields indicate provider gaps.",
         "retrieved_at": bundle.get("retrieved_at") or utc_now(),
         "updated_at": utc_now(),
     }
+    return row
 
 
 def build_metric_coverage(
@@ -683,12 +857,23 @@ def build_metric_coverage(
         for metric_name in [
             "return_on_assets",
             "return_on_equity",
+            "roe",
+            "roa",
+            "nim",
+            "npl_ratio",
+            "loan_to_deposit_ratio",
+            "casa_ratio",
+            "car",
+            "cost_to_income_ratio",
             "debt_to_equity",
             "price_to_book",
             "tier1_proxy",
-            "nim",
-            "loan_to_deposit",
-            "efficiency_ratio",
+            "total_assets",
+            "total_equity",
+            "total_loans",
+            "customer_deposits",
+            "net_interest_income",
+            "net_income",
         ]:
             metric_value = bank_kpi.get(metric_name)
             coverage_rows.append(
@@ -699,9 +884,9 @@ def build_metric_coverage(
                     "metric_group": "bank_kpi",
                     "metric_name": metric_name,
                     "status": "available" if metric_value is not None else "missing",
-                    "note": "" if metric_value is not None else "Provider did not return this bank KPI.",
-                    "source": "fmp",
-                    "source_confidence": SOURCE_CONFIDENCE,
+                    "note": "" if metric_value is not None else "Provider/report parser did not return this bank KPI.",
+                    "source": bank_kpi.get("source") or "fmp",
+                    "source_confidence": bank_kpi.get("source_confidence") or SOURCE_CONFIDENCE,
                     "updated_at": now,
                 }
             )
