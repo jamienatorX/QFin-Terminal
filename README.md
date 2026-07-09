@@ -7,7 +7,7 @@ The app has four main layers:
 ```text
 Frontend: React / Vite website deployed on Vercel
 Backend: FastAPI service deployed on Render
-AI: Qwen Cloud / DashScope API
+AI: Qwen Cloud / DashScope API with intelligent model routing
 Database: Supabase Postgres behind the backend
 ```
 
@@ -36,6 +36,18 @@ QFin-Terminal
 - Backend opens locally at `http://127.0.0.1:8000`
 - `/`, `/health`, `/docs`, `/agent/chat/stream`, `/community/news/{category}`, `/community/forum`, and `/community/models` work
 - Qwen and Supabase are called only from the backend
+
+## Qwen model routing
+
+QFin does not use the strongest model for every request. The backend routes requests by task so the app stays faster and cheaper:
+
+```text
+Deep financial report / analyst agent  -> Qwen3.7-Max
+Quick summary / cheaper backup         -> Qwen3.7-Plus or Qwen3.6-Flash
+Analyze image/chart/video directly     -> Qwen3.7-Plus
+```
+
+If Qwen3.7-Max times out or returns a temporary API error, the backend automatically tries the faster backup models. Authentication errors still stop immediately because they mean the API key or base URL is wrong.
 
 ## Local backend setup
 
@@ -67,10 +79,17 @@ Add:
 ```env
 DASHSCOPE_API_KEY=your_qwen_dashscope_api_key
 DASHSCOPE_BASE_URL=https://dashscope-intl.aliyuncs.com/compatible-mode/v1
-DASHSCOPE_MODEL=qwen3.7-plus
+DASHSCOPE_MODEL_DEEP=qwen3.7-max
+DASHSCOPE_MODEL_FAST=qwen3.7-plus
+DASHSCOPE_MODEL_FLASH=qwen3.6-flash
+DASHSCOPE_MODEL_VISION=qwen3.7-plus
+DASHSCOPE_NEWS_MODEL=qwen3.7-plus
+DASHSCOPE_TIMEOUT_SECONDS=120
 SUPABASE_URL=your_supabase_project_url
 SUPABASE_SERVICE_ROLE_KEY=your_supabase_secret_or_service_role_key
 FINNHUB_API_KEY=your_finnhub_api_key
+FMP_API_KEY=your_fmp_api_key
+NEWSAPI_KEY=your_newsapi_key
 ```
 
 Do not commit `.env` to GitHub.
@@ -154,10 +173,17 @@ Set these environment variables in Render:
 ```env
 DASHSCOPE_API_KEY=your_qwen_dashscope_api_key
 DASHSCOPE_BASE_URL=https://dashscope-intl.aliyuncs.com/compatible-mode/v1
-DASHSCOPE_MODEL=qwen3.7-plus
+DASHSCOPE_MODEL_DEEP=qwen3.7-max
+DASHSCOPE_MODEL_FAST=qwen3.7-plus
+DASHSCOPE_MODEL_FLASH=qwen3.6-flash
+DASHSCOPE_MODEL_VISION=qwen3.7-plus
+DASHSCOPE_NEWS_MODEL=qwen3.7-plus
+DASHSCOPE_TIMEOUT_SECONDS=120
 SUPABASE_URL=your_supabase_project_url
 SUPABASE_SERVICE_ROLE_KEY=your_supabase_secret_or_service_role_key
 FINNHUB_API_KEY=your_finnhub_api_key
+FMP_API_KEY=your_fmp_api_key
+NEWSAPI_KEY=your_newsapi_key
 ```
 
 After deployment, test:
@@ -172,7 +198,6 @@ Expected response:
 {
   "status": "ok",
   "service": "qfin-terminal-api",
-  "version": "qfin-agent-2.1",
   "qwen_configured": true,
   "supabase_configured": true
 }
