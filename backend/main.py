@@ -487,10 +487,6 @@ async def ingest_fmp_to_warehouse(symbol: str) -> Dict[str, Any]:
             valuation,
             bank_kpi,
         )
-        if run_id:
-            for row in coverage_rows:
-                row["retrieval_run_id"] = run_id
-
         if profile:
             supabase_upsert(
                 "qfin_company_profiles",
@@ -571,6 +567,288 @@ async def ingest_fmp_to_warehouse(symbol: str) -> Dict[str, Any]:
             "symbol": symbol,
             "error": str(exc)[:500],
         }
+
+
+def warehouse_snapshot_is_usable(snapshot: Dict[str, Any]) -> bool:
+    return bool(
+        snapshot.get("profile")
+        or snapshot.get("valuation")
+        or snapshot.get("statement_rows")
+        or snapshot.get("bank_kpi")
+    )
+
+
+def load_warehouse_snapshot(symbol: str) -> Dict[str, Any]:
+    base = {
+        "symbol": symbol,
+        "status": "disabled" if not supabase_is_configured() else "empty",
+        "profile": None,
+        "valuation": None,
+        "bank_kpi": None,
+        "statement_rows": [],
+        "coverage_rows": [],
+    }
+    if not supabase_is_configured():
+        return base
+
+    try:
+        profile_rows = supabase_request(
+            "GET",
+            "qfin_company_profiles",
+            params={"select": "*", "symbol": f"eq.{symbol}", "limit": "1"},
+        ) or []
+        valuation_rows = supabase_request(
+            "GET",
+            "qfin_valuation_snapshots",
+            params={"select": "*", "symbol": f"eq.{symbol}", "order": "snapshot_date.desc,created_at.desc", "limit": "1"},
+        ) or []
+        bank_rows = supabase_request(
+            "GET",
+            "qfin_bank_kpis",
+            params={"select": "*", "symbol": f"eq.{symbol}", "order": "fiscal_year.desc,created_at.desc", "limit": "1"},
+        ) or []
+        statement_rows = supabase_request(
+            "GET",
+            "qfin_financial_statements",
+            params={"select": "*", "symbol": f"eq.{symbol}", "order": "fiscal_year.desc,statement_type.asc,metric_name.asc", "limit": "250"},
+        ) or []
+        coverage_rows = supabase_request(
+            "GET",
+            "qfin_metric_coverage",
+            params={"select": "*", "symbol": f"eq.{symbol}", "order": "fiscal_year.desc,metric_group.asc,metric_name.asc", "limit": "250"},
+        ) or []
+        snapshot = {
+            "symbol": symbol,
+            "status": "available",
+            "profile": profile_rows[0] if isinstance(profile_rows, list) and profile_rows else None,
+            "valuation": valuation_rows[0] if isinstance(valuation_rows, list) and valuation_rows else None,
+            "bank_kpi": bank_rows[0] if isinstance(bank_rows, list) and bank_rows else None,
+            "statement_rows": statement_rows if isinstance(statement_rows, list) else [],
+            "coverage_rows": coverage_rows if isinstance(coverage_rows, list) else [],
+        }
+        if not warehouse_snapshot_is_usable(snapshot):
+            snapshot["status"] = "empty"
+        return snapshot
+    except Exception as exc:
+        return {**base, "status": "error", "error": str(exc)[:400]}
+
+
+def warehouse_needs_refresh(snapshot: Dict[str, Any]) -> bool:
+    if snapshot.get("status") in {"empty", "error"}:
+        return True
+    if not snapshot.get("profile"):
+        return True
+    if not snapshot.get("valuation") and not snapshot.get("statement_rows"):
+        return True
+    return False
+
+
+def latest_statement_metric_value(statement_rows: List[Dict[str, Any]], statement_type: str, metric_names: List[str]) -> Optional[float]:
+    for row_item in statement_rows:
+        if row_item.get("statement_type") != statement_type:
+            continue
+        if row_item.get("metric_name") not in metric_names:
+            continue
+        value = as_float(row_item.get("metric_value"))
+        if value is not None:
+            return value
+    return None
+
+
+def warehouse_historical_series(statement_rows: List[Dict[str, Any]], statement_type: str, metric_names: List[str], currency: str, max_periods: int = 5) -> Dict[str, str]:
+    output: Dict[str, str] = {}
+    seen_years: set[int] = set()
+    for row_item in statement_rows:
+        if row_item.get("statement_type") != statement_type:
+            continue
+        if row_item.get("metric_name") not in metric_names:
+            continue
+        fiscal_year = row_item.get("fiscal_year")
+        if not fiscal_year or fiscal_year in seen_years:
+            continue
+        formatted = money(row_item.get("metric_value"), currency)
+        if formatted:
+            output[str(fiscal_year)] = formatted
+            seen_years.add(fiscal_year)
+        if len(output) >= max_periods:
+            break
+    return output
+
+
+def warehouse_growth_pct(statement_rows: List[Dict[str, Any]], statement_type: str, metric_names: List[str]) -> Optional[str]:
+    values: List[float] = []
+    seen_years: set[int] = set()
+    for row_item in statement_rows:
+        if row_item.get("statement_type") != statement_type:
+            continue
+        if row_item.get("metric_name") not in metric_names:
+            continue
+        fiscal_year = row_item.get("fiscal_year")
+        if not fiscal_year or fiscal_year in seen_years:
+            continue
+        value = as_float(row_item.get("metric_value"))
+        if value is not None:
+            values.append(value)
+            seen_years.add(fiscal_year)
+        if len(values) >= 2:
+            break
+    if len(values) < 2 or values[1] == 0:
+        return None
+    return pct((values[0] - values[1]) / values[1])
+
+
+def warehouse_finance_overlay(snapshot: Dict[str, Any], live_data: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    profile = snapshot.get("profile") or {}
+    valuation = snapshot.get("valuation") or {}
+    statement_rows = snapshot.get("statement_rows") or []
+    bank_kpi = snapshot.get("bank_kpi") or {}
+
+    currency = (
+        profile.get("currency")
+        or valuation.get("currency")
+        or (live_data or {}).get("currency")
+        or "USD"
+    )
+
+    revenue = latest_statement_metric_value(statement_rows, "income_statement", ["revenue", "totalRevenue"])
+    gross_profit = latest_statement_metric_value(statement_rows, "income_statement", ["grossProfit", "grossProfitRatio"])
+    net_income = latest_statement_metric_value(statement_rows, "income_statement", ["netIncome"])
+    operating_cashflow = latest_statement_metric_value(statement_rows, "cash_flow", ["operatingCashFlow"])
+    free_cashflow = latest_statement_metric_value(statement_rows, "cash_flow", ["freeCashFlow"])
+    debt = latest_statement_metric_value(statement_rows, "balance_sheet", ["totalDebt", "netDebt"])
+    cash_value = latest_statement_metric_value(statement_rows, "balance_sheet", ["cashAndCashEquivalents", "cashAndShortTermInvestments"])
+    equity = latest_statement_metric_value(statement_rows, "balance_sheet", ["totalStockholdersEquity", "totalEquity"])
+    gross_margin = (gross_profit / revenue) if revenue not in (None, 0) and gross_profit is not None and gross_profit > 1 else None
+    net_margin = (net_income / revenue) if revenue not in (None, 0) and net_income is not None else None
+    debt_to_equity = (debt / equity) if debt is not None and equity not in (None, 0) else None
+
+    financial_metrics = {
+        "total_revenue": money(revenue, currency),
+        "revenue_growth": warehouse_growth_pct(statement_rows, "income_statement", ["revenue", "totalRevenue"]),
+        "gross_profit": money(gross_profit, currency) if gross_profit and gross_profit > 1 else None,
+        "gross_margin": pct(gross_margin),
+        "operating_margin": None,
+        "net_income": money(net_income, currency),
+        "net_margin": pct(net_margin),
+        "operating_cashflow": money(operating_cashflow, currency),
+        "free_cashflow": money(free_cashflow, currency),
+        "total_debt": money(debt, currency),
+        "cash": money(cash_value, currency),
+        "debt_to_equity": pct(debt_to_equity),
+    }
+
+    market_data = {
+        "last_price": None,
+        "previous_close": None,
+        "price_change_pct": None,
+        "market_cap": money(valuation.get("market_cap"), currency),
+        "enterprise_value": money(valuation.get("enterprise_value"), currency),
+        "trailing_pe": f"{as_float(valuation.get('pe_ratio')):.2f}x" if as_float(valuation.get("pe_ratio")) is not None else None,
+        "forward_pe": None,
+        "price_to_book": f"{as_float(valuation.get('pb_ratio')):.2f}x" if as_float(valuation.get("pb_ratio")) is not None else None,
+        "price_to_sales": f"{as_float(valuation.get('ps_ratio')):.2f}x" if as_float(valuation.get("ps_ratio")) is not None else None,
+        "ev_ebitda": f"{as_float(valuation.get('ev_ebitda')):.2f}x" if as_float(valuation.get("ev_ebitda")) is not None else None,
+    }
+
+    historical_financials = {
+        "annual_revenue": warehouse_historical_series(statement_rows, "income_statement", ["revenue", "totalRevenue"], currency),
+        "annual_gross_profit": warehouse_historical_series(statement_rows, "income_statement", ["grossProfit"], currency),
+        "annual_net_income": warehouse_historical_series(statement_rows, "income_statement", ["netIncome"], currency),
+        "annual_operating_cash_flow": warehouse_historical_series(statement_rows, "cash_flow", ["operatingCashFlow"], currency),
+        "annual_free_cash_flow": warehouse_historical_series(statement_rows, "cash_flow", ["freeCashFlow"], currency),
+    }
+
+    return {
+        "ticker": snapshot.get("symbol"),
+        "company_name": profile.get("company_name"),
+        "currency": currency,
+        "market_data": market_data,
+        "financial_metrics": financial_metrics,
+        "historical_financials": historical_financials,
+        "bank_kpis": bank_kpi or None,
+        "coverage_summary": snapshot.get("coverage_rows") or [],
+        "data_status": "available" if warehouse_snapshot_is_usable(snapshot) else "unavailable",
+        "source": "Supabase warehouse backed by FMP.",
+        "warehouse_status": snapshot.get("status"),
+    }
+
+
+def merge_financial_facts(ticker: str, warehouse_snapshot: Dict[str, Any], live_data: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    live = live_data or {"ticker": ticker, "market_data": {}, "financial_metrics": {}, "historical_financials": {}}
+    warehouse_view = warehouse_finance_overlay(warehouse_snapshot, live)
+
+    market_data = dict(live.get("market_data") or {})
+    for key, value in (warehouse_view.get("market_data") or {}).items():
+        if value is not None:
+            market_data[key] = value
+
+    # Keep live price fields when warehouse does not provide them.
+    for key in ["last_price", "previous_close", "price_change_pct", "forward_pe"]:
+        if market_data.get(key) is None:
+            market_data[key] = (live.get("market_data") or {}).get(key)
+
+    financial_metrics = dict(live.get("financial_metrics") or {})
+    for key, value in (warehouse_view.get("financial_metrics") or {}).items():
+        if value is not None:
+            financial_metrics[key] = value
+
+    historical_financials = dict(live.get("historical_financials") or {})
+    for key, value in (warehouse_view.get("historical_financials") or {}).items():
+        if value:
+            historical_financials[key] = value
+
+    data_status = "available" if any(market_data.values()) or any(financial_metrics.values()) or warehouse_snapshot_is_usable(warehouse_snapshot) else "unavailable"
+    source_parts = []
+    if warehouse_snapshot_is_usable(warehouse_snapshot):
+        source_parts.append("Supabase warehouse/FMP")
+    if live and live.get("data_status") == "available":
+        source_parts.append("Yahoo Finance/Finnhub live fallback")
+
+    return {
+        "ticker": ticker,
+        "company_name": warehouse_view.get("company_name") or live.get("company_name") or ticker,
+        "currency": warehouse_view.get("currency") or live.get("currency") or "USD",
+        "retrieved_at_utc": utc_now(),
+        "market_data": market_data,
+        "financial_metrics": financial_metrics,
+        "historical_financials": historical_financials,
+        "earnings_history": live.get("earnings_history"),
+        "warehouse": warehouse_snapshot,
+        "warehouse_summary": {
+            "status": warehouse_snapshot.get("status"),
+            "profile_loaded": bool(warehouse_snapshot.get("profile")),
+            "valuation_loaded": bool(warehouse_snapshot.get("valuation")),
+            "statement_rows": len(warehouse_snapshot.get("statement_rows") or []),
+            "coverage_rows": len(warehouse_snapshot.get("coverage_rows") or []),
+        },
+        "source": ", ".join(source_parts) if source_parts else "No backend source produced usable data.",
+        "note": "Warehouse data is preferred for statements and valuation. Live providers fill current market fields and remaining gaps.",
+        "data_status": data_status,
+    }
+
+
+async def get_company_facts_async(ticker: str) -> Dict[str, Any]:
+    normalized_ticker = ticker.strip().upper()
+    warehouse_snapshot = load_warehouse_snapshot(normalized_ticker)
+
+    warehouse_ingest = None
+    if fmp_is_configured() and warehouse_needs_refresh(warehouse_snapshot):
+        warehouse_ingest = await ingest_fmp_to_warehouse(normalized_ticker)
+        refreshed_snapshot = load_warehouse_snapshot(normalized_ticker)
+        if warehouse_snapshot_is_usable(refreshed_snapshot) or refreshed_snapshot.get("status") != "error":
+            warehouse_snapshot = refreshed_snapshot
+
+    live_needed = not warehouse_snapshot_is_usable(warehouse_snapshot)
+    if warehouse_snapshot_is_usable(warehouse_snapshot):
+        valuation = warehouse_snapshot.get("valuation") or {}
+        if as_float((valuation or {}).get("market_cap")) is None:
+            live_needed = True
+
+    live_data = await fetch_financial_data_async(normalized_ticker) if live_needed else None
+    merged = merge_financial_facts(normalized_ticker, warehouse_snapshot, live_data)
+    if warehouse_ingest is not None:
+        merged["warehouse_ingest"] = warehouse_ingest
+    return merged
 
 
 def parse_iso_datetime(value: Optional[str]) -> datetime:
@@ -1750,6 +2028,7 @@ def build_finance_prompt(query: str, route: Dict[str, Any], facts: Any) -> List[
             f"Topic: {route['topic']}\n"
             f"Backend facts:\n{fact_block}\n"
             "Use only these exact tickers. Do not substitute any other symbol. "
+            "Prefer warehouse-backed statements and valuation when available, and use live fields only for current market context or explicit gaps. "
             "Write a detailed side-by-side finance comparison and clearly state what data is missing if any metric is unavailable. "
             "Do not mention the internal route or backend mechanics in the final answer."
         )
@@ -1759,7 +2038,8 @@ def build_finance_prompt(query: str, route: Dict[str, Any], facts: Any) -> List[
             f"Internal route: single company analysis\n"
             f"Resolved ticker: {route['ticker']}\n"
             f"Backend facts:\n{fact_block}\n"
-            "Use only this backend data. If the user asked about the latest quarter, focus on the latest quarter context first, then the broader fundamentals. "
+            "Use only this backend data. Prefer warehouse-backed statements and valuation when available, and use live fields only for current market context or explicit gaps. "
+            "If the user asked about the latest quarter, focus on the latest quarter context first, then the broader fundamentals. "
             "Do not mention the internal route or backend mechanics in the final answer."
         )
     elif route_kind == "news":
@@ -1811,13 +2091,14 @@ def build_evidence_packet(query: str, route: Dict[str, Any], facts: Any, used_li
             data_status = payload.get("data_status")
             if data_status != "available":
                 gaps.append(f"Live financial data was incomplete for {ticker}.")
+            warehouse_status = (payload.get("warehouse") or {}).get("status") if isinstance(payload, dict) else None
             items.append(
                 EvidenceItem(
                     kind="financial_data",
                     label=str(ticker),
-                    source=str(payload.get("source") or "Yahoo Finance via yfinance"),
+                    source=str(payload.get("source") or "Warehouse/live finance stack"),
                     summary=clean_text(
-                        f"{payload.get('company_name') or ticker}: data_status={payload.get('data_status') or 'unknown'}."
+                        f"{payload.get('company_name') or ticker}: data_status={payload.get('data_status') or 'unknown'}; warehouse_status={warehouse_status or 'n/a'}."
                     ),
                     payload=payload,
                 )
@@ -1969,17 +2250,11 @@ async def generate_agent_reply(query: str, provided_ticker: Optional[str] = None
 
     if route["kind"] == "comparison":
         comparison_results = await asyncio.gather(
-            *(fetch_financial_data_async(ticker) for ticker in route["tickers"])
-        )
-        warehouse_results = await asyncio.gather(
-            *(ingest_fmp_to_warehouse(ticker) for ticker in route["tickers"])
+            *(get_company_facts_async(ticker) for ticker in route["tickers"])
         )
         facts = {
-            ticker: {
-                **data,
-                "warehouse": warehouse,
-            }
-            for ticker, data, warehouse in zip(route["tickers"], comparison_results, warehouse_results)
+            ticker: data
+            for ticker, data in zip(route["tickers"], comparison_results)
         }
         evidence = build_evidence_packet(query, route, facts, used_live_data=True)
         if not qwen_is_configured():
@@ -2002,9 +2277,7 @@ async def generate_agent_reply(query: str, provided_ticker: Optional[str] = None
         }
 
     if route["kind"] == "company":
-        facts = await fetch_financial_data_async(route["ticker"])
-        warehouse_result = await ingest_fmp_to_warehouse(route["ticker"])
-        facts["warehouse"] = warehouse_result
+        facts = await get_company_facts_async(route["ticker"])
         evidence = build_evidence_packet(query, route, facts, used_live_data=True)
         if not qwen_is_configured():
             content = (
@@ -2920,8 +3193,8 @@ def seed_symbol_master_route():
 
 
 @app.get("/market-data/{ticker}")
-def market_data_route(ticker: str):
-    return get_cached_financial_data(ticker.strip().upper()) or fetch_financial_data(ticker.strip().upper())
+async def market_data_route(ticker: str):
+    return await get_company_facts_async(ticker.strip().upper())
 
 
 @app.post("/upload")
