@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import html
 import os
+import re
 from datetime import datetime, timezone
+from io import BytesIO
 from typing import Any, Dict, List, Optional
+from urllib.parse import parse_qs, unquote, urljoin, urlparse
 
 import httpx
 
@@ -11,6 +15,9 @@ FMP_BASE_URL = "https://financialmodelingprep.com/stable"
 FMP_TIMEOUT = httpx.Timeout(20.0, connect=5.0)
 FMP_USER_AGENT = "QFin-Terminal/1.0"
 SOURCE_CONFIDENCE = 0.70
+ANNUAL_REPORT_TIMEOUT = httpx.Timeout(25.0, connect=8.0)
+MAX_ANNUAL_REPORT_BYTES = 18_000_000
+MAX_REPORT_TEXT_CHARS = 12_000
 
 
 def utc_now() -> str:
@@ -37,6 +44,241 @@ def _symbol_candidates(symbol: str) -> List[str]:
     if "." in cleaned:
         candidates.append(cleaned.split(".", 1)[0])
     return list(dict.fromkeys(candidate for candidate in candidates if candidate))
+
+
+def _host(value: str) -> str:
+    try:
+        return urlparse(value).netloc.lower().replace("www.", "")
+    except Exception:
+        return ""
+
+
+def _base_url(value: str) -> str:
+    parsed = urlparse(value or "")
+    if not parsed.scheme or not parsed.netloc:
+        return ""
+    return f"{parsed.scheme}://{parsed.netloc}"
+
+
+def _is_pdf_url(url: str) -> bool:
+    lowered = url.lower().split("?", 1)[0]
+    return lowered.endswith(".pdf") or "/pdf" in lowered or "format=pdf" in url.lower()
+
+
+def _annual_report_score(url: str, title: str = "") -> int:
+    text = f"{url} {title}".lower()
+    score = 0
+    for token in ["annual-report", "annual report", "laporan-tahunan", "laporan tahunan", "annual_report"]:
+        if token in text:
+            score += 40
+    if ".pdf" in text:
+        score += 30
+    if "financial" in text or "keuangan" in text:
+        score += 8
+    years = re.findall(r"20\d{2}", text)
+    if years:
+        score += max(int(year) for year in years) - 2000
+    if any(bad in text for bad in ["quarter", "quarterly", "press-release", "newsletter", "privacy", "prospectus"]):
+        score -= 15
+    return score
+
+
+def _normalize_search_url(href: str) -> str:
+    href = html.unescape(href or "")
+    if not href:
+        return ""
+    if href.startswith("//"):
+        href = f"https:{href}"
+    if href.startswith("/l/?") or "duckduckgo.com/l/?" in href:
+        parsed = urlparse(href)
+        params = parse_qs(parsed.query)
+        target = params.get("uddg", [""])[0]
+        if target:
+            return unquote(target)
+    return href
+
+
+def _extract_links(html_text: str, base_url: str = "") -> List[Dict[str, str]]:
+    links: List[Dict[str, str]] = []
+    pattern = re.compile(r'<a[^>]+href=["\']([^"\']+)["\'][^>]*>(.*?)</a>', re.I | re.S)
+    for href, label in pattern.findall(html_text or ""):
+        normalized = _normalize_search_url(href)
+        if base_url:
+            normalized = urljoin(base_url, normalized)
+        normalized = normalized.strip()
+        if not normalized.startswith(("http://", "https://")):
+            continue
+        clean_label = re.sub(r"<[^>]+>", " ", label)
+        clean_label = re.sub(r"\s+", " ", html.unescape(clean_label)).strip()
+        links.append({"url": normalized, "title": clean_label})
+    return links
+
+
+async def _download_text(client: httpx.AsyncClient, url: str) -> str:
+    response = await client.get(url, headers={"User-Agent": FMP_USER_AGENT})
+    response.raise_for_status()
+    return response.text
+
+
+async def _download_bytes(client: httpx.AsyncClient, url: str, max_bytes: int = MAX_ANNUAL_REPORT_BYTES) -> bytes:
+    response = await client.get(url, headers={"User-Agent": FMP_USER_AGENT})
+    response.raise_for_status()
+    data = response.content
+    if len(data) > max_bytes:
+        raise RuntimeError("annual report PDF is larger than the configured limit")
+    return data
+
+
+def _extract_pdf_text(pdf_bytes: bytes, max_pages: int = 12) -> str:
+    try:
+        from pypdf import PdfReader
+    except Exception:
+        return ""
+
+    try:
+        reader = PdfReader(BytesIO(pdf_bytes))
+        chunks: List[str] = []
+        for page in reader.pages[:max_pages]:
+            page_text = page.extract_text() or ""
+            if page_text.strip():
+                chunks.append(page_text)
+            if sum(len(chunk) for chunk in chunks) >= MAX_REPORT_TEXT_CHARS:
+                break
+        text = "\n".join(chunks)
+        text = re.sub(r"\s+", " ", text).strip()
+        return text[:MAX_REPORT_TEXT_CHARS]
+    except Exception:
+        return ""
+
+
+async def _search_duckduckgo(client: httpx.AsyncClient, query: str) -> List[Dict[str, str]]:
+    try:
+        response = await client.get(
+            "https://duckduckgo.com/html/",
+            params={"q": query},
+            headers={"User-Agent": FMP_USER_AGENT},
+        )
+        response.raise_for_status()
+        return _extract_links(response.text, "https://duckduckgo.com")
+    except Exception:
+        return []
+
+
+async def _official_site_candidates(client: httpx.AsyncClient, website: str) -> List[Dict[str, str]]:
+    base = _base_url(website)
+    if not base:
+        return []
+
+    paths = [
+        "/",
+        "/en/about-bca/investor-relations/annual-report",
+        "/id/tentang-bca/hubungan-investor/laporan-tahunan",
+        "/en/about-bca/investor-relations",
+        "/id/tentang-bca/hubungan-investor",
+        "/investor-relations/annual-report",
+        "/investor-relations/reports",
+        "/annual-report",
+        "/laporan-tahunan",
+    ]
+    found: List[Dict[str, str]] = []
+    for path in paths:
+        page_url = urljoin(base, path)
+        try:
+            page_html = await _download_text(client, page_url)
+        except Exception:
+            continue
+        for link in _extract_links(page_html, page_url):
+            text = f"{link.get('url', '')} {link.get('title', '')}".lower()
+            if any(token in text for token in ["annual", "laporan", "report", ".pdf"]):
+                found.append(link)
+    return found
+
+
+async def discover_annual_report(company_name: str, symbol: str, website: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    company_name = (company_name or "").strip()
+    symbol = _clean_symbol(symbol)
+    website = website or ""
+    trusted_host = _host(website)
+
+    search_queries = [
+        f'"{company_name}" "annual report" pdf',
+        f'"{company_name}" "laporan tahunan" pdf',
+        f'"{symbol}" "annual report" pdf',
+        f'"{symbol.split(".", 1)[0]}" "laporan tahunan" pdf',
+    ]
+
+    async with httpx.AsyncClient(timeout=ANNUAL_REPORT_TIMEOUT, follow_redirects=True) as client:
+        candidates: List[Dict[str, str]] = []
+        candidates.extend(await _official_site_candidates(client, website))
+        for query in search_queries:
+            candidates.extend(await _search_duckduckgo(client, query))
+
+        deduped: Dict[str, Dict[str, str]] = {}
+        for item in candidates:
+            url = item.get("url", "")
+            title = item.get("title", "")
+            if not url.startswith(("http://", "https://")):
+                continue
+            url_host = _host(url)
+            text = f"{url} {title}".lower()
+            trusted = bool(trusted_host and trusted_host in url_host) or any(host in url_host for host in ["idx.co.id", "bca.co.id"])
+            if not trusted and symbol.endswith(".JK"):
+                continue
+            if _annual_report_score(url, title) <= 20:
+                continue
+            deduped[url] = {"url": url, "title": title}
+
+        ranked = sorted(deduped.values(), key=lambda item: _annual_report_score(item["url"], item.get("title", "")), reverse=True)
+
+        pdf_candidates: List[Dict[str, str]] = []
+        for item in ranked[:15]:
+            url = item["url"]
+            if _is_pdf_url(url):
+                pdf_candidates.append(item)
+                continue
+            try:
+                page_html = await _download_text(client, url)
+                for link in _extract_links(page_html, url):
+                    text = f"{link.get('url', '')} {link.get('title', '')}".lower()
+                    if _is_pdf_url(link.get("url", "")) and _annual_report_score(link.get("url", ""), link.get("title", "")) > 20:
+                        pdf_candidates.append(link)
+            except Exception:
+                continue
+
+        pdf_deduped: Dict[str, Dict[str, str]] = {item["url"]: item for item in pdf_candidates if item.get("url")}
+        pdf_ranked = sorted(pdf_deduped.values(), key=lambda item: _annual_report_score(item["url"], item.get("title", "")), reverse=True)
+
+        for item in pdf_ranked[:8]:
+            pdf_url = item["url"]
+            try:
+                pdf_bytes = await _download_bytes(client, pdf_url)
+                text_excerpt = _extract_pdf_text(pdf_bytes)
+                years = re.findall(r"20\d{2}", f"{item.get('title', '')} {pdf_url} {text_excerpt[:500]}")
+                report_year = max([int(year) for year in years], default=None)
+                return {
+                    "status": "found",
+                    "symbol": symbol,
+                    "company_name": company_name,
+                    "report_year": report_year,
+                    "report_type": "annual_report",
+                    "source_url": pdf_url,
+                    "source_title": item.get("title") or "Annual report PDF",
+                    "source_host": _host(pdf_url),
+                    "source_confidence": SOURCE_CONFIDENCE,
+                    "downloaded_at": utc_now(),
+                    "bytes": len(pdf_bytes),
+                    "text_excerpt": text_excerpt,
+                }
+            except Exception:
+                continue
+
+    return {
+        "status": "not_found",
+        "symbol": symbol,
+        "company_name": company_name,
+        "source_confidence": 0.0,
+        "checked_at": utc_now(),
+    }
 
 
 async def _fmp_get(path: str, params: Optional[Dict[str, Any]] = None) -> Any:
@@ -102,6 +344,20 @@ async def fetch_fmp_bundle(symbol: str, limit: int = 5) -> Dict[str, Any]:
         else:
             warnings.append(f"{endpoint_name}: no_data")
         endpoint_payloads[endpoint_name] = result
+
+    profile = _first_list_row(endpoint_payloads.get("profile"))
+    annual_report = None
+    if profile:
+        annual_report = await discover_annual_report(
+            profile.get("companyName") or profile.get("name") or requested_symbol,
+            requested_symbol,
+            profile.get("website"),
+        )
+        endpoint_payloads["annual_report"] = annual_report
+        if annual_report and annual_report.get("status") == "found":
+            resolved_any = True
+        elif annual_report:
+            warnings.append("annual_report: not_found")
 
     status = "success" if resolved_any else "provider_gap"
     return {
@@ -169,9 +425,15 @@ def _metric_unit(statement_type: str, metric_name: str) -> str:
 
 
 def normalize_profile(symbol: str, bundle: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    profile = _first_list_row((bundle.get("endpoints") or {}).get("profile"))
+    endpoints = bundle.get("endpoints") or {}
+    profile = _first_list_row(endpoints.get("profile"))
     if not profile:
         return None
+
+    annual_report = endpoints.get("annual_report")
+    provider_payload = {"profile": profile}
+    if annual_report:
+        provider_payload["annual_report"] = annual_report
 
     return {
         "symbol": _clean_symbol(symbol),
@@ -186,7 +448,7 @@ def normalize_profile(symbol: str, bundle: Dict[str, Any]) -> Optional[Dict[str,
         "ipo_date": _iso_date(profile.get("ipoDate")),
         "website": profile.get("website"),
         "description": profile.get("description"),
-        "provider_payload": profile,
+        "provider_payload": provider_payload,
         "source": "fmp",
         "source_confidence": SOURCE_CONFIDENCE,
         "retrieved_at": bundle.get("retrieved_at") or utc_now(),
