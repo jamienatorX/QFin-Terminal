@@ -303,3 +303,225 @@ create policy "qfin_symbol_master_service_role_all"
   to service_role
   using (true)
   with check (true);
+
+create table if not exists public.qfin_data_source_runs (
+  id uuid primary key default gen_random_uuid(),
+  symbol text not null,
+  requested_symbol text,
+  provider text not null,
+  endpoint text not null,
+  request_params jsonb not null default '{}'::jsonb,
+  status text not null default 'started',
+  rows_inserted integer not null default 0,
+  warnings jsonb not null default '[]'::jsonb,
+  error_message text,
+  started_at timestamptz not null default now(),
+  finished_at timestamptz,
+  created_at timestamptz not null default now()
+);
+
+create index if not exists qfin_data_source_runs_symbol_provider_idx
+  on public.qfin_data_source_runs (symbol, provider, created_at desc);
+
+create table if not exists public.qfin_company_profiles (
+  id uuid primary key default gen_random_uuid(),
+  symbol text not null unique,
+  provider_symbol text,
+  company_name text,
+  exchange text,
+  sector text,
+  industry text,
+  country text,
+  currency text,
+  ipo_date date,
+  website text,
+  description text,
+  source text not null default 'fmp',
+  retrieved_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create table if not exists public.qfin_financial_statements (
+  id uuid primary key default gen_random_uuid(),
+  retrieval_run_id uuid references public.qfin_data_source_runs(id) on delete set null,
+  symbol text not null,
+  provider_symbol text,
+  fiscal_year integer not null,
+  fiscal_period text not null,
+  period_type text not null,
+  statement_type text not null,
+  metric_name text not null,
+  metric_value double precision,
+  report_date date,
+  accepted_date date,
+  currency text,
+  source text not null default 'fmp',
+  retrieved_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create unique index if not exists qfin_financial_statements_row_idx
+  on public.qfin_financial_statements (
+    symbol,
+    fiscal_year,
+    fiscal_period,
+    period_type,
+    statement_type,
+    metric_name,
+    source
+  );
+
+create index if not exists qfin_financial_statements_symbol_year_idx
+  on public.qfin_financial_statements (symbol, fiscal_year desc, statement_type, metric_name);
+
+create table if not exists public.qfin_valuation_snapshots (
+  id uuid primary key default gen_random_uuid(),
+  retrieval_run_id uuid references public.qfin_data_source_runs(id) on delete set null,
+  symbol text not null,
+  provider_symbol text,
+  snapshot_date date not null,
+  fiscal_period text not null default 'TTM',
+  market_cap double precision,
+  enterprise_value double precision,
+  shares_outstanding double precision,
+  pe_ratio double precision,
+  pb_ratio double precision,
+  ps_ratio double precision,
+  ev_ebitda double precision,
+  dividend_yield double precision,
+  roe double precision,
+  roa double precision,
+  data_quality text,
+  source text not null default 'fmp',
+  retrieved_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create unique index if not exists qfin_valuation_snapshots_row_idx
+  on public.qfin_valuation_snapshots (symbol, snapshot_date, fiscal_period, source);
+
+create table if not exists public.qfin_bank_kpis (
+  id uuid primary key default gen_random_uuid(),
+  retrieval_run_id uuid references public.qfin_data_source_runs(id) on delete set null,
+  symbol text not null,
+  provider_symbol text,
+  fiscal_year integer not null,
+  fiscal_period text not null,
+  period_type text not null,
+  return_on_assets double precision,
+  return_on_equity double precision,
+  debt_to_equity double precision,
+  price_to_book double precision,
+  tier1_proxy double precision,
+  nim double precision,
+  loan_to_deposit double precision,
+  efficiency_ratio double precision,
+  note text,
+  source text not null default 'fmp',
+  retrieved_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create unique index if not exists qfin_bank_kpis_row_idx
+  on public.qfin_bank_kpis (symbol, fiscal_year, fiscal_period, period_type, source);
+
+create table if not exists public.qfin_metric_coverage (
+  id uuid primary key default gen_random_uuid(),
+  retrieval_run_id uuid references public.qfin_data_source_runs(id) on delete set null,
+  symbol text not null,
+  fiscal_year integer not null,
+  fiscal_period text not null,
+  metric_group text not null,
+  metric_name text not null,
+  status text not null,
+  note text,
+  source text not null default 'fmp',
+  updated_at timestamptz not null default now()
+);
+
+create unique index if not exists qfin_metric_coverage_row_idx
+  on public.qfin_metric_coverage (symbol, fiscal_year, fiscal_period, metric_group, metric_name);
+
+create table if not exists public.qfin_manual_overrides (
+  id uuid primary key default gen_random_uuid(),
+  symbol text not null,
+  fiscal_year integer,
+  fiscal_period text,
+  metric_group text not null,
+  metric_name text not null,
+  metric_value double precision,
+  currency text,
+  source_document text,
+  extraction_method text,
+  status text not null default 'pending' check (status in ('pending', 'approved', 'rejected')),
+  note text,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create index if not exists qfin_manual_overrides_symbol_idx
+  on public.qfin_manual_overrides (symbol, fiscal_year desc, metric_group, metric_name);
+
+alter table public.qfin_data_source_runs enable row level security;
+alter table public.qfin_company_profiles enable row level security;
+alter table public.qfin_financial_statements enable row level security;
+alter table public.qfin_valuation_snapshots enable row level security;
+alter table public.qfin_bank_kpis enable row level security;
+alter table public.qfin_metric_coverage enable row level security;
+alter table public.qfin_manual_overrides enable row level security;
+
+drop policy if exists "qfin_data_source_runs_service_role_all" on public.qfin_data_source_runs;
+create policy "qfin_data_source_runs_service_role_all"
+  on public.qfin_data_source_runs
+  for all
+  to service_role
+  using (true)
+  with check (true);
+
+drop policy if exists "qfin_company_profiles_service_role_all" on public.qfin_company_profiles;
+create policy "qfin_company_profiles_service_role_all"
+  on public.qfin_company_profiles
+  for all
+  to service_role
+  using (true)
+  with check (true);
+
+drop policy if exists "qfin_financial_statements_service_role_all" on public.qfin_financial_statements;
+create policy "qfin_financial_statements_service_role_all"
+  on public.qfin_financial_statements
+  for all
+  to service_role
+  using (true)
+  with check (true);
+
+drop policy if exists "qfin_valuation_snapshots_service_role_all" on public.qfin_valuation_snapshots;
+create policy "qfin_valuation_snapshots_service_role_all"
+  on public.qfin_valuation_snapshots
+  for all
+  to service_role
+  using (true)
+  with check (true);
+
+drop policy if exists "qfin_bank_kpis_service_role_all" on public.qfin_bank_kpis;
+create policy "qfin_bank_kpis_service_role_all"
+  on public.qfin_bank_kpis
+  for all
+  to service_role
+  using (true)
+  with check (true);
+
+drop policy if exists "qfin_metric_coverage_service_role_all" on public.qfin_metric_coverage;
+create policy "qfin_metric_coverage_service_role_all"
+  on public.qfin_metric_coverage
+  for all
+  to service_role
+  using (true)
+  with check (true);
+
+drop policy if exists "qfin_manual_overrides_service_role_all" on public.qfin_manual_overrides;
+create policy "qfin_manual_overrides_service_role_all"
+  on public.qfin_manual_overrides
+  for all
+  to service_role
+  using (true)
+  with check (true);

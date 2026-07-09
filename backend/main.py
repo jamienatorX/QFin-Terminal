@@ -18,10 +18,19 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from api_registry import fetch_public_api_facts, list_public_api_registry
+from financial_data_warehouse import (
+    build_metric_coverage,
+    calculate_bank_kpi_row,
+    calculate_valuation_snapshot,
+    fetch_fmp_bundle,
+    fmp_is_configured,
+    normalize_profile,
+    normalize_statement_rows,
+)
 from news_module import generate_news, normalize_category
 from qwen_client import QwenClientError, call_qwen, qwen_is_configured
 
-app = FastAPI(title="QFin Terminal API", version="qfin-agent-2.6")
+app = FastAPI(title="QFin Terminal API", version="qfin-agent-2.7")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -378,6 +387,190 @@ def supabase_request(
     if not response.text.strip():
         return None
     return response.json()
+
+
+def remove_none_values(row: Dict[str, Any]) -> Dict[str, Any]:
+    return {key: value for key, value in row.items() if value is not None}
+
+
+def supabase_upsert(
+    table: str,
+    rows: Any,
+    *,
+    on_conflict: Optional[str] = None,
+) -> Any:
+    if not rows:
+        return None
+
+    if isinstance(rows, dict):
+        payload = remove_none_values(rows)
+    else:
+        payload = [remove_none_values(row) for row in rows if row]
+
+    params = {"on_conflict": on_conflict} if on_conflict else None
+    return supabase_request(
+        "POST",
+        table,
+        params=params,
+        json_body=payload,
+        prefer="resolution=merge-duplicates,return=representation",
+    )
+
+
+async def ingest_fmp_to_warehouse(symbol: str) -> Dict[str, Any]:
+    if not supabase_is_configured():
+        return {
+            "status": "skipped",
+            "reason": "Supabase is not configured.",
+            "symbol": symbol,
+        }
+
+    if not fmp_is_configured():
+        return {
+            "status": "skipped",
+            "reason": "FMP_API_KEY is not configured.",
+            "symbol": symbol,
+        }
+
+    run_rows = supabase_request(
+        "POST",
+        "qfin_data_source_runs",
+        json_body={
+            "symbol": symbol,
+            "requested_symbol": symbol,
+            "provider": "fmp",
+            "endpoint": "bundle",
+            "request_params": {"limit": 5},
+            "status": "started",
+            "started_at": utc_now(),
+        },
+        prefer="return=representation",
+    )
+
+    run_id = None
+    if isinstance(run_rows, list) and run_rows:
+        run_id = run_rows[0].get("id")
+
+    try:
+        bundle = await fetch_fmp_bundle(symbol, limit=5)
+
+        profile = normalize_profile(symbol, bundle)
+        statement_rows = normalize_statement_rows(symbol, bundle)
+        valuation = calculate_valuation_snapshot(symbol, bundle)
+        bank_kpi = calculate_bank_kpi_row(symbol, bundle)
+
+        if run_id:
+            for row in statement_rows:
+                row["retrieval_run_id"] = run_id
+            if valuation:
+                valuation["retrieval_run_id"] = run_id
+            if bank_kpi:
+                bank_kpi["retrieval_run_id"] = run_id
+
+        years = sorted(
+            {
+                int(row["fiscal_year"])
+                for row in statement_rows
+                if row.get("fiscal_year")
+            },
+            reverse=True,
+        )[:5]
+
+        if not years:
+            current_year = datetime.now(timezone.utc).year
+            years = [current_year - offset for offset in range(5)]
+
+        coverage_rows = build_metric_coverage(
+            symbol,
+            years,
+            statement_rows,
+            valuation,
+            bank_kpi,
+        )
+        if run_id:
+            for row in coverage_rows:
+                row["retrieval_run_id"] = run_id
+
+        if profile:
+            supabase_upsert(
+                "qfin_company_profiles",
+                profile,
+                on_conflict="symbol",
+            )
+
+        if statement_rows:
+            supabase_upsert(
+                "qfin_financial_statements",
+                statement_rows,
+                on_conflict="symbol,fiscal_year,fiscal_period,period_type,statement_type,metric_name,source",
+            )
+
+        if valuation:
+            supabase_upsert(
+                "qfin_valuation_snapshots",
+                valuation,
+                on_conflict="symbol,snapshot_date,fiscal_period,source",
+            )
+
+        if bank_kpi:
+            supabase_upsert(
+                "qfin_bank_kpis",
+                bank_kpi,
+                on_conflict="symbol,fiscal_year,fiscal_period,period_type,source",
+            )
+
+        if coverage_rows:
+            supabase_upsert(
+                "qfin_metric_coverage",
+                coverage_rows,
+                on_conflict="symbol,fiscal_year,fiscal_period,metric_group,metric_name",
+            )
+
+        if run_id:
+            supabase_request(
+                "PATCH",
+                "qfin_data_source_runs",
+                params={"id": f"eq.{run_id}"},
+                json_body={
+                    "status": bundle.get("status", "success"),
+                    "rows_inserted": len(statement_rows)
+                    + (1 if profile else 0)
+                    + (1 if valuation else 0)
+                    + (1 if bank_kpi else 0)
+                    + len(coverage_rows),
+                    "warnings": bundle.get("warnings", []),
+                    "finished_at": utc_now(),
+                },
+            )
+
+        return {
+            "status": bundle.get("status", "success"),
+            "symbol": symbol,
+            "profile_saved": bool(profile),
+            "statement_rows": len(statement_rows),
+            "valuation_saved": bool(valuation),
+            "bank_kpi_saved": bool(bank_kpi),
+            "coverage_rows": len(coverage_rows),
+            "warnings": bundle.get("warnings", []),
+        }
+
+    except Exception as exc:
+        if run_id:
+            supabase_request(
+                "PATCH",
+                "qfin_data_source_runs",
+                params={"id": f"eq.{run_id}"},
+                json_body={
+                    "status": "failed",
+                    "error_message": str(exc)[:500],
+                    "finished_at": utc_now(),
+                },
+            )
+        return {
+            "status": "failed",
+            "symbol": symbol,
+            "error": str(exc)[:500],
+        }
 
 
 def parse_iso_datetime(value: Optional[str]) -> datetime:
@@ -1778,9 +1971,15 @@ async def generate_agent_reply(query: str, provided_ticker: Optional[str] = None
         comparison_results = await asyncio.gather(
             *(fetch_financial_data_async(ticker) for ticker in route["tickers"])
         )
+        warehouse_results = await asyncio.gather(
+            *(ingest_fmp_to_warehouse(ticker) for ticker in route["tickers"])
+        )
         facts = {
-            ticker: data
-            for ticker, data in zip(route["tickers"], comparison_results)
+            ticker: {
+                **data,
+                "warehouse": warehouse,
+            }
+            for ticker, data, warehouse in zip(route["tickers"], comparison_results, warehouse_results)
         }
         evidence = build_evidence_packet(query, route, facts, used_live_data=True)
         if not qwen_is_configured():
@@ -1804,6 +2003,8 @@ async def generate_agent_reply(query: str, provided_ticker: Optional[str] = None
 
     if route["kind"] == "company":
         facts = await fetch_financial_data_async(route["ticker"])
+        warehouse_result = await ingest_fmp_to_warehouse(route["ticker"])
+        facts["warehouse"] = warehouse_result
         evidence = build_evidence_packet(query, route, facts, used_live_data=True)
         if not qwen_is_configured():
             content = (
@@ -2611,9 +2812,10 @@ def health():
     return {
         "status": "ok",
         "service": "qfin-terminal-api",
-        "version": "qfin-agent-2.6",
+        "version": "qfin-agent-2.7",
         "qwen_configured": qwen_is_configured(),
         "supabase_configured": supabase_is_configured(),
+        "fmp_configured": fmp_is_configured(),
         "symbol_master_table": SUPABASE_SYMBOL_TABLE,
         "public_api_registry": "enabled",
         "agent_runtime": "router-evidence-risk-v1",
@@ -2629,6 +2831,12 @@ def agent_api_registry():
 @app.get("/agent/sessions/recent")
 def agent_recent_sessions():
     return {"sessions": AGENT_SESSION_LOGS[:10], "count": len(AGENT_SESSION_LOGS)}
+
+
+@app.post("/warehouse/ingest/{symbol}")
+async def warehouse_ingest_symbol(symbol: str) -> Dict[str, Any]:
+    resolved = resolve_single_ticker(symbol, allow_search=False) or resolve_single_ticker(symbol) or norm_symbol(symbol)
+    return await ingest_fmp_to_warehouse(resolved)
 
 
 @app.post("/agent/chat")
