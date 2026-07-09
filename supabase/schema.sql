@@ -1,8 +1,10 @@
--- Supabase tables already created in your connected project.
+-- QFin Terminal Supabase schema
+-- Keep this file in sync with the connected Supabase project.
 -- Project URL: https://gdwfsdmheymfhwberted.supabase.co
 
+create schema if not exists extensions;
 create extension if not exists pgcrypto;
-create extension if not exists pg_trgm;
+create extension if not exists pg_trgm with schema extensions;
 
 create table if not exists public.qfin_reports (
   id uuid primary key default gen_random_uuid(),
@@ -11,6 +13,8 @@ create table if not exists public.qfin_reports (
   company_name text,
   ticker text,
   source_type text not null,
+  period_label text,
+  currency text,
   raw_input jsonb not null default '{}'::jsonb,
   computed_metrics jsonb not null default '{}'::jsonb,
   risk_flags jsonb not null default '[]'::jsonb,
@@ -19,8 +23,68 @@ create table if not exists public.qfin_reports (
   updated_at timestamptz not null default now()
 );
 
+create index if not exists qfin_reports_owner_created_idx
+  on public.qfin_reports (owner_id, created_at desc);
+
+create table if not exists public.qfin_watchlist (
+  id uuid primary key default gen_random_uuid(),
+  owner_id uuid not null references auth.users(id) on delete cascade,
+  ticker text not null,
+  company_name text,
+  notes text,
+  tags text[] not null default '{}',
+  last_snapshot jsonb not null default '{}'::jsonb,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create index if not exists qfin_watchlist_owner_idx
+  on public.qfin_watchlist (owner_id, created_at desc);
+
+create table if not exists public.qfin_model_templates (
+  id uuid primary key default gen_random_uuid(),
+  owner_id uuid references auth.users(id) on delete set null,
+  title text not null,
+  description text,
+  category text not null default 'general',
+  is_public boolean not null default false,
+  template_schema jsonb not null default '{}'::jsonb,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create index if not exists idx_qfin_model_templates_owner_id
+  on public.qfin_model_templates(owner_id);
+
+create table if not exists public.qfin_community_posts (
+  id uuid primary key default gen_random_uuid(),
+  owner_id uuid not null references auth.users(id) on delete cascade,
+  title text not null,
+  body text not null,
+  post_type text not null default 'discussion',
+  related_ticker text,
+  related_report_id uuid references public.qfin_reports(id) on delete set null,
+  model_template_id uuid references public.qfin_model_templates(id) on delete set null,
+  is_public boolean not null default true,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create index if not exists qfin_community_posts_created_idx
+  on public.qfin_community_posts (created_at desc);
+
+create index if not exists idx_qfin_community_posts_owner_id
+  on public.qfin_community_posts(owner_id);
+
+create index if not exists idx_qfin_community_posts_related_report_id
+  on public.qfin_community_posts(related_report_id);
+
+create index if not exists idx_qfin_community_posts_model_template_id
+  on public.qfin_community_posts(model_template_id);
+
 create table if not exists public.qfin_forum_threads (
   id uuid primary key default gen_random_uuid(),
+  owner_id uuid default auth.uid() references auth.users(id) on delete set null,
   title text not null,
   body text not null,
   author text not null,
@@ -34,8 +98,12 @@ create table if not exists public.qfin_forum_threads (
 create index if not exists qfin_forum_threads_score_created_idx
   on public.qfin_forum_threads (score desc, created_at desc);
 
+create index if not exists idx_qfin_forum_threads_owner_id
+  on public.qfin_forum_threads(owner_id);
+
 create table if not exists public.qfin_builder_models (
   id uuid primary key default gen_random_uuid(),
+  owner_id uuid default auth.uid() references auth.users(id) on delete set null,
   name text not null,
   author text not null,
   summary text not null default '',
@@ -55,16 +123,14 @@ create table if not exists public.qfin_builder_models (
   updated_at timestamptz not null default now()
 );
 
-alter table public.qfin_builder_models
-  add column if not exists ticker text,
-  add column if not exists profile jsonb not null default '{}'::jsonb,
-  add column if not exists series jsonb not null default '[]'::jsonb,
-  add column if not exists highlights jsonb not null default '[]'::jsonb,
-  add column if not exists status text not null default 'research',
-  add column if not exists last_run_result jsonb not null default '{}'::jsonb;
-
 create index if not exists qfin_builder_models_visibility_score_idx
   on public.qfin_builder_models (visibility, score desc, created_at desc);
+
+create index if not exists idx_qfin_builder_models_owner_id
+  on public.qfin_builder_models(owner_id);
+
+create index if not exists idx_qfin_builder_models_visibility_owner
+  on public.qfin_builder_models(visibility, owner_id);
 
 create table if not exists public.qfin_symbol_master (
   id uuid primary key default gen_random_uuid(),
@@ -84,22 +150,6 @@ create table if not exists public.qfin_symbol_master (
   updated_at timestamptz not null default now()
 );
 
-alter table public.qfin_symbol_master
-  add column if not exists yahoo_symbol text not null default '',
-  add column if not exists exchange text not null default '',
-  add column if not exists market text not null default '',
-  add column if not exists country text not null default '',
-  add column if not exists currency text not null default '',
-  add column if not exists aliases jsonb not null default '[]'::jsonb,
-  add column if not exists search_text text not null default '',
-  add column if not exists source text not null default 'manual',
-  add column if not exists priority integer not null default 50,
-  add column if not exists active boolean not null default true,
-  add column if not exists updated_at timestamptz not null default now();
-
-create unique index if not exists qfin_symbol_master_symbol_idx
-  on public.qfin_symbol_master (symbol);
-
 create index if not exists qfin_symbol_master_yahoo_symbol_idx
   on public.qfin_symbol_master (yahoo_symbol);
 
@@ -107,9 +157,144 @@ create index if not exists qfin_symbol_master_active_priority_idx
   on public.qfin_symbol_master (active, priority desc);
 
 create index if not exists qfin_symbol_master_search_text_trgm_idx
-  on public.qfin_symbol_master using gin (search_text gin_trgm_ops);
+  on public.qfin_symbol_master using gin (search_text extensions.gin_trgm_ops);
 
+alter table public.qfin_reports enable row level security;
+alter table public.qfin_watchlist enable row level security;
+alter table public.qfin_model_templates enable row level security;
+alter table public.qfin_community_posts enable row level security;
+alter table public.qfin_forum_threads enable row level security;
+alter table public.qfin_builder_models enable row level security;
 alter table public.qfin_symbol_master enable row level security;
+
+-- RLS policies. Use (select auth.uid()) for better planner behavior at scale.
+drop policy if exists "qfin_reports_select_own" on public.qfin_reports;
+create policy "qfin_reports_select_own"
+  on public.qfin_reports for select to authenticated
+  using ((select auth.uid()) = owner_id);
+
+drop policy if exists "qfin_reports_insert_own" on public.qfin_reports;
+create policy "qfin_reports_insert_own"
+  on public.qfin_reports for insert to authenticated
+  with check ((select auth.uid()) = owner_id);
+
+drop policy if exists "qfin_reports_update_own" on public.qfin_reports;
+create policy "qfin_reports_update_own"
+  on public.qfin_reports for update to authenticated
+  using ((select auth.uid()) = owner_id)
+  with check ((select auth.uid()) = owner_id);
+
+drop policy if exists "qfin_watchlist_select_own" on public.qfin_watchlist;
+create policy "qfin_watchlist_select_own"
+  on public.qfin_watchlist for select to authenticated
+  using ((select auth.uid()) = owner_id);
+
+drop policy if exists "qfin_watchlist_insert_own" on public.qfin_watchlist;
+create policy "qfin_watchlist_insert_own"
+  on public.qfin_watchlist for insert to authenticated
+  with check ((select auth.uid()) = owner_id);
+
+drop policy if exists "qfin_watchlist_update_own" on public.qfin_watchlist;
+create policy "qfin_watchlist_update_own"
+  on public.qfin_watchlist for update to authenticated
+  using ((select auth.uid()) = owner_id)
+  with check ((select auth.uid()) = owner_id);
+
+drop policy if exists "qfin_model_templates_read_public_or_own" on public.qfin_model_templates;
+create policy "qfin_model_templates_read_public_or_own"
+  on public.qfin_model_templates for select to authenticated
+  using (is_public = true or (select auth.uid()) = owner_id);
+
+drop policy if exists "qfin_model_templates_insert_own" on public.qfin_model_templates;
+create policy "qfin_model_templates_insert_own"
+  on public.qfin_model_templates for insert to authenticated
+  with check ((select auth.uid()) = owner_id);
+
+drop policy if exists "qfin_model_templates_update_own" on public.qfin_model_templates;
+create policy "qfin_model_templates_update_own"
+  on public.qfin_model_templates for update to authenticated
+  using ((select auth.uid()) = owner_id)
+  with check ((select auth.uid()) = owner_id);
+
+drop policy if exists "qfin_community_posts_read_public_or_own" on public.qfin_community_posts;
+create policy "qfin_community_posts_read_public_or_own"
+  on public.qfin_community_posts for select to authenticated
+  using (is_public = true or (select auth.uid()) = owner_id);
+
+drop policy if exists "qfin_community_posts_insert_own" on public.qfin_community_posts;
+create policy "qfin_community_posts_insert_own"
+  on public.qfin_community_posts for insert to authenticated
+  with check ((select auth.uid()) = owner_id);
+
+drop policy if exists "qfin_community_posts_update_own" on public.qfin_community_posts;
+create policy "qfin_community_posts_update_own"
+  on public.qfin_community_posts for update to authenticated
+  using ((select auth.uid()) = owner_id)
+  with check ((select auth.uid()) = owner_id);
+
+drop policy if exists "forum_threads_public_read" on public.qfin_forum_threads;
+create policy "forum_threads_public_read"
+  on public.qfin_forum_threads for select to anon, authenticated
+  using (true);
+
+drop policy if exists "forum_threads_authenticated_insert" on public.qfin_forum_threads;
+create policy "forum_threads_authenticated_insert"
+  on public.qfin_forum_threads for insert to authenticated
+  with check (
+    owner_id = (select auth.uid())
+    and nullif(btrim(title), '') is not null
+    and nullif(btrim(body), '') is not null
+    and nullif(btrim(author), '') is not null
+  );
+
+drop policy if exists "forum_threads_owner_update" on public.qfin_forum_threads;
+create policy "forum_threads_owner_update"
+  on public.qfin_forum_threads for update to authenticated
+  using (owner_id = (select auth.uid()))
+  with check (
+    owner_id = (select auth.uid())
+    and nullif(btrim(title), '') is not null
+    and nullif(btrim(body), '') is not null
+    and nullif(btrim(author), '') is not null
+  );
+
+drop policy if exists "forum_threads_owner_delete" on public.qfin_forum_threads;
+create policy "forum_threads_owner_delete"
+  on public.qfin_forum_threads for delete to authenticated
+  using (owner_id = (select auth.uid()));
+
+drop policy if exists "builder_models_public_or_owner_read" on public.qfin_builder_models;
+create policy "builder_models_public_or_owner_read"
+  on public.qfin_builder_models for select to anon, authenticated
+  using (visibility = 'public' or owner_id = (select auth.uid()));
+
+drop policy if exists "builder_models_authenticated_insert" on public.qfin_builder_models;
+create policy "builder_models_authenticated_insert"
+  on public.qfin_builder_models for insert to authenticated
+  with check (
+    owner_id = (select auth.uid())
+    and nullif(btrim(name), '') is not null
+    and nullif(btrim(author), '') is not null
+    and nullif(btrim(code), '') is not null
+    and visibility in ('public', 'private')
+  );
+
+drop policy if exists "builder_models_owner_update" on public.qfin_builder_models;
+create policy "builder_models_owner_update"
+  on public.qfin_builder_models for update to authenticated
+  using (owner_id = (select auth.uid()))
+  with check (
+    owner_id = (select auth.uid())
+    and nullif(btrim(name), '') is not null
+    and nullif(btrim(author), '') is not null
+    and nullif(btrim(code), '') is not null
+    and visibility in ('public', 'private')
+  );
+
+drop policy if exists "builder_models_owner_delete" on public.qfin_builder_models;
+create policy "builder_models_owner_delete"
+  on public.qfin_builder_models for delete to authenticated
+  using (owner_id = (select auth.uid()));
 
 drop policy if exists "qfin_symbol_master_service_role_all" on public.qfin_symbol_master;
 create policy "qfin_symbol_master_service_role_all"
