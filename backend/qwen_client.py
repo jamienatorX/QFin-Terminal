@@ -1,7 +1,11 @@
+import logging
 import os
 from typing import Any, Dict, List, Optional
 
 import httpx
+
+
+logger = logging.getLogger("qfin.qwen")
 
 
 class QwenClientError(Exception):
@@ -14,13 +18,130 @@ def qwen_is_configured() -> bool:
 
 def _timeout_seconds() -> float:
     try:
-        return float(os.getenv("DASHSCOPE_TIMEOUT_SECONDS", "180"))
+        return float(os.getenv("DASHSCOPE_TIMEOUT_SECONDS", "120"))
     except Exception:
-        return 180.0
+        return 120.0
+
+
+def _model_profile() -> Dict[str, str]:
+    """
+    QFin model routing profile.
+
+    Keep Qwen3.7-Max for deep analyst work, but avoid using it for every
+    request so quick summaries stay faster and cheaper.
+    """
+    fast_model = os.getenv("DASHSCOPE_MODEL_FAST") or os.getenv("DASHSCOPE_MODEL") or "qwen3.7-plus"
+    return {
+        "deep": os.getenv("DASHSCOPE_MODEL_DEEP") or "qwen3.7-max",
+        "fast": fast_model,
+        "flash": os.getenv("DASHSCOPE_MODEL_FLASH") or "qwen3.6-flash",
+        "vision": os.getenv("DASHSCOPE_MODEL_VISION") or fast_model,
+        "news": os.getenv("DASHSCOPE_NEWS_MODEL") or fast_model,
+    }
+
+
+def _content_to_text(content: Any) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: List[str] = []
+        for item in content:
+            if isinstance(item, dict):
+                if isinstance(item.get("text"), str):
+                    parts.append(item["text"])
+                elif isinstance(item.get("type"), str):
+                    parts.append(item["type"])
+            else:
+                parts.append(str(item))
+        return "\n".join(parts)
+    return str(content)
+
+
+def _message_text(messages: List[Dict[str, Any]]) -> str:
+    return "\n".join(_content_to_text(message.get("content", "")) for message in messages)
+
+
+def _detect_task_type(messages: List[Dict[str, Any]]) -> str:
+    text = _message_text(messages).lower()
+
+    vision_signals = [
+        "image_url",
+        "input_image",
+        "screenshot",
+        "uploaded image",
+        "analyze image",
+        "analyse image",
+        "chart image",
+        "video analysis",
+        "analyze video",
+        "analyse video",
+    ]
+    if any(signal in text for signal in vision_signals):
+        return "vision"
+
+    news_signals = [
+        "internal route: market news summary",
+        "summarize the five news items",
+        "headline",
+        "market sentiment",
+    ]
+    if any(signal in text for signal in news_signals):
+        return "news"
+
+    deep_signals = [
+        "internal route: exact ticker comparison",
+        "internal route: single company analysis",
+        "detailed side-by-side finance comparison",
+        "full analysis",
+        "deep dive",
+        "comprehensive",
+        "complete breakdown",
+        "in-depth",
+        "in depth",
+        "analyst-grade",
+        "financial report",
+    ]
+    if any(signal in text for signal in deep_signals):
+        return "deep"
+
+    public_or_summary_signals = [
+        "public api facts",
+        "quick summary",
+        "summarize",
+        "summarise",
+        "summary",
+        "internal route: finance concept",
+    ]
+    if any(signal in text for signal in public_or_summary_signals):
+        return "fast"
+
+    return "fast"
+
+
+def _dedupe_models(models: List[str]) -> List[str]:
+    clean: List[str] = []
+    for model in models:
+        if model and model not in clean:
+            clean.append(model)
+    return clean
+
+
+def _model_chain(task_type: str, explicit_model: Optional[str] = None) -> List[str]:
+    if explicit_model:
+        return [explicit_model]
+
+    profile = _model_profile()
+    if task_type == "deep":
+        return _dedupe_models([profile["deep"], profile["fast"], profile["flash"]])
+    if task_type == "vision":
+        return _dedupe_models([profile["vision"], profile["fast"], profile["flash"]])
+    if task_type == "news":
+        return _dedupe_models([profile["news"], profile["fast"], profile["flash"]])
+    return _dedupe_models([profile["fast"], profile["flash"]])
 
 
 async def call_qwen(
-    messages: List[Dict[str, str]],
+    messages: List[Dict[str, Any]],
     model: Optional[str] = None,
     response_format: Optional[Dict[str, str]] = None,
     temperature: float = 0.2,
@@ -34,50 +155,76 @@ async def call_qwen(
         "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
     ).rstrip("/")
 
-    model_name = model or os.getenv("DASHSCOPE_MODEL", "qwen-plus")
+    task_type = _detect_task_type(messages)
+    candidate_models = _model_chain(task_type, model)
     timeout_seconds = _timeout_seconds()
-
-    payload: Dict[str, Any] = {
-        "model": model_name,
-        "messages": messages,
-        "temperature": temperature,
-    }
-
-    if response_format:
-        payload["response_format"] = response_format
 
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
     }
 
-    try:
-        timeout = httpx.Timeout(timeout_seconds, connect=30.0)
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            response = await client.post(
-                f"{base_url}/chat/completions",
-                headers=headers,
-                json=payload,
+    last_error: Optional[QwenClientError] = None
+
+    for model_name in candidate_models:
+        payload: Dict[str, Any] = {
+            "model": model_name,
+            "messages": messages,
+            "temperature": temperature,
+        }
+
+        if response_format:
+            payload["response_format"] = response_format
+
+        try:
+            timeout = httpx.Timeout(timeout_seconds, connect=30.0)
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                response = await client.post(
+                    f"{base_url}/chat/completions",
+                    headers=headers,
+                    json=payload,
+                )
+        except httpx.TimeoutException as e:
+            last_error = QwenClientError(
+                f"Qwen request timed out after {timeout_seconds:.0f}s. "
+                f"Model={model_name}. Task={task_type}. Base URL={base_url}. "
+                f"Error type={type(e).__name__}."
             )
-    except httpx.TimeoutException as e:
-        raise QwenClientError(
-            f"Qwen request timed out after {timeout_seconds:.0f}s. "
-            f"Model={model_name}. Base URL={base_url}. Error type={type(e).__name__}."
-        ) from e
-    except httpx.RequestError as e:
-        raise QwenClientError(
-            f"Qwen network request failed. Model={model_name}. Base URL={base_url}. "
-            f"Error type={type(e).__name__}. Error={repr(e)}"
-        ) from e
+            logger.warning("Qwen timeout on model %s; trying fallback if available.", model_name)
+            continue
+        except httpx.RequestError as e:
+            last_error = QwenClientError(
+                f"Qwen network request failed. Model={model_name}. Task={task_type}. Base URL={base_url}. "
+                f"Error type={type(e).__name__}. Error={repr(e)}"
+            )
+            logger.warning("Qwen network error on model %s; trying fallback if available.", model_name)
+            continue
 
-    if response.status_code >= 400:
-        raise QwenClientError(
-            f"Qwen API error {response.status_code}. Model={model_name}. Response={response.text[:1200]}"
-        )
+        if response.status_code >= 400:
+            error = QwenClientError(
+                f"Qwen API error {response.status_code}. Model={model_name}. Task={task_type}. "
+                f"Response={response.text[:1200]}"
+            )
+            if response.status_code in {401, 403}:
+                raise error
+            last_error = error
+            logger.warning("Qwen API error on model %s; trying fallback if available.", model_name)
+            continue
 
-    try:
-        return response.json()
-    except Exception as e:
-        raise QwenClientError(
-            f"Qwen returned non-JSON response. Model={model_name}. Error={repr(e)}. Body={response.text[:1200]}"
-        ) from e
+        try:
+            data = response.json()
+            data["_qfin_model_used"] = model_name
+            data["_qfin_task_type"] = task_type
+            return data
+        except Exception as e:
+            last_error = QwenClientError(
+                f"Qwen returned non-JSON response. Model={model_name}. Task={task_type}. "
+                f"Error={repr(e)}. Body={response.text[:1200]}"
+            )
+            logger.warning("Qwen returned non-JSON on model %s; trying fallback if available.", model_name)
+            continue
+
+    if last_error:
+        raise last_error
+
+    raise QwenClientError("No Qwen models were configured for this request.")
