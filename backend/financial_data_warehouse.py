@@ -31,12 +31,15 @@ def _clean_symbol(value: str) -> str:
 
 def _symbol_candidates(symbol: str) -> List[str]:
     cleaned = _clean_symbol(symbol)
-    if not cleaned:
-        return []
-    candidates = [cleaned]
-    if "." in cleaned:
-        candidates.append(cleaned.split(".", 1)[0])
-    return list(dict.fromkeys(candidate for candidate in candidates if candidate))
+    # Exchange suffixes are part of the identity. Dropping `.JK`, `.SI`, etc.
+    # can silently fetch a completely different security from the provider.
+    return [cleaned] if cleaned else []
+
+
+def _payload_matches_symbol(payload: Any, requested_symbol: str) -> bool:
+    row = _first_list_row(payload)
+    provider_symbol = _clean_symbol(str(row.get("symbol") or ""))
+    return not provider_symbol or provider_symbol == _clean_symbol(requested_symbol)
 
 
 async def _fmp_get(path: str, params: Optional[Dict[str, Any]] = None) -> Any:
@@ -90,14 +93,16 @@ async def fetch_fmp_bundle(symbol: str, limit: int = 5) -> Dict[str, Any]:
             params = {"symbol": candidate, **base_params}
             try:
                 payload = await _fmp_get(path, params=params)
-                if isinstance(payload, list) and payload:
+                if isinstance(payload, list) and payload and _payload_matches_symbol(payload, requested_symbol):
                     result = payload
                     matched_symbol = candidate
                     break
-                if isinstance(payload, dict) and payload:
+                if isinstance(payload, dict) and payload and _payload_matches_symbol(payload, requested_symbol):
                     result = payload
                     matched_symbol = candidate
                     break
+                if payload:
+                    warnings.append(f"{endpoint_name}: symbol_mismatch")
             except Exception as exc:
                 last_error = exc
         if matched_symbol:
@@ -500,3 +505,4 @@ def build_metric_coverage(
             )
 
     return coverage_rows
+

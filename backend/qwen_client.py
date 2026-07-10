@@ -1,5 +1,6 @@
 import logging
 import os
+import time
 from typing import Any, Dict, List, Optional
 
 import httpx
@@ -18,9 +19,25 @@ def qwen_is_configured() -> bool:
 
 def _timeout_seconds() -> float:
     try:
-        return float(os.getenv("DASHSCOPE_TIMEOUT_SECONDS", "120"))
+        return max(5.0, float(os.getenv("DASHSCOPE_TIMEOUT_SECONDS", "45")))
     except Exception:
-        return 120.0
+        return 45.0
+
+
+def _total_timeout_seconds() -> float:
+    try:
+        return max(10.0, float(os.getenv("DASHSCOPE_TOTAL_TIMEOUT_SECONDS", "75")))
+    except Exception:
+        return 75.0
+
+
+def _max_tokens(task_type: str) -> int:
+    defaults = {"deep": 2200, "vision": 1600, "news": 1200, "fast": 1000, "general": 700}
+    env_name = f"DASHSCOPE_MAX_TOKENS_{task_type.upper()}"
+    try:
+        return max(256, int(os.getenv(env_name, str(defaults.get(task_type, 1000)))))
+    except Exception:
+        return defaults.get(task_type, 1000)
 
 
 def _model_profile() -> Dict[str, str]:
@@ -80,9 +97,7 @@ def _detect_task_type(messages: List[Dict[str, Any]]) -> str:
         return "vision"
 
     deep_signals = [
-        "internal route: exact ticker comparison",
-        "internal route: single company analysis",
-        "detailed side-by-side finance comparison",
+        "analysis depth: deep",
         "full analysis",
         "deep dive",
         "comprehensive",
@@ -104,8 +119,18 @@ def _detect_task_type(messages: List[Dict[str, Any]]) -> str:
     if any(signal in text for signal in news_signals):
         return "news"
 
+    finance_signals = [
+        "internal route: exact ticker comparison",
+        "internal route: single company analysis",
+        "internal route: finance concept",
+    ]
+    if any(signal in text for signal in finance_signals):
+        return "fast"
+
+    if "public api facts" in text:
+        return "general"
+
     public_or_summary_signals = [
-        "public api facts",
         "quick summary",
         "summarize",
         "summarise",
@@ -115,7 +140,7 @@ def _detect_task_type(messages: List[Dict[str, Any]]) -> str:
     if any(signal in text for signal in public_or_summary_signals):
         return "fast"
 
-    return "fast"
+    return "general"
 
 
 def _dedupe_models(models: List[str]) -> List[str]:
@@ -137,6 +162,8 @@ def _model_chain(task_type: str, explicit_model: Optional[str] = None) -> List[s
         return _dedupe_models([profile["vision"], profile["fast"], profile["flash"]])
     if task_type == "news":
         return _dedupe_models([profile["news"], profile["fast"], profile["flash"]])
+    if task_type == "general":
+        return _dedupe_models([profile["flash"], profile["fast"]])
     return _dedupe_models([profile["fast"], profile["flash"]])
 
 
@@ -157,7 +184,9 @@ async def call_qwen(
 
     task_type = _detect_task_type(messages)
     candidate_models = _model_chain(task_type, model)
-    timeout_seconds = _timeout_seconds()
+    attempt_timeout_seconds = _timeout_seconds()
+    total_timeout_seconds = _total_timeout_seconds()
+    deadline = time.monotonic() + total_timeout_seconds
 
     headers = {
         "Authorization": f"Bearer {api_key}",
@@ -171,13 +200,19 @@ async def call_qwen(
             "model": model_name,
             "messages": messages,
             "temperature": temperature,
+            "max_tokens": _max_tokens(task_type),
         }
 
         if response_format:
             payload["response_format"] = response_format
 
+        remaining_seconds = deadline - time.monotonic()
+        if remaining_seconds <= 1.0:
+            break
+        timeout_seconds = min(attempt_timeout_seconds, remaining_seconds)
+
         try:
-            timeout = httpx.Timeout(timeout_seconds, connect=30.0)
+            timeout = httpx.Timeout(timeout_seconds, connect=min(10.0, timeout_seconds))
             async with httpx.AsyncClient(timeout=timeout) as client:
                 response = await client.post(
                     f"{base_url}/chat/completions",
@@ -227,4 +262,7 @@ async def call_qwen(
     if last_error:
         raise last_error
 
-    raise QwenClientError("No Qwen models were configured for this request.")
+    raise QwenClientError(
+        f"Qwen could not complete the request within the {total_timeout_seconds:.0f}s total response budget."
+    )
+

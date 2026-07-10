@@ -21,7 +21,9 @@ services:
       - key: DASHSCOPE_NEWS_MODEL
         value: qwen3.7-plus
       - key: DASHSCOPE_TIMEOUT_SECONDS
-        value: "120"
+        value: "45"
+      - key: DASHSCOPE_TOTAL_TIMEOUT_SECONDS
+        value: "75"
       - key: NEWSAPI_KEY
         sync: false
       - key: SUPABASE_URL
@@ -32,3 +34,4 @@ services:
         sync: false
       - key: FINNHUB_API_KEY
         sync: false
+

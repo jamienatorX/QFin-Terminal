@@ -219,8 +219,10 @@ MARKET_CONTEXTS = {
 }
 
 STOP = {
-    "AI", "API", "CEO", "CFO", "GDP", "CPI", "USD", "IDR", "THE", "AND", "YOU",
-    "HELLO", "HI", "HEY", "OK", "YES", "NO", "MODE", "QFIN", "S", "P", "SP", "VS"
+    "AI", "API", "CEO", "CFO", "GDP", "CPI", "USD", "IDR", "WACC", "DCF", "ROE",
+    "ROA", "NIM", "NPL", "CASA", "CAGR", "EBIT", "EBITDA", "EV", "IRR", "NPV",
+    "THE", "AND", "YOU", "HELLO", "HI", "HEY", "OK", "YES", "NO", "MODE", "QFIN",
+    "S", "P", "SP", "VS"
 }
 
 FINANCE_WORDS = [
@@ -228,7 +230,10 @@ FINANCE_WORDS = [
     "revenue", "profit", "margin", "debt", "cash flow", "valuation", "price", "earnings",
     "risk", "multiple", "pe", "pb", "ratio", "quarter", "annual", "quarterly", "eps",
     "dividend", "yield", "profitability", "free cash flow", "fcf", "income statement",
-    "balance sheet", "capm", "var", "beta", "sharpe", "sortino", "volatility"
+    "balance sheet", "capm", "var", "beta", "sharpe", "sortino", "volatility",
+    "wacc", "dcf", "discounted cash flow", "roe", "roa", "nim", "npl", "casa",
+    "cagr", "ebit", "ebitda", "enterprise value", "irr", "npv", "cost of capital",
+    "portfolio", "investing", "investment", "budget", "emergency fund", "personal finance"
 ]
 
 DETAILED_SIGNALS = [
@@ -243,6 +248,9 @@ DETAILED_SIGNALS = [
     "don't hold back",
     "dont hold back",
     "give me everything",
+    "lengkap",
+    "mendalam",
+    "secara detail",
 ]
 
 SUPABASE_FORUM_TABLE = "qfin_forum_threads"
@@ -581,6 +589,13 @@ def warehouse_snapshot_is_usable(snapshot: Dict[str, Any]) -> bool:
     )
 
 
+def warehouse_row_matches_symbol(row: Optional[Dict[str, Any]], symbol: str) -> bool:
+    if not row:
+        return False
+    provider_symbol = norm_symbol(str(row.get("provider_symbol") or ""))
+    return not provider_symbol or provider_symbol == norm_symbol(symbol)
+
+
 def load_warehouse_snapshot(symbol: str) -> Dict[str, Any]:
     base = {
         "symbol": symbol,
@@ -620,13 +635,20 @@ def load_warehouse_snapshot(symbol: str) -> Dict[str, Any]:
             "qfin_metric_coverage",
             params={"select": "*", "symbol": f"eq.{symbol}", "order": "fiscal_year.desc,metric_group.asc,metric_name.asc", "limit": "250"},
         ) or []
+        profile = profile_rows[0] if isinstance(profile_rows, list) and profile_rows else None
+        valuation = valuation_rows[0] if isinstance(valuation_rows, list) and valuation_rows else None
+        bank_kpi = bank_rows[0] if isinstance(bank_rows, list) and bank_rows else None
+        statement_rows = [
+            row for row in statement_rows
+            if isinstance(row, dict) and warehouse_row_matches_symbol(row, symbol)
+        ] if isinstance(statement_rows, list) else []
         snapshot = {
             "symbol": symbol,
             "status": "available",
-            "profile": profile_rows[0] if isinstance(profile_rows, list) and profile_rows else None,
-            "valuation": valuation_rows[0] if isinstance(valuation_rows, list) and valuation_rows else None,
-            "bank_kpi": bank_rows[0] if isinstance(bank_rows, list) and bank_rows else None,
-            "statement_rows": statement_rows if isinstance(statement_rows, list) else [],
+            "profile": profile if warehouse_row_matches_symbol(profile, symbol) else None,
+            "valuation": valuation if warehouse_row_matches_symbol(valuation, symbol) else None,
+            "bank_kpi": bank_kpi if warehouse_row_matches_symbol(bank_kpi, symbol) else None,
+            "statement_rows": statement_rows,
             "coverage_rows": coverage_rows if isinstance(coverage_rows, list) else [],
         }
         if not warehouse_snapshot_is_usable(snapshot):
@@ -1022,15 +1044,16 @@ def default_symbol_master_records() -> List[Dict[str, Any]]:
 
 
 def extract_chat_query(payload: AgentChatRequest) -> str:
-    if payload.message:
-        return payload.message
-    if payload.query:
-        return payload.query
-    if payload.prompt:
-        return payload.prompt
+    for value in (payload.message, payload.query, payload.prompt):
+        if value and value.strip():
+            return value.strip()
     if payload.messages:
-        users = [m.content for m in payload.messages if (m.role or "user") == "user"]
-        return users[-1] if users else payload.messages[-1].content
+        users = [m.content.strip() for m in payload.messages if (m.role or "user") == "user" and m.content.strip()]
+        if users:
+            return users[-1]
+        fallback_messages = [message.content.strip() for message in payload.messages if message.content.strip()]
+        if fallback_messages:
+            return fallback_messages[-1]
     return "Hello"
 
 
@@ -1038,7 +1061,10 @@ def fast_casual_reply(text: str) -> Optional[str]:
     normalized = normalize_user_text(text)
     if normalized in CASUAL_REPLIES:
         return CASUAL_REPLIES[normalized]
-    if normalized in {"what can you do", "who are you", "help", "menu"}:
+    capability_signals = ("what can you do", "who are you", "help me", "how can you help")
+    if normalized in {"what can you do", "who are you", "help", "menu"} or (
+        len(normalized) <= 160 and any(signal in normalized for signal in capability_signals)
+    ):
         return (
             "I am QFin. I can chat normally, explain finance concepts, analyze companies, compare stocks, "
             "summarize market news, and work through quant finance questions."
@@ -1081,9 +1107,18 @@ def agent_runtime_context() -> str:
     )
 
 
+def has_finance_keywords(text: str) -> bool:
+    normalized = normalize_user_text(text)
+    for keyword in FINANCE_WORDS:
+        pattern = re.escape(keyword).replace(r"\ ", r"\s+")
+        if re.search(rf"\b{pattern}\b", normalized):
+            return True
+    return False
+
+
 def finance_intent(text: str) -> bool:
     lower = text.lower()
-    return any(word in lower for word in FINANCE_WORDS) or any(
+    return has_finance_keywords(text) or any(
         re.search(rf"\b{re.escape(alias)}\b", lower) for alias in ALIASES
     ) or has_symbol_like_token(text) or has_market_context(text)
 
@@ -1102,10 +1137,22 @@ def has_market_context(text: str) -> bool:
 
 
 def has_symbol_like_token(text: str) -> bool:
-    return bool(
-        re.search(r"\$[A-Za-z0-9\.\-]{1,12}\b", text)
-        or re.search(r"\b[A-Z]{2,5}(?:[.\-][A-Z0-9]{1,4})?\b", text)
-    )
+    if re.search(r"\$[A-Za-z0-9\.\-]{1,12}\b", text):
+        return True
+    if re.search(r"\b[A-Z0-9]{1,6}\.[A-Z0-9]{1,4}\b", text):
+        return True
+
+    tokens = [norm_symbol(token) for token in re.findall(r"\b[A-Z]{1,5}(?:-[A-Z])?\b", text)]
+    tokens = [token for token in tokens if token not in STOP]
+    if not tokens:
+        return False
+
+    has_context = has_finance_keywords(text) or has_market_context(text)
+    if has_context:
+        return True
+
+    word_count = len(normalize_user_text(text).split())
+    return word_count <= 4 and any(is_known_market_symbol(token) for token in tokens)
 
 
 def normalize_market_symbol(symbol: str, text: str = "") -> str:
@@ -1153,6 +1200,16 @@ def needs_detail(text: str) -> bool:
     return finance_intent(text) and any(signal in lower for signal in DETAILED_SIGNALS)
 
 
+def company_lookup_intent(text: str) -> bool:
+    return bool(
+        re.search(
+            r"\b(analyze|analyse|company|stock|ticker|shares?|equity|fundamentals?|earnings)\b",
+            text,
+            flags=re.I,
+        )
+    )
+
+
 def extract_symbol_candidates(text: str) -> List[str]:
     found: List[str] = []
     lowered = text.lower()
@@ -1172,9 +1229,14 @@ def extract_symbol_candidates(text: str) -> List[str]:
         if is_known_market_symbol(symbol) and should_accept_direct_symbol(symbol, text) and symbol not in found:
             found.append(symbol)
 
+    accepts_unknown_uppercase = has_finance_keywords(text) or has_market_context(text)
     for token in re.findall(r"\b[A-Z]{1,5}(?:[.\-][A-Z0-9]{1,4})?\b", text):
         symbol = normalize_market_symbol(token, text)
-        if should_accept_direct_symbol(symbol, text) and symbol not in found:
+        if (
+            (is_known_market_symbol(symbol) or accepts_unknown_uppercase)
+            and should_accept_direct_symbol(symbol, text)
+            and symbol not in found
+        ):
             found.append(symbol)
 
     if has_market_context(text):
@@ -1226,7 +1288,7 @@ def symbol_master_terms(text: str, provided: Optional[str] = None) -> List[str]:
         terms.append(norm_symbol(provided))
     for token in re.findall(r"\$?([A-Za-z0-9]{1,8}(?:[.\-][A-Za-z0-9]{1,5})?)\b", text):
         normalized = norm_symbol(token)
-        if normalized not in STOP and normalized not in terms:
+        if normalized not in STOP and len(normalized) >= 3 and normalized not in terms:
             terms.append(normalized)
     cleaned = clean_symbol_lookup_text(text)
     if cleaned and cleaned not in terms:
@@ -1247,7 +1309,7 @@ def symbol_master_score(record: Dict[str, Any], term: str, text: str) -> int:
         score += 120
     if normalized_term and normalized_term in aliases:
         score += 95
-    if normalized_term and normalized_term in search_text:
+    if len(normalized_term) >= 3 and normalized_term in search_text:
         score += 60
     for suffix in suffixes:
         if suffix == "" and "." not in yahoo_symbol:
@@ -1267,7 +1329,7 @@ def local_symbol_master_candidates(term: str, text: str) -> List[Dict[str, Any]]
         search_text = str(record.get("search_text") or "")
         if (
             raw_symbol in {symbol, yahoo_symbol}
-            or (normalized_term and normalized_term in search_text)
+            or (len(normalized_term) >= 3 and normalized_term in search_text)
         ):
             rows.append(record)
     return sorted(rows, key=lambda row: symbol_master_score(row, term, text), reverse=True)
@@ -1292,7 +1354,7 @@ def fetch_symbol_master_candidates(term: str, text: str) -> List[Dict[str, Any]]
                         params={"select": select, "active": "eq.true", field: f"eq.{raw_symbol}", "limit": "10"},
                     ) or []
                 )
-        if len(normalized_term) >= 2:
+        if len(normalized_term) >= 3:
             rows.extend(
                 supabase_request(
                     "GET",
@@ -1488,6 +1550,9 @@ def resolve_single_ticker(text: str, provided: Optional[str] = None, allow_searc
     if provided:
         return resolve_from_symbol_master(text, provided) or normalize_market_symbol(provided, text)
 
+    if not finance_intent(text):
+        return None
+
     candidates = extract_symbol_candidates(text)
     if candidates:
         return candidates[0]
@@ -1503,12 +1568,13 @@ def resolve_single_ticker(text: str, provided: Optional[str] = None, allow_searc
 
 
 def parse_compare_request(text: str) -> Optional[Dict[str, Any]]:
-    match = re.search(r"\bcompare\b(.+?)\b(?:vs\.?|versus)\b(.+)", text, flags=re.I)
+    match = re.search(r"\bcompare\b(.+?)\b(vs\.?|versus|and)\b(.+)", text, flags=re.I)
     if not match:
         return None
 
     left_text = match.group(1).strip(" ,.")
-    right_text = match.group(2).strip(" ,.")
+    separator = match.group(2).lower().rstrip(".")
+    right_text = match.group(3).strip(" ,.")
     topic = "overall financial performance"
 
     topic_candidates = [
@@ -1524,8 +1590,15 @@ def parse_compare_request(text: str) -> Optional[Dict[str, Any]]:
             topic = candidate
             break
 
-    left_ticker = resolve_single_ticker(left_text, allow_search=False) or resolve_single_ticker(left_text)
-    right_ticker = resolve_single_ticker(right_text, allow_search=False) or resolve_single_ticker(right_text)
+    direct_candidates = extract_symbol_candidates(text)
+    if len(direct_candidates) >= 2:
+        left_ticker, right_ticker = direct_candidates[:2]
+    else:
+        left_ticker = resolve_single_ticker(left_text, allow_search=False)
+        right_ticker = resolve_single_ticker(right_text, allow_search=False)
+        if separator != "and":
+            left_ticker = left_ticker or resolve_single_ticker(left_text)
+            right_ticker = right_ticker or resolve_single_ticker(right_text)
 
     if not left_ticker or not right_ticker:
         return None
@@ -1534,6 +1607,7 @@ def parse_compare_request(text: str) -> Optional[Dict[str, Any]]:
         "kind": "comparison",
         "topic": topic,
         "tickers": [left_ticker, right_ticker],
+        "detail": "deep" if needs_detail(text) else "standard",
     }
 
 
@@ -1564,7 +1638,12 @@ def classify_message(text: str, provided_ticker: Optional[str] = None) -> Dict[s
                 break
         return {"kind": "news", "category": category}
 
-    ticker = resolve_single_ticker(text, provided_ticker)
+    direct_tickers = extract_symbol_candidates(text)
+    ticker = None
+    if provided_ticker or direct_tickers:
+        ticker = resolve_single_ticker(text, provided_ticker, allow_search=False)
+    elif finance_intent(text) and company_lookup_intent(text):
+        ticker = resolve_single_ticker(text, provided_ticker)
     if ticker:
         return {"kind": "company", "ticker": ticker, "detail": "deep" if needs_detail(text) else "standard"}
     if finance_intent(text):
@@ -2022,6 +2101,12 @@ def serialize_agent_facts(facts: Any) -> str:
 
 def build_finance_prompt(query: str, route: Dict[str, Any], facts: Any) -> List[Dict[str, str]]:
     route_kind = route["kind"]
+    detail = route.get("detail") or "standard"
+    depth_instruction = (
+        "Analysis depth: deep. Give a comprehensive analyst-grade answer with all material sections."
+        if detail == "deep"
+        else "Analysis depth: standard. Be concise but complete, prioritizing the most decision-useful facts."
+    )
     fact_block = serialize_agent_facts(facts)
     if route_kind == "comparison":
         user_content = (
@@ -2029,10 +2114,11 @@ def build_finance_prompt(query: str, route: Dict[str, Any], facts: Any) -> List[
             f"Internal route: exact ticker comparison\n"
             f"Required tickers: {route['tickers']}\n"
             f"Topic: {route['topic']}\n"
+            f"{depth_instruction}\n"
             f"Backend facts:\n{fact_block}\n"
             "Use only these exact tickers. Do not substitute any other symbol. "
             "Prefer warehouse-backed statements and valuation when available, and use live fields only for current market context or explicit gaps. "
-            "Write a detailed side-by-side finance comparison and clearly state what data is missing if any metric is unavailable. "
+            "Write a side-by-side finance comparison and clearly state what data is missing if any metric is unavailable. "
             "Do not mention the internal route or backend mechanics in the final answer."
         )
     elif route_kind == "company":
@@ -2040,6 +2126,7 @@ def build_finance_prompt(query: str, route: Dict[str, Any], facts: Any) -> List[
             f"User request: {query}\n"
             f"Internal route: single company analysis\n"
             f"Resolved ticker: {route['ticker']}\n"
+            f"{depth_instruction}\n"
             f"Backend facts:\n{fact_block}\n"
             "Use only this backend data. Prefer warehouse-backed statements and valuation when available, and use live fields only for current market context or explicit gaps. "
             "If the user asked about the latest quarter, focus on the latest quarter context first, then the broader fundamentals. "
@@ -3475,4 +3562,5 @@ def builder_backtest(payload: BuilderRunRequest):
 @app.post("/builder/publish")
 def builder_publish(payload: BuilderPublishRequest):
     return create_community_model(payload)
+
 
