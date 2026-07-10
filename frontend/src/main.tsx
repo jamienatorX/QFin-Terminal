@@ -99,7 +99,7 @@ type BuilderTemplate = {
 
 const API_BASE_URL =
   import.meta.env.VITE_API_BASE_URL || 'https://qfin-terminal.onrender.com';
-const AGENT_REQUEST_TIMEOUT_MS = Number(import.meta.env.VITE_AGENT_TIMEOUT_MS || 240000);
+const AGENT_REQUEST_TIMEOUT_MS = Number(import.meta.env.VITE_AGENT_TIMEOUT_MS || 120000);
 
 const FAILURE_MESSAGE =
   'QFin could not complete that reply just now. The backend may still be waking up or the current route failed. Please retry in a moment.';
@@ -256,6 +256,53 @@ function sanitizeAssistantText(text: string) {
     .join('\n')
     .replace(/[ \t]{2,}/g, ' ')
     .trim();
+}
+
+async function requestAgentReply(cleanInput: string) {
+  const deadline = Date.now() + AGENT_REQUEST_TIMEOUT_MS;
+  const streamTimeout = Math.max(1, Math.floor(AGENT_REQUEST_TIMEOUT_MS * 0.75));
+
+  try {
+    const streamResponse = await fetchWithTimeout(
+      `${API_BASE_URL}/agent/chat/stream`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: cleanInput })
+      },
+      streamTimeout
+    );
+
+    if (streamResponse.ok) {
+      const streamedText = sanitizeAssistantText(await streamResponse.text());
+      if (streamedText) {
+        return streamedText;
+      }
+    }
+  } catch {
+    // The JSON route can still succeed when a proxy or platform disrupts streaming.
+  }
+
+  const remainingTimeout = Math.max(1, deadline - Date.now());
+
+  const jsonResponse = await fetchWithTimeout(
+    `${API_BASE_URL}/agent/chat`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message: cleanInput })
+    },
+    remainingTimeout
+  );
+
+  if (!jsonResponse.ok) {
+    throw new Error(`Backend returned ${jsonResponse.status}`);
+  }
+
+  const payload = await jsonResponse.json();
+  const content =
+    payload?.content || payload?.answer || payload?.data?.content || payload?.data?.answer || '';
+  return sanitizeAssistantText(String(content || ''));
 }
 
 function renderInlineMarkdown(text: string) {
@@ -1048,22 +1095,7 @@ function App() {
     setLoading(true);
 
     try {
-      const response = await fetchWithTimeout(
-        `${API_BASE_URL}/agent/chat/stream`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ message: cleanInput })
-        },
-        AGENT_REQUEST_TIMEOUT_MS
-      );
-
-      if (!response.ok) {
-        throw new Error(`Backend returned ${response.status}`);
-      }
-
-      const text = await response.text();
-      const finalText = text.trim() ? sanitizeAssistantText(text) : FAILURE_MESSAGE;
+      const finalText = (await requestAgentReply(cleanInput)) || FAILURE_MESSAGE;
 
       setMessages((current) =>
         current.map((message) =>

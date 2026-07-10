@@ -2080,6 +2080,200 @@ def build_headline_digest(news: Dict[str, Any], limit: int = 5) -> str:
     return "\n".join(lines)
 
 
+def metric_from_payload(payload: Dict[str, Any], section: str, key: str) -> str:
+    value = (payload.get(section) or {}).get(key)
+    if value in (None, "", [], {}):
+        return "Unavailable in supplied backend data"
+    return clean_text(str(value))
+
+
+def build_company_facts_fallback(query: str, facts: Dict[str, Any], fallback_reason: str) -> str:
+    ticker = facts.get("ticker") or "Unknown ticker"
+    company_name = clean_text(str(facts.get("company_name") or ticker))
+    source = clean_text(str(facts.get("source") or "QFin backend finance stack"))
+    market_data = facts.get("market_data") or {}
+    financial_metrics = facts.get("financial_metrics") or {}
+    historical_financials = facts.get("historical_financials") or {}
+
+    lines = [
+        f"**Direct answer**",
+        f"I pulled the available backend facts for {company_name} ({ticker}). This is a grounded fallback summary while the full model-written report is unavailable.",
+        "",
+        "**Market snapshot**",
+        f"- Last price: {metric_from_payload(facts, 'market_data', 'last_price')}",
+        f"- Price change: {metric_from_payload(facts, 'market_data', 'price_change_pct')}",
+        f"- Market cap: {metric_from_payload(facts, 'market_data', 'market_cap')}",
+        f"- Enterprise value: {metric_from_payload(facts, 'market_data', 'enterprise_value')}",
+        f"- Trailing P/E: {metric_from_payload(facts, 'market_data', 'trailing_pe')}",
+        f"- Forward P/E: {metric_from_payload(facts, 'market_data', 'forward_pe')}",
+        "",
+        "**Fundamentals**",
+        f"- Revenue: {metric_from_payload(facts, 'financial_metrics', 'total_revenue')}",
+        f"- Revenue growth: {metric_from_payload(facts, 'financial_metrics', 'revenue_growth')}",
+        f"- Gross profit: {metric_from_payload(facts, 'financial_metrics', 'gross_profit')}",
+        f"- Gross margin: {metric_from_payload(facts, 'financial_metrics', 'gross_margin')}",
+        f"- Operating margin: {metric_from_payload(facts, 'financial_metrics', 'operating_margin')}",
+        f"- Net income: {metric_from_payload(facts, 'financial_metrics', 'net_income')}",
+        f"- Net margin: {metric_from_payload(facts, 'financial_metrics', 'net_margin')}",
+        f"- Operating cash flow: {metric_from_payload(facts, 'financial_metrics', 'operating_cashflow')}",
+        f"- Free cash flow: {metric_from_payload(facts, 'financial_metrics', 'free_cashflow')}",
+        f"- Total debt: {metric_from_payload(facts, 'financial_metrics', 'total_debt')}",
+        f"- Cash: {metric_from_payload(facts, 'financial_metrics', 'cash')}",
+        f"- Debt to equity: {metric_from_payload(facts, 'financial_metrics', 'debt_to_equity')}",
+    ]
+
+    annual_revenue = historical_financials.get("annual_revenue") or {}
+    annual_net_income = historical_financials.get("annual_net_income") or {}
+    if annual_revenue or annual_net_income:
+        lines.extend(
+            [
+                "",
+                "**History available**",
+                f"- Annual revenue periods: {', '.join(annual_revenue.keys()) if annual_revenue else 'Unavailable in supplied backend data'}",
+                f"- Annual net income periods: {', '.join(annual_net_income.keys()) if annual_net_income else 'Unavailable in supplied backend data'}",
+            ]
+        )
+
+    lines.extend(
+        [
+            "",
+            "**Bottom line**",
+            "This fallback gives you the core market, profitability, cash flow, and leverage picture without inventing any missing fields.",
+            "",
+            "**Caveat**",
+            f"- {fallback_reason}",
+            f"- Data source: {source}",
+        ]
+    )
+
+    note = clean_text(str(facts.get("note") or ""))
+    if note:
+        lines.append(f"- {note}")
+    return "\n".join(lines)
+
+
+def build_comparison_facts_fallback(
+    query: str,
+    route: Dict[str, Any],
+    facts: Dict[str, Dict[str, Any]],
+    fallback_reason: str,
+) -> str:
+    tickers = route.get("tickers") or list(facts.keys())
+    left = facts.get(tickers[0]) or {}
+    right = facts.get(tickers[1]) or {}
+
+    def row_line(label: str, section: str, key: str) -> str:
+        left_value = metric_from_payload(left, section, key)
+        right_value = metric_from_payload(right, section, key)
+        return f"| {label} | {left_value} | {right_value} |"
+
+    lines = [
+        "**Direct answer**",
+        f"I pulled the available backend facts for {tickers[0]} and {tickers[1]}. This is a grounded fallback comparison while the full model-written answer is unavailable.",
+        "",
+        f"| Metric | {tickers[0]} | {tickers[1]} |",
+        "| --- | --- | --- |",
+        row_line("Last price", "market_data", "last_price"),
+        row_line("Market cap", "market_data", "market_cap"),
+        row_line("Trailing P/E", "market_data", "trailing_pe"),
+        row_line("Forward P/E", "market_data", "forward_pe"),
+        row_line("Revenue", "financial_metrics", "total_revenue"),
+        row_line("Revenue growth", "financial_metrics", "revenue_growth"),
+        row_line("Gross margin", "financial_metrics", "gross_margin"),
+        row_line("Operating margin", "financial_metrics", "operating_margin"),
+        row_line("Net margin", "financial_metrics", "net_margin"),
+        row_line("Free cash flow", "financial_metrics", "free_cashflow"),
+        row_line("Debt to equity", "financial_metrics", "debt_to_equity"),
+        "",
+        "**Bottom line**",
+        "Use this table as the reliable side-by-side baseline. Any field marked unavailable is genuinely missing from the supplied backend data rather than guessed.",
+        "",
+        "**Caveat**",
+        f"- {fallback_reason}",
+    ]
+    return "\n".join(lines)
+
+
+def build_finance_concept_fallback(query: str, fallback_reason: str) -> str:
+    normalized = normalize_user_text(query)
+    concepts = {
+        "free cash flow yield": (
+            "**Direct answer**\n"
+            "Free cash flow yield measures how much free cash flow a company generates relative to its market value.\n\n"
+            "**Formula**\n"
+            "- Free cash flow yield = free cash flow / market capitalization\n\n"
+            "**How to interpret it**\n"
+            "- Higher can mean the stock is cheaper relative to cash generation.\n"
+            "- It should be checked together with balance-sheet quality and whether free cash flow is durable.\n\n"
+            "**Caveat**\n"
+            f"- {fallback_reason}"
+        ),
+        "price to earnings": (
+            "**Direct answer**\n"
+            "Price-to-earnings compares a company's share price with its earnings per share.\n\n"
+            "**Formula**\n"
+            "- P/E = share price / earnings per share\n\n"
+            "**How to interpret it**\n"
+            "- Higher P/E usually implies stronger growth expectations or a richer valuation.\n"
+            "- Low P/E can indicate value, cyclicality, or business risk.\n\n"
+            "**Caveat**\n"
+            f"- {fallback_reason}"
+        ),
+        "return on equity": (
+            "**Direct answer**\n"
+            "Return on equity measures how efficiently a company turns shareholder equity into profit.\n\n"
+            "**Formula**\n"
+            "- ROE = net income / average shareholder equity\n\n"
+            "**How to interpret it**\n"
+            "- Higher ROE is generally better, but very high ROE driven by heavy leverage needs caution.\n\n"
+            "**Caveat**\n"
+            f"- {fallback_reason}"
+        ),
+    }
+
+    for phrase, answer in concepts.items():
+        if phrase in normalized:
+            return answer
+
+    return (
+        "**Direct answer**\n"
+        "I can still help, but the model-written finance explainer is unavailable right now. Ask about a specific concept such as free cash flow yield, P/E, EV/EBITDA, ROE, WACC, or DCF and I can return a grounded fallback definition.\n\n"
+        "**Caveat**\n"
+        f"- {fallback_reason}"
+    )
+
+
+async def build_finance_response(
+    query: str,
+    route: Dict[str, Any],
+    facts: Any,
+    *,
+    prompt_route: Optional[Dict[str, Any]] = None,
+) -> str:
+    active_route = prompt_route or route
+    fallback_reason = "Qwen was unavailable, so QFin returned a deterministic finance summary from backend facts."
+
+    if not qwen_is_configured():
+        fallback_reason = "Qwen is not configured on the backend, so QFin returned a deterministic finance summary from backend facts."
+    else:
+        try:
+            return await ask_qwen(build_finance_prompt(query, active_route, facts))
+        except QwenClientError as exc:
+            fallback_reason = (
+                "Qwen was unavailable during response generation, so QFin returned a deterministic finance summary from backend facts. "
+                f"Reason: {clean_text(str(exc))[:220]}"
+            )
+
+    if route["kind"] == "company" and isinstance(facts, dict):
+        return build_company_facts_fallback(query, facts, fallback_reason)
+    if route["kind"] == "comparison" and isinstance(facts, dict):
+        return build_comparison_facts_fallback(query, route, facts, fallback_reason)
+    if route["kind"] in {"news", "headlines"} and isinstance(facts, dict):
+        digest = build_headline_digest(facts)
+        return f"{digest}\n\n**Caveat**\n- {fallback_reason}"
+    return build_finance_concept_fallback(query, fallback_reason)
+
+
 def build_evidence_packet(query: str, route: Dict[str, Any], facts: Any, used_live_data: bool) -> EvidencePacket:
     items: List[EvidenceItem] = []
     gaps: List[str] = []
@@ -2234,11 +2428,8 @@ async def generate_agent_reply(query: str, provided_ticker: Optional[str] = None
     if route["kind"] in {"news", "headlines"}:
         news = await generate_news(normalize_category(route["category"]))
         evidence = build_evidence_packet(query, route, news, used_live_data=True)
-        if not qwen_is_configured():
-            content = build_headline_digest(news)
-        else:
-            prompt_route = {**route, "kind": "news"}
-            content = await ask_qwen(build_finance_prompt(query, prompt_route, news))
+        prompt_route = {**route, "kind": "news"}
+        content = await build_finance_response(query, route, news, prompt_route=prompt_route)
         review = run_agent_risk_review(route, news, content)
         content = finalize_agent_content(content, review)
         remember_agent_session(evidence, review, content)
@@ -2260,13 +2451,7 @@ async def generate_agent_reply(query: str, provided_ticker: Optional[str] = None
             for ticker, data in zip(route["tickers"], comparison_results)
         }
         evidence = build_evidence_packet(query, route, facts, used_live_data=True)
-        if not qwen_is_configured():
-            content = (
-                f"Qwen is not configured, but I resolved the request to {route['tickers'][0]} and {route['tickers'][1]}. "
-                "Connect the DashScope key to let QFin write the full comparison."
-            )
-        else:
-            content = await ask_qwen(build_finance_prompt(query, route, facts))
+        content = await build_finance_response(query, route, facts)
         review = run_agent_risk_review(route, facts, content)
         content = finalize_agent_content(content, review)
         remember_agent_session(evidence, review, content)
@@ -2282,13 +2467,7 @@ async def generate_agent_reply(query: str, provided_ticker: Optional[str] = None
     if route["kind"] == "company":
         facts = await get_company_facts_async(route["ticker"])
         evidence = build_evidence_packet(query, route, facts, used_live_data=True)
-        if not qwen_is_configured():
-            content = (
-                f"I resolved this request to {route['ticker']}, but Qwen is not configured on the backend right now. "
-                "Add the DashScope key in Render so I can write the full report."
-            )
-        else:
-            content = await ask_qwen(build_finance_prompt(query, route, facts))
+        content = await build_finance_response(query, route, facts)
         review = run_agent_risk_review(route, facts, content)
         content = finalize_agent_content(content, review)
         remember_agent_session(evidence, review, content)
@@ -2302,14 +2481,7 @@ async def generate_agent_reply(query: str, provided_ticker: Optional[str] = None
         }
 
     if route["kind"] == "finance_concept":
-        if not qwen_is_configured():
-            return {
-                "route": route,
-                "content": "The backend is connected, but Qwen is unavailable right now. Add the DashScope key to enable full finance explanations.",
-                "facts": None,
-                "used_live_data": False,
-            }
-        content = await ask_qwen(build_finance_prompt(query, route, None))
+        content = await build_finance_response(query, route, None)
         review = run_agent_risk_review(route, None, content)
         content = finalize_agent_content(content, review)
         evidence = build_evidence_packet(query, route, None, used_live_data=False)
