@@ -2281,27 +2281,49 @@ def comparison_leader_line(
     return f"- {label}: {winner} leads ({left_ticker} {left_text} vs {right_ticker} {right_text})."
 
 
+def is_bank_company(facts: Dict[str, Any]) -> bool:
+    profile = ((facts.get("warehouse") or {}).get("profile") or {}) if isinstance(facts, dict) else {}
+    classification = normalize_user_text(f"{profile.get('sector') or ''} {profile.get('industry') or ''}")
+    return "bank" in classification
+
+
+def display_periods(series: Dict[str, Any]) -> str:
+    return ", ".join(str(period).split(" ", 1)[0] for period in series.keys())
+
+
 def build_company_facts_fallback(query: str, facts: Dict[str, Any], fallback_reason: str) -> str:
     ticker = facts.get("ticker") or "Unknown ticker"
     company_name = clean_text(str(facts.get("company_name") or ticker))
     source = clean_text(str(facts.get("source") or "QFin backend finance stack"))
     historical_financials = facts.get("historical_financials") or {}
 
-    market_lines, missing_market = available_metric_lines(
-        facts,
-        "market_data",
+    bank_company = is_bank_company(facts)
+    market_metrics = (
         [
+            ("Last price", "last_price"), ("Price change", "price_change_pct"),
+            ("Market cap", "market_cap"), ("Trailing P/E", "trailing_pe"),
+            ("Forward P/E", "forward_pe"), ("Price/book", "price_to_book"),
+            ("Dividend yield", "dividend_yield"), ("52-week high", "52_week_high"),
+            ("52-week low", "52_week_low"),
+        ]
+        if bank_company
+        else [
             ("Last price", "last_price"), ("Price change", "price_change_pct"),
             ("Market cap", "market_cap"), ("Enterprise value", "enterprise_value"),
             ("Trailing P/E", "trailing_pe"), ("Forward P/E", "forward_pe"),
             ("Price/book", "price_to_book"), ("Price/sales", "price_to_sales"),
             ("EV/EBITDA", "ev_ebitda"), ("Dividend yield", "dividend_yield"),
-        ],
+        ]
     )
-    fundamental_lines, missing_fundamentals = available_metric_lines(
-        facts,
-        "financial_metrics",
+    fundamental_metrics = (
         [
+            ("Revenue", "total_revenue"), ("Revenue growth", "revenue_growth"),
+            ("Net income", "net_income"), ("Net margin", "net_margin"),
+            ("Return on equity", "return_on_equity"), ("Return on assets", "return_on_assets"),
+            ("Cash", "cash"),
+        ]
+        if bank_company
+        else [
             ("Revenue", "total_revenue"), ("Revenue growth", "revenue_growth"),
             ("Gross profit", "gross_profit"), ("Gross margin", "gross_margin"),
             ("Operating income", "operating_income"), ("Operating margin", "operating_margin"),
@@ -2309,7 +2331,17 @@ def build_company_facts_fallback(query: str, facts: Dict[str, Any], fallback_rea
             ("Operating cash flow", "operating_cashflow"), ("Free cash flow", "free_cashflow"),
             ("Total debt", "total_debt"), ("Cash", "cash"), ("Debt/equity", "debt_to_equity"),
             ("Return on equity", "return_on_equity"), ("Return on assets", "return_on_assets"),
-        ],
+        ]
+    )
+    market_lines, missing_market = available_metric_lines(
+        facts,
+        "market_data",
+        market_metrics,
+    )
+    fundamental_lines, missing_fundamentals = available_metric_lines(
+        facts,
+        "financial_metrics",
+        fundamental_metrics,
     )
 
     lines = [
@@ -2328,13 +2360,13 @@ def build_company_facts_fallback(query: str, facts: Dict[str, Any], fallback_rea
             [
                 "",
                 "**History available**",
-                *([f"- Annual revenue periods: {', '.join(annual_revenue.keys())}"] if annual_revenue else []),
-                *([f"- Annual net income periods: {', '.join(annual_net_income.keys())}"] if annual_net_income else []),
+                *([f"- Annual revenue periods: {display_periods(annual_revenue)}"] if annual_revenue else []),
+                *([f"- Annual net income periods: {display_periods(annual_net_income)}"] if annual_net_income else []),
             ]
         )
 
     missing_count = len(missing_market) + len(missing_fundamentals)
-    if missing_count:
+    if missing_count and not bank_company:
         lines.extend(
             [
                 "",
@@ -2347,7 +2379,11 @@ def build_company_facts_fallback(query: str, facts: Dict[str, Any], fallback_rea
         [
             "",
             "**Bottom line**",
-            "Use the valuation, growth, profitability, cash-flow, and leverage measures together; no single metric is a complete investment verdict.",
+            (
+                "For a bank, prioritize valuation against book value and earnings together with ROE, ROA, earnings growth, and capital quality; industrial-company EBITDA and working-capital ratios are not decision-useful substitutes."
+                if bank_company
+                else "Use the valuation, growth, profitability, cash-flow, and leverage measures together; no single metric is a complete investment verdict."
+            ),
             "",
             "**Methodology**",
             "- Deterministic analysis over verified backend facts; values are not guessed.",
