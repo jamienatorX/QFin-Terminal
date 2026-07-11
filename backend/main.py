@@ -229,7 +229,7 @@ MARKET_CONTEXTS = {
 STOP = {
     "AI", "API", "CEO", "CFO", "GDP", "CPI", "USD", "IDR", "WACC", "DCF", "ROE",
     "ROA", "NIM", "NPL", "CASA", "CAGR", "EBIT", "EBITDA", "EV", "IRR", "NPV",
-    "ETF", "IPO", "REIT", "ESG", "CAPM", "FCF", "VAR", "FX",
+    "ETF", "IPO", "REIT", "ESG", "CAPM", "FCF", "VAR", "FX", "FMP", "URL",
     "THE", "AND", "YOU", "HELLO", "HI", "HEY", "OK", "YES", "NO", "MODE", "QFIN",
     "S", "P", "SP", "VS"
 }
@@ -2543,9 +2543,10 @@ async def build_finance_response(
         try:
             return await ask_qwen(build_finance_prompt(query, active_route, facts))
         except QwenClientError as exc:
+            logger.warning("Finance narrative fallback: %s", type(exc).__name__)
             fallback_reason = (
                 "Qwen was unavailable during response generation, so QFin returned a deterministic finance summary from backend facts. "
-                f"Reason: {clean_text(str(exc))[:220]}"
+                "Reason: the narrative model did not respond within the configured time budget."
             )
 
     if route["kind"] == "company" and isinstance(facts, dict):
