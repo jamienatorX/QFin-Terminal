@@ -18,7 +18,7 @@ def qwen_is_configured() -> bool:
 
 
 def _timeout_seconds(task_type: str = "fast") -> float:
-    defaults = {"general": 15.0, "fast": 20.0, "news": 20.0, "vision": 30.0, "deep": 40.0}
+    defaults = {"general": 12.0, "fast": 10.0, "news": 15.0, "vision": 30.0, "deep": 40.0}
     task_env = os.getenv(f"DASHSCOPE_TIMEOUT_SECONDS_{task_type.upper()}")
     try:
         configured = float(task_env or os.getenv("DASHSCOPE_TIMEOUT_SECONDS", "45"))
@@ -28,7 +28,7 @@ def _timeout_seconds(task_type: str = "fast") -> float:
 
 
 def _total_timeout_seconds(task_type: str = "fast") -> float:
-    defaults = {"general": 25.0, "fast": 35.0, "news": 35.0, "vision": 50.0, "deep": 65.0}
+    defaults = {"general": 18.0, "fast": 15.0, "news": 25.0, "vision": 50.0, "deep": 65.0}
     task_env = os.getenv(f"DASHSCOPE_TOTAL_TIMEOUT_SECONDS_{task_type.upper()}")
     try:
         configured = float(task_env or os.getenv("DASHSCOPE_TOTAL_TIMEOUT_SECONDS", "75"))
