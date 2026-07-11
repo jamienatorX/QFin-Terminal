@@ -21,7 +21,13 @@ services:
       - key: DASHSCOPE_NEWS_MODEL
         value: qwen3.7-plus
       - key: DASHSCOPE_TIMEOUT_SECONDS
-        value: "120"
+        value: "45"
+      - key: DASHSCOPE_TOTAL_TIMEOUT_SECONDS
+        value: "75"
+      - key: FINANCIAL_DATA_TIMEOUT_SECONDS
+        value: "18"
+      - key: ALLOWED_ORIGINS
+        value: http://localhost:5173,http://127.0.0.1:5173,https://q-fin-terminal.vercel.app
       - key: NEWSAPI_KEY
         sync: false
       - key: SUPABASE_URL
@@ -32,3 +38,4 @@ services:
         sync: false
       - key: FINNHUB_API_KEY
         sync: false
+

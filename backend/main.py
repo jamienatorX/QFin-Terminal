@@ -16,7 +16,7 @@ import httpx
 from fastapi import FastAPI, File, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from api_registry import fetch_public_api_facts, list_public_api_registry
 from financial_data_warehouse import (
@@ -33,11 +33,19 @@ from qwen_client import QwenClientError, call_qwen, qwen_is_configured
 
 logger = logging.getLogger("qfin")
 
-app = FastAPI(title="QFin Terminal API", version="qfin-agent-2.7")
+def configured_cors_origins() -> List[str]:
+    configured = os.getenv("ALLOWED_ORIGINS", "")
+    if configured.strip():
+        return [origin.strip() for origin in configured.split(",") if origin.strip()]
+    return ["http://localhost:5173", "http://127.0.0.1:5173"]
+
+
+app = FastAPI(title="QFin Terminal API", version="qfin-agent-2.8")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=configured_cors_origins(),
+    allow_origin_regex=r"https://q-fin-terminal(?:-[a-z0-9-]+)?\.vercel\.app",
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -56,7 +64,7 @@ Evidence policy:
 - For live company, market, quarter, comparison, news, or backtest questions, use only the backend facts provided in the prompt.
 - Never substitute one ticker for another. If a requested ticker is missing or unresolved, state exactly which ticker is missing.
 - Do not fabricate figures, dates, filings, sources, prices, ratios, or news.
-- If supplied facts are incomplete, say what is missing and continue with the reliable parts.
+- If supplied facts are incomplete, prioritize the reliable metrics and summarize material coverage gaps once.
 
 Style:
 - Use clean markdown with short headings, readable paragraphs, and concise tables.
@@ -74,7 +82,7 @@ Finance answer contract:
 - For news, summarize the five provided items, separate what happened from why it matters, and state sentiment.
 - For finance concepts, explain the idea clearly, include formulas when useful, and add practical interpretation.
 - Use markdown tables where they improve scanability.
-- If a metric is unavailable, write "Unavailable in supplied backend data" rather than guessing.
+- Never guess a missing metric. Omit nonessential missing rows and summarize material coverage gaps once.
 """.strip()
 
 AGENT_SOURCE_NOTE = """
@@ -219,8 +227,11 @@ MARKET_CONTEXTS = {
 }
 
 STOP = {
-    "AI", "API", "CEO", "CFO", "GDP", "CPI", "USD", "IDR", "THE", "AND", "YOU",
-    "HELLO", "HI", "HEY", "OK", "YES", "NO", "MODE", "QFIN", "S", "P", "SP", "VS"
+    "AI", "API", "CEO", "CFO", "GDP", "CPI", "USD", "IDR", "WACC", "DCF", "ROE",
+    "ROA", "NIM", "NPL", "CASA", "CAGR", "EBIT", "EBITDA", "EV", "IRR", "NPV",
+    "ETF", "IPO", "REIT", "ESG", "CAPM", "FCF", "VAR", "FX",
+    "THE", "AND", "YOU", "HELLO", "HI", "HEY", "OK", "YES", "NO", "MODE", "QFIN",
+    "S", "P", "SP", "VS"
 }
 
 FINANCE_WORDS = [
@@ -228,7 +239,16 @@ FINANCE_WORDS = [
     "revenue", "profit", "margin", "debt", "cash flow", "valuation", "price", "earnings",
     "risk", "multiple", "pe", "pb", "ratio", "quarter", "annual", "quarterly", "eps",
     "dividend", "yield", "profitability", "free cash flow", "fcf", "income statement",
-    "balance sheet", "capm", "var", "beta", "sharpe", "sortino", "volatility"
+    "balance sheet", "capm", "var", "beta", "sharpe", "sortino", "volatility",
+    "wacc", "dcf", "discounted cash flow", "roe", "roa", "nim", "npl", "casa",
+    "cagr", "ebit", "ebitda", "enterprise value", "irr", "npv", "cost of capital",
+    "portfolio", "investing", "investment", "budget", "emergency fund", "personal finance",
+    "inflation", "interest rate", "monetary policy", "fiscal policy", "recession", "gdp",
+    "bond", "bonds", "duration", "convexity", "credit spread", "treasury", "fixed income",
+    "option", "options", "future", "futures", "derivative", "derivatives", "hedge", "hedging",
+    "etf", "mutual fund", "index fund", "forex", "currency", "exchange rate", "commodity",
+    "working capital", "leverage", "goodwill", "depreciation", "amortization", "terminal value",
+    "mortgage", "loan", "retirement", "pension", "insurance", "tax", "taxes", "capital gains"
 ]
 
 DETAILED_SIGNALS = [
@@ -243,6 +263,9 @@ DETAILED_SIGNALS = [
     "don't hold back",
     "dont hold back",
     "give me everything",
+    "lengkap",
+    "mendalam",
+    "secara detail",
 ]
 
 SUPABASE_FORUM_TABLE = "qfin_forum_threads"
@@ -309,17 +332,17 @@ class EvidencePacket(BaseModel):
     query: str
     route: Dict[str, Any]
     gathered_at: str
-    items: List[EvidenceItem] = []
+    items: List[EvidenceItem] = Field(default_factory=list)
     used_live_data: bool = False
-    gaps: List[str] = []
-    warnings: List[str] = []
+    gaps: List[str] = Field(default_factory=list)
+    warnings: List[str] = Field(default_factory=list)
 
 
 class AgentRiskReview(BaseModel):
     status: Literal["pass", "review"]
-    warnings: List[str] = []
-    missing_data: List[str] = []
-    allowed_tickers: List[str] = []
+    warnings: List[str] = Field(default_factory=list)
+    missing_data: List[str] = Field(default_factory=list)
+    allowed_tickers: List[str] = Field(default_factory=list)
 
 
 FORUM_THREADS: List[Dict[str, Any]] = []
@@ -581,6 +604,13 @@ def warehouse_snapshot_is_usable(snapshot: Dict[str, Any]) -> bool:
     )
 
 
+def warehouse_row_matches_symbol(row: Optional[Dict[str, Any]], symbol: str) -> bool:
+    if not row:
+        return False
+    provider_symbol = norm_symbol(str(row.get("provider_symbol") or ""))
+    return not provider_symbol or provider_symbol == norm_symbol(symbol)
+
+
 def load_warehouse_snapshot(symbol: str) -> Dict[str, Any]:
     base = {
         "symbol": symbol,
@@ -620,13 +650,20 @@ def load_warehouse_snapshot(symbol: str) -> Dict[str, Any]:
             "qfin_metric_coverage",
             params={"select": "*", "symbol": f"eq.{symbol}", "order": "fiscal_year.desc,metric_group.asc,metric_name.asc", "limit": "250"},
         ) or []
+        profile = profile_rows[0] if isinstance(profile_rows, list) and profile_rows else None
+        valuation = valuation_rows[0] if isinstance(valuation_rows, list) and valuation_rows else None
+        bank_kpi = bank_rows[0] if isinstance(bank_rows, list) and bank_rows else None
+        statement_rows = [
+            row for row in statement_rows
+            if isinstance(row, dict) and warehouse_row_matches_symbol(row, symbol)
+        ] if isinstance(statement_rows, list) else []
         snapshot = {
             "symbol": symbol,
             "status": "available",
-            "profile": profile_rows[0] if isinstance(profile_rows, list) and profile_rows else None,
-            "valuation": valuation_rows[0] if isinstance(valuation_rows, list) and valuation_rows else None,
-            "bank_kpi": bank_rows[0] if isinstance(bank_rows, list) and bank_rows else None,
-            "statement_rows": statement_rows if isinstance(statement_rows, list) else [],
+            "profile": profile if warehouse_row_matches_symbol(profile, symbol) else None,
+            "valuation": valuation if warehouse_row_matches_symbol(valuation, symbol) else None,
+            "bank_kpi": bank_kpi if warehouse_row_matches_symbol(bank_kpi, symbol) else None,
+            "statement_rows": statement_rows,
             "coverage_rows": coverage_rows if isinstance(coverage_rows, list) else [],
         }
         if not warehouse_snapshot_is_usable(snapshot):
@@ -715,13 +752,17 @@ def warehouse_finance_overlay(snapshot: Dict[str, Any], live_data: Optional[Dict
 
     revenue = latest_statement_metric_value(statement_rows, "income_statement", ["revenue", "totalRevenue"])
     gross_profit = latest_statement_metric_value(statement_rows, "income_statement", ["grossProfit", "grossProfitRatio"])
+    operating_income = latest_statement_metric_value(statement_rows, "income_statement", ["operatingIncome"])
+    ebitda = latest_statement_metric_value(statement_rows, "income_statement", ["ebitda", "EBITDA"])
     net_income = latest_statement_metric_value(statement_rows, "income_statement", ["netIncome"])
     operating_cashflow = latest_statement_metric_value(statement_rows, "cash_flow", ["operatingCashFlow"])
     free_cashflow = latest_statement_metric_value(statement_rows, "cash_flow", ["freeCashFlow"])
+    capital_expenditure = latest_statement_metric_value(statement_rows, "cash_flow", ["capitalExpenditure"])
     debt = latest_statement_metric_value(statement_rows, "balance_sheet", ["totalDebt", "netDebt"])
     cash_value = latest_statement_metric_value(statement_rows, "balance_sheet", ["cashAndCashEquivalents", "cashAndShortTermInvestments"])
     equity = latest_statement_metric_value(statement_rows, "balance_sheet", ["totalStockholdersEquity", "totalEquity"])
     gross_margin = (gross_profit / revenue) if revenue not in (None, 0) and gross_profit is not None and gross_profit > 1 else None
+    operating_margin = (operating_income / revenue) if revenue not in (None, 0) and operating_income is not None else None
     net_margin = (net_income / revenue) if revenue not in (None, 0) and net_income is not None else None
     debt_to_equity = (debt / equity) if debt is not None and equity not in (None, 0) else None
 
@@ -730,14 +771,19 @@ def warehouse_finance_overlay(snapshot: Dict[str, Any], live_data: Optional[Dict
         "revenue_growth": warehouse_growth_pct(statement_rows, "income_statement", ["revenue", "totalRevenue"]),
         "gross_profit": money(gross_profit, currency) if gross_profit and gross_profit > 1 else None,
         "gross_margin": pct(gross_margin),
-        "operating_margin": None,
+        "operating_income": money(operating_income, currency),
+        "operating_margin": pct(operating_margin),
+        "ebitda": money(ebitda, currency),
         "net_income": money(net_income, currency),
         "net_margin": pct(net_margin),
         "operating_cashflow": money(operating_cashflow, currency),
         "free_cashflow": money(free_cashflow, currency),
+        "capital_expenditure": money(capital_expenditure, currency),
         "total_debt": money(debt, currency),
         "cash": money(cash_value, currency),
         "debt_to_equity": pct(debt_to_equity),
+        "return_on_equity": pct(valuation.get("roe")),
+        "return_on_assets": pct(valuation.get("roa")),
     }
 
     market_data = {
@@ -751,6 +797,7 @@ def warehouse_finance_overlay(snapshot: Dict[str, Any], live_data: Optional[Dict
         "price_to_book": f"{as_float(valuation.get('pb_ratio')):.2f}x" if as_float(valuation.get("pb_ratio")) is not None else None,
         "price_to_sales": f"{as_float(valuation.get('ps_ratio')):.2f}x" if as_float(valuation.get("ps_ratio")) is not None else None,
         "ev_ebitda": f"{as_float(valuation.get('ev_ebitda')):.2f}x" if as_float(valuation.get("ev_ebitda")) is not None else None,
+        "dividend_yield": pct(valuation.get("dividend_yield")),
     }
 
     historical_financials = {
@@ -832,22 +879,20 @@ def merge_financial_facts(ticker: str, warehouse_snapshot: Dict[str, Any], live_
 
 async def get_company_facts_async(ticker: str) -> Dict[str, Any]:
     normalized_ticker = ticker.strip().upper()
-    warehouse_snapshot = load_warehouse_snapshot(normalized_ticker)
+    warehouse_snapshot = await asyncio.to_thread(load_warehouse_snapshot, normalized_ticker)
+
+    # Current prices and provider-specific ratios complement even a healthy warehouse.
+    # Starting this early lets comparison requests enrich both companies concurrently.
+    live_task = asyncio.create_task(fetch_financial_data_async(normalized_ticker))
 
     warehouse_ingest = None
     if fmp_is_configured() and warehouse_needs_refresh(warehouse_snapshot):
         warehouse_ingest = await ingest_fmp_to_warehouse(normalized_ticker)
-        refreshed_snapshot = load_warehouse_snapshot(normalized_ticker)
+        refreshed_snapshot = await asyncio.to_thread(load_warehouse_snapshot, normalized_ticker)
         if warehouse_snapshot_is_usable(refreshed_snapshot) or refreshed_snapshot.get("status") != "error":
             warehouse_snapshot = refreshed_snapshot
 
-    live_needed = not warehouse_snapshot_is_usable(warehouse_snapshot)
-    if warehouse_snapshot_is_usable(warehouse_snapshot):
-        valuation = warehouse_snapshot.get("valuation") or {}
-        if as_float((valuation or {}).get("market_cap")) is None:
-            live_needed = True
-
-    live_data = await fetch_financial_data_async(normalized_ticker) if live_needed else None
+    live_data = await live_task
     merged = merge_financial_facts(normalized_ticker, warehouse_snapshot, live_data)
     if warehouse_ingest is not None:
         merged["warehouse_ingest"] = warehouse_ingest
@@ -1022,15 +1067,16 @@ def default_symbol_master_records() -> List[Dict[str, Any]]:
 
 
 def extract_chat_query(payload: AgentChatRequest) -> str:
-    if payload.message:
-        return payload.message
-    if payload.query:
-        return payload.query
-    if payload.prompt:
-        return payload.prompt
+    for value in (payload.message, payload.query, payload.prompt):
+        if value and value.strip():
+            return value.strip()
     if payload.messages:
-        users = [m.content for m in payload.messages if (m.role or "user") == "user"]
-        return users[-1] if users else payload.messages[-1].content
+        users = [m.content.strip() for m in payload.messages if (m.role or "user") == "user" and m.content.strip()]
+        if users:
+            return users[-1]
+        fallback_messages = [message.content.strip() for message in payload.messages if message.content.strip()]
+        if fallback_messages:
+            return fallback_messages[-1]
     return "Hello"
 
 
@@ -1038,7 +1084,10 @@ def fast_casual_reply(text: str) -> Optional[str]:
     normalized = normalize_user_text(text)
     if normalized in CASUAL_REPLIES:
         return CASUAL_REPLIES[normalized]
-    if normalized in {"what can you do", "who are you", "help", "menu"}:
+    capability_signals = ("what can you do", "who are you", "help me", "how can you help")
+    if normalized in {"what can you do", "who are you", "help", "menu"} or (
+        len(normalized) <= 160 and any(signal in normalized for signal in capability_signals)
+    ):
         return (
             "I am QFin. I can chat normally, explain finance concepts, analyze companies, compare stocks, "
             "summarize market news, and work through quant finance questions."
@@ -1081,11 +1130,20 @@ def agent_runtime_context() -> str:
     )
 
 
+def has_finance_keywords(text: str) -> bool:
+    normalized = normalize_user_text(text)
+    for keyword in FINANCE_WORDS:
+        pattern = re.escape(keyword).replace(r"\ ", r"\s+")
+        if re.search(rf"\b{pattern}\b", normalized):
+            return True
+    return False
+
+
 def finance_intent(text: str) -> bool:
     lower = text.lower()
-    return any(word in lower for word in FINANCE_WORDS) or any(
+    return has_finance_keywords(text) or any(
         re.search(rf"\b{re.escape(alias)}\b", lower) for alias in ALIASES
-    ) or has_symbol_like_token(text) or has_market_context(text)
+    ) or has_symbol_like_token(text)
 
 
 def preferred_market_suffixes(text: str) -> List[str]:
@@ -1102,10 +1160,22 @@ def has_market_context(text: str) -> bool:
 
 
 def has_symbol_like_token(text: str) -> bool:
-    return bool(
-        re.search(r"\$[A-Za-z0-9\.\-]{1,12}\b", text)
-        or re.search(r"\b[A-Z]{2,5}(?:[.\-][A-Z0-9]{1,4})?\b", text)
-    )
+    if re.search(r"\$[A-Za-z0-9\.\-]{1,12}\b", text):
+        return True
+    if re.search(r"\b[A-Z0-9]{1,6}\.[A-Z0-9]{1,4}\b", text):
+        return True
+
+    tokens = [norm_symbol(token) for token in re.findall(r"\b[A-Z]{1,5}(?:-[A-Z])?\b", text)]
+    tokens = [token for token in tokens if token not in STOP]
+    if not tokens:
+        return False
+
+    has_context = has_finance_keywords(text) or has_market_context(text)
+    if has_context:
+        return True
+
+    word_count = len(normalize_user_text(text).split())
+    return word_count <= 4 and any(is_known_market_symbol(token) for token in tokens)
 
 
 def normalize_market_symbol(symbol: str, text: str = "") -> str:
@@ -1153,6 +1223,16 @@ def needs_detail(text: str) -> bool:
     return finance_intent(text) and any(signal in lower for signal in DETAILED_SIGNALS)
 
 
+def company_lookup_intent(text: str) -> bool:
+    return bool(
+        re.search(
+            r"\b(analyze|analyse|company|stock|ticker|shares?|equity|fundamentals?|earnings)\b",
+            text,
+            flags=re.I,
+        )
+    )
+
+
 def extract_symbol_candidates(text: str) -> List[str]:
     found: List[str] = []
     lowered = text.lower()
@@ -1172,9 +1252,14 @@ def extract_symbol_candidates(text: str) -> List[str]:
         if is_known_market_symbol(symbol) and should_accept_direct_symbol(symbol, text) and symbol not in found:
             found.append(symbol)
 
+    accepts_unknown_uppercase = has_finance_keywords(text) or has_market_context(text)
     for token in re.findall(r"\b[A-Z]{1,5}(?:[.\-][A-Z0-9]{1,4})?\b", text):
         symbol = normalize_market_symbol(token, text)
-        if should_accept_direct_symbol(symbol, text) and symbol not in found:
+        if (
+            (is_known_market_symbol(symbol) or accepts_unknown_uppercase)
+            and should_accept_direct_symbol(symbol, text)
+            and symbol not in found
+        ):
             found.append(symbol)
 
     if has_market_context(text):
@@ -1226,7 +1311,7 @@ def symbol_master_terms(text: str, provided: Optional[str] = None) -> List[str]:
         terms.append(norm_symbol(provided))
     for token in re.findall(r"\$?([A-Za-z0-9]{1,8}(?:[.\-][A-Za-z0-9]{1,5})?)\b", text):
         normalized = norm_symbol(token)
-        if normalized not in STOP and normalized not in terms:
+        if normalized not in STOP and len(normalized) >= 3 and normalized not in terms:
             terms.append(normalized)
     cleaned = clean_symbol_lookup_text(text)
     if cleaned and cleaned not in terms:
@@ -1247,7 +1332,7 @@ def symbol_master_score(record: Dict[str, Any], term: str, text: str) -> int:
         score += 120
     if normalized_term and normalized_term in aliases:
         score += 95
-    if normalized_term and normalized_term in search_text:
+    if len(normalized_term) >= 3 and normalized_term in search_text:
         score += 60
     for suffix in suffixes:
         if suffix == "" and "." not in yahoo_symbol:
@@ -1267,7 +1352,7 @@ def local_symbol_master_candidates(term: str, text: str) -> List[Dict[str, Any]]
         search_text = str(record.get("search_text") or "")
         if (
             raw_symbol in {symbol, yahoo_symbol}
-            or (normalized_term and normalized_term in search_text)
+            or (len(normalized_term) >= 3 and normalized_term in search_text)
         ):
             rows.append(record)
     return sorted(rows, key=lambda row: symbol_master_score(row, term, text), reverse=True)
@@ -1292,7 +1377,7 @@ def fetch_symbol_master_candidates(term: str, text: str) -> List[Dict[str, Any]]
                         params={"select": select, "active": "eq.true", field: f"eq.{raw_symbol}", "limit": "10"},
                     ) or []
                 )
-        if len(normalized_term) >= 2:
+        if len(normalized_term) >= 3:
             rows.extend(
                 supabase_request(
                     "GET",
@@ -1488,6 +1573,9 @@ def resolve_single_ticker(text: str, provided: Optional[str] = None, allow_searc
     if provided:
         return resolve_from_symbol_master(text, provided) or normalize_market_symbol(provided, text)
 
+    if not finance_intent(text):
+        return None
+
     candidates = extract_symbol_candidates(text)
     if candidates:
         return candidates[0]
@@ -1503,12 +1591,18 @@ def resolve_single_ticker(text: str, provided: Optional[str] = None, allow_searc
 
 
 def parse_compare_request(text: str) -> Optional[Dict[str, Any]]:
-    match = re.search(r"\bcompare\b(.+?)\b(?:vs\.?|versus)\b(.+)", text, flags=re.I)
+    patterns = [
+        r"\bcompare\b(.+?)\b(vs\.?|versus|and|with)\b(.+)",
+        r"^(.+?)\b(vs\.?|versus)\b(.+)$",
+        r"\bwhich(?:\s+stock)?\s+is\s+better[,:]?\s+(.+?)\b(or)\b(.+)",
+    ]
+    match = next((candidate for pattern in patterns if (candidate := re.search(pattern, text, flags=re.I))), None)
     if not match:
         return None
 
     left_text = match.group(1).strip(" ,.")
-    right_text = match.group(2).strip(" ,.")
+    separator = match.group(2).lower().rstrip(".")
+    right_text = match.group(3).strip(" ,.")
     topic = "overall financial performance"
 
     topic_candidates = [
@@ -1524,8 +1618,15 @@ def parse_compare_request(text: str) -> Optional[Dict[str, Any]]:
             topic = candidate
             break
 
-    left_ticker = resolve_single_ticker(left_text, allow_search=False) or resolve_single_ticker(left_text)
-    right_ticker = resolve_single_ticker(right_text, allow_search=False) or resolve_single_ticker(right_text)
+    direct_candidates = extract_symbol_candidates(text)
+    if len(direct_candidates) >= 2:
+        left_ticker, right_ticker = direct_candidates[:2]
+    else:
+        left_ticker = resolve_single_ticker(f"stock {left_text}", allow_search=False)
+        right_ticker = resolve_single_ticker(f"stock {right_text}", allow_search=False)
+        if separator in {"vs", "versus", "with", "or"}:
+            left_ticker = left_ticker or resolve_single_ticker(f"stock {left_text}")
+            right_ticker = right_ticker or resolve_single_ticker(f"stock {right_text}")
 
     if not left_ticker or not right_ticker:
         return None
@@ -1534,6 +1635,7 @@ def parse_compare_request(text: str) -> Optional[Dict[str, Any]]:
         "kind": "comparison",
         "topic": topic,
         "tickers": [left_ticker, right_ticker],
+        "detail": "deep" if needs_detail(text) else "standard",
     }
 
 
@@ -1564,7 +1666,12 @@ def classify_message(text: str, provided_ticker: Optional[str] = None) -> Dict[s
                 break
         return {"kind": "news", "category": category}
 
-    ticker = resolve_single_ticker(text, provided_ticker)
+    direct_tickers = extract_symbol_candidates(text)
+    ticker = None
+    if provided_ticker or direct_tickers:
+        ticker = resolve_single_ticker(text, provided_ticker, allow_search=False)
+    elif finance_intent(text) and company_lookup_intent(text):
+        ticker = resolve_single_ticker(text, provided_ticker)
     if ticker:
         return {"kind": "company", "ticker": ticker, "detail": "deep" if needs_detail(text) else "standard"}
     if finance_intent(text):
@@ -1740,9 +1847,12 @@ def fetch_financial_data(ticker: str) -> Dict[str, Any]:
 
         revenue = as_float(info.get("totalRevenue")) or row(income, ["Total Revenue", "Operating Revenue"])
         gross_profit = as_float(info.get("grossProfits")) or row(income, ["Gross Profit"])
+        operating_income = as_float(info.get("operatingIncome")) or row(income, ["Operating Income"])
+        ebitda = as_float(info.get("ebitda")) or row(income, ["EBITDA", "Normalized EBITDA"])
         net_income = as_float(info.get("netIncomeToCommon")) or row(income, ["Net Income", "Net Income Common Stockholders"])
         operating_cashflow = as_float(info.get("operatingCashflow")) or row(cashflow, ["Operating Cash Flow", "Total Cash From Operating Activities"])
         free_cashflow = as_float(info.get("freeCashflow")) or row(cashflow, ["Free Cash Flow"])
+        capital_expenditure = row(cashflow, ["Capital Expenditure", "Capital Expenditures"])
         debt = as_float(info.get("totalDebt")) or row(balance, ["Total Debt", "Net Debt"])
         cash = as_float(info.get("totalCash")) or row(balance, ["Cash And Cash Equivalents", "Cash Cash Equivalents And Short Term Investments"])
         equity = row(balance, ["Stockholders Equity", "Total Equity Gross Minority Interest", "Total Stockholder Equity"])
@@ -1780,7 +1890,11 @@ def fetch_financial_data(ticker: str) -> Dict[str, Any]:
         if net_margin is None:
             net_margin = as_float(finnhub_metrics.get("netMarginTTM"))
         operating_margin = None
-        if as_float(finnhub_metrics.get("operatingMarginTTM")) is not None:
+        if operating_income is not None and revenue not in (None, 0):
+            operating_margin = operating_income / revenue
+        elif as_float(info.get("operatingMargins")) is not None:
+            operating_margin = as_float(info.get("operatingMargins"))
+        elif as_float(finnhub_metrics.get("operatingMarginTTM")) is not None:
             operating_margin = as_float(finnhub_metrics.get("operatingMarginTTM"))
 
         debt_to_equity = debt / equity if debt is not None and equity not in (None, 0) else None
@@ -1788,6 +1902,18 @@ def fetch_financial_data(ticker: str) -> Dict[str, Any]:
             raw = as_float(info.get("debtToEquity"))
             if raw is not None:
                 debt_to_equity = raw / 100 if raw > 5 else raw
+
+        price_to_book = as_float(info.get("priceToBook")) or as_float(finnhub_metrics.get("pbAnnual"))
+        price_to_sales = as_float(info.get("priceToSalesTrailing12Months")) or as_float(finnhub_metrics.get("psTTM"))
+        ev_ebitda = as_float(info.get("enterpriseToEbitda")) or as_float(finnhub_metrics.get("evEbitdaTTM"))
+        dividend_yield = as_float(info.get("dividendYield")) or as_float(finnhub_metrics.get("dividendYieldIndicatedAnnual"))
+        return_on_equity = as_float(info.get("returnOnEquity")) or as_float(finnhub_metrics.get("roeTTM"))
+        return_on_assets = as_float(info.get("returnOnAssets")) or as_float(finnhub_metrics.get("roaTTM"))
+        current_ratio = as_float(info.get("currentRatio")) or as_float(finnhub_metrics.get("currentRatioAnnual"))
+        quick_ratio = as_float(info.get("quickRatio")) or as_float(finnhub_metrics.get("quickRatioAnnual"))
+        beta = as_float(info.get("beta")) or as_float(finnhub_metrics.get("beta"))
+        week_52_high = as_float(info.get("fiftyTwoWeekHigh")) or as_float(fast.get("year_high"))
+        week_52_low = as_float(info.get("fiftyTwoWeekLow")) or as_float(fast.get("year_low"))
 
         historical_financials = {
             "annual_revenue": extract_historical_series(income, ["Total Revenue", "Operating Revenue"], currency),
@@ -1815,20 +1941,34 @@ def fetch_financial_data(ticker: str) -> Dict[str, Any]:
                 "enterprise_value": money(enterprise_value, currency),
                 "trailing_pe": f"{trailing_pe:.2f}x" if trailing_pe is not None else None,
                 "forward_pe": f"{forward_pe:.2f}x" if forward_pe is not None else None,
+                "price_to_book": f"{price_to_book:.2f}x" if price_to_book is not None else None,
+                "price_to_sales": f"{price_to_sales:.2f}x" if price_to_sales is not None else None,
+                "ev_ebitda": f"{ev_ebitda:.2f}x" if ev_ebitda is not None else None,
+                "dividend_yield": pct(dividend_yield),
+                "beta": round(beta, 2) if beta is not None else None,
+                "52_week_high": round(week_52_high, 2) if week_52_high is not None else None,
+                "52_week_low": round(week_52_low, 2) if week_52_low is not None else None,
             },
             "financial_metrics": {
                 "total_revenue": money(revenue, currency),
                 "revenue_growth": pct(revenue_growth),
                 "gross_profit": money(gross_profit, currency),
                 "gross_margin": pct(gross_margin),
+                "operating_income": money(operating_income, currency),
                 "operating_margin": pct(operating_margin),
+                "ebitda": money(ebitda, currency),
                 "net_income": money(net_income, currency),
                 "net_margin": pct(net_margin),
                 "operating_cashflow": money(operating_cashflow, currency),
                 "free_cashflow": money(free_cashflow, currency),
+                "capital_expenditure": money(capital_expenditure, currency),
                 "total_debt": money(debt, currency),
                 "cash": money(cash, currency),
                 "debt_to_equity": pct(debt_to_equity),
+                "return_on_equity": pct(return_on_equity),
+                "return_on_assets": pct(return_on_assets),
+                "current_ratio": f"{current_ratio:.2f}x" if current_ratio is not None else None,
+                "quick_ratio": f"{quick_ratio:.2f}x" if quick_ratio is not None else None,
             },
             "historical_financials": historical_financials,
             "earnings_history": finnhub.get("earnings"),
@@ -1994,7 +2134,7 @@ def build_model_highlights(stats: Dict[str, str], profile: Dict[str, str]) -> Li
 def build_general_prompt(query: str) -> List[Dict[str, str]]:
     return [
         {"role": "system", "content": f"{SYSTEM_PROMPT}\n\n{agent_runtime_context()}"},
-        {"role": "user", "content": query},
+        {"role": "user", "content": f"Internal route: general question\nUser request: {query}"},
     ]
 
 
@@ -2022,6 +2162,12 @@ def serialize_agent_facts(facts: Any) -> str:
 
 def build_finance_prompt(query: str, route: Dict[str, Any], facts: Any) -> List[Dict[str, str]]:
     route_kind = route["kind"]
+    detail = route.get("detail") or "standard"
+    depth_instruction = (
+        "Analysis depth: deep. Give a comprehensive analyst-grade answer with all material sections."
+        if detail == "deep"
+        else "Analysis depth: standard. Be concise but complete, prioritizing the most decision-useful facts."
+    )
     fact_block = serialize_agent_facts(facts)
     if route_kind == "comparison":
         user_content = (
@@ -2029,10 +2175,11 @@ def build_finance_prompt(query: str, route: Dict[str, Any], facts: Any) -> List[
             f"Internal route: exact ticker comparison\n"
             f"Required tickers: {route['tickers']}\n"
             f"Topic: {route['topic']}\n"
+            f"{depth_instruction}\n"
             f"Backend facts:\n{fact_block}\n"
             "Use only these exact tickers. Do not substitute any other symbol. "
             "Prefer warehouse-backed statements and valuation when available, and use live fields only for current market context or explicit gaps. "
-            "Write a detailed side-by-side finance comparison and clearly state what data is missing if any metric is unavailable. "
+            "Write a side-by-side finance comparison and clearly state what data is missing if any metric is unavailable. "
             "Do not mention the internal route or backend mechanics in the final answer."
         )
     elif route_kind == "company":
@@ -2040,6 +2187,7 @@ def build_finance_prompt(query: str, route: Dict[str, Any], facts: Any) -> List[
             f"User request: {query}\n"
             f"Internal route: single company analysis\n"
             f"Resolved ticker: {route['ticker']}\n"
+            f"{depth_instruction}\n"
             f"Backend facts:\n{fact_block}\n"
             "Use only this backend data. Prefer warehouse-backed statements and valuation when available, and use live fields only for current market context or explicit gaps. "
             "If the user asked about the latest quarter, focus on the latest quarter context first, then the broader fundamentals. "
@@ -2078,6 +2226,336 @@ def build_headline_digest(news: Dict[str, Any], limit: int = 5) -> str:
         if teaser:
             lines.append(f"  {teaser}")
     return "\n".join(lines)
+
+
+def metric_from_payload(payload: Dict[str, Any], section: str, key: str) -> Optional[str]:
+    value = (payload.get(section) or {}).get(key)
+    if value in (None, "", [], {}):
+        return None
+    return clean_text(str(value))
+
+
+def available_metric_lines(
+    payload: Dict[str, Any],
+    section: str,
+    metrics: List[tuple[str, str]],
+) -> tuple[List[str], List[str]]:
+    lines: List[str] = []
+    missing: List[str] = []
+    for label, key in metrics:
+        value = metric_from_payload(payload, section, key)
+        if value is None:
+            missing.append(label)
+        else:
+            lines.append(f"- {label}: {value}")
+    return lines, missing
+
+
+def metric_number(payload: Dict[str, Any], section: str, key: str) -> Optional[float]:
+    value = metric_from_payload(payload, section, key)
+    if value is None:
+        return None
+    match = re.search(r"-?[0-9]+(?:,[0-9]{3})*(?:\.[0-9]+)?", value)
+    return as_float(match.group(0).replace(",", "")) if match else None
+
+
+def comparison_leader_line(
+    label: str,
+    left_ticker: str,
+    left: Dict[str, Any],
+    right_ticker: str,
+    right: Dict[str, Any],
+    section: str,
+    key: str,
+    *,
+    prefer_lower: bool = False,
+) -> Optional[str]:
+    left_number = metric_number(left, section, key)
+    right_number = metric_number(right, section, key)
+    if left_number is None or right_number is None or left_number == right_number:
+        return None
+    left_wins = left_number < right_number if prefer_lower else left_number > right_number
+    winner = left_ticker if left_wins else right_ticker
+    left_text = metric_from_payload(left, section, key)
+    right_text = metric_from_payload(right, section, key)
+    return f"- {label}: {winner} leads ({left_ticker} {left_text} vs {right_ticker} {right_text})."
+
+
+def build_company_facts_fallback(query: str, facts: Dict[str, Any], fallback_reason: str) -> str:
+    ticker = facts.get("ticker") or "Unknown ticker"
+    company_name = clean_text(str(facts.get("company_name") or ticker))
+    source = clean_text(str(facts.get("source") or "QFin backend finance stack"))
+    historical_financials = facts.get("historical_financials") or {}
+
+    market_lines, missing_market = available_metric_lines(
+        facts,
+        "market_data",
+        [
+            ("Last price", "last_price"), ("Price change", "price_change_pct"),
+            ("Market cap", "market_cap"), ("Enterprise value", "enterprise_value"),
+            ("Trailing P/E", "trailing_pe"), ("Forward P/E", "forward_pe"),
+            ("Price/book", "price_to_book"), ("Price/sales", "price_to_sales"),
+            ("EV/EBITDA", "ev_ebitda"), ("Dividend yield", "dividend_yield"),
+        ],
+    )
+    fundamental_lines, missing_fundamentals = available_metric_lines(
+        facts,
+        "financial_metrics",
+        [
+            ("Revenue", "total_revenue"), ("Revenue growth", "revenue_growth"),
+            ("Gross profit", "gross_profit"), ("Gross margin", "gross_margin"),
+            ("Operating income", "operating_income"), ("Operating margin", "operating_margin"),
+            ("EBITDA", "ebitda"), ("Net income", "net_income"), ("Net margin", "net_margin"),
+            ("Operating cash flow", "operating_cashflow"), ("Free cash flow", "free_cashflow"),
+            ("Total debt", "total_debt"), ("Cash", "cash"), ("Debt/equity", "debt_to_equity"),
+            ("Return on equity", "return_on_equity"), ("Return on assets", "return_on_assets"),
+        ],
+    )
+
+    lines = [
+        "**Direct answer**",
+        f"I pulled the available backend facts for {company_name} ({ticker}). This is a grounded fallback summary while the full model-written report is unavailable.",
+    ]
+    if market_lines:
+        lines.extend(["", "**Market snapshot**", *market_lines])
+    if fundamental_lines:
+        lines.extend(["", "**Fundamentals**", *fundamental_lines])
+
+    annual_revenue = historical_financials.get("annual_revenue") or {}
+    annual_net_income = historical_financials.get("annual_net_income") or {}
+    if annual_revenue or annual_net_income:
+        lines.extend(
+            [
+                "",
+                "**History available**",
+                *([f"- Annual revenue periods: {', '.join(annual_revenue.keys())}"] if annual_revenue else []),
+                *([f"- Annual net income periods: {', '.join(annual_net_income.keys())}"] if annual_net_income else []),
+            ]
+        )
+
+    missing_count = len(missing_market) + len(missing_fundamentals)
+    if missing_count:
+        lines.extend(
+            [
+                "",
+                "**Coverage note**",
+                f"- {missing_count} secondary metrics were not returned by the connected providers and were omitted rather than guessed.",
+            ]
+        )
+
+    lines.extend(
+        [
+            "",
+            "**Bottom line**",
+            "This fallback gives you the core market, profitability, cash flow, and leverage picture without inventing any missing fields.",
+            "",
+            "**Caveat**",
+            f"- {fallback_reason}",
+            f"- Data source: {source}",
+        ]
+    )
+
+    note = clean_text(str(facts.get("note") or ""))
+    if note:
+        lines.append(f"- {note}")
+    return "\n".join(lines)
+
+
+def build_comparison_facts_fallback(
+    query: str,
+    route: Dict[str, Any],
+    facts: Dict[str, Dict[str, Any]],
+    fallback_reason: str,
+) -> str:
+    tickers = route.get("tickers") or list(facts.keys())
+    left = facts.get(tickers[0]) or {}
+    right = facts.get(tickers[1]) or {}
+
+    def row_line(label: str, section: str, key: str) -> Optional[str]:
+        left_value = metric_from_payload(left, section, key)
+        right_value = metric_from_payload(right, section, key)
+        if left_value is None and right_value is None:
+            return None
+        return f"| {label} | {left_value or 'Not reported'} | {right_value or 'Not reported'} |"
+
+    comparison_rows = [
+        row_line("Last price", "market_data", "last_price"),
+        row_line("Market cap", "market_data", "market_cap"),
+        row_line("Trailing P/E", "market_data", "trailing_pe"),
+        row_line("Forward P/E", "market_data", "forward_pe"),
+        row_line("Price/book", "market_data", "price_to_book"),
+        row_line("EV/EBITDA", "market_data", "ev_ebitda"),
+        row_line("Revenue", "financial_metrics", "total_revenue"),
+        row_line("Revenue growth", "financial_metrics", "revenue_growth"),
+        row_line("Gross margin", "financial_metrics", "gross_margin"),
+        row_line("Operating margin", "financial_metrics", "operating_margin"),
+        row_line("Net margin", "financial_metrics", "net_margin"),
+        row_line("Free cash flow", "financial_metrics", "free_cashflow"),
+        row_line("Debt/equity", "financial_metrics", "debt_to_equity"),
+        row_line("Return on equity", "financial_metrics", "return_on_equity"),
+    ]
+    comparison_rows = [row for row in comparison_rows if row]
+    leader_lines = [
+        comparison_leader_line("Revenue growth", tickers[0], left, tickers[1], right, "financial_metrics", "revenue_growth"),
+        comparison_leader_line("Operating margin", tickers[0], left, tickers[1], right, "financial_metrics", "operating_margin"),
+        comparison_leader_line("Forward P/E valuation", tickers[0], left, tickers[1], right, "market_data", "forward_pe", prefer_lower=True),
+        comparison_leader_line("Balance-sheet leverage", tickers[0], left, tickers[1], right, "financial_metrics", "debt_to_equity", prefer_lower=True),
+    ]
+    leader_lines = [line for line in leader_lines if line]
+
+    lines = [
+        "**Direct answer**",
+        f"I pulled the available backend facts for {tickers[0]} and {tickers[1]}. This is a grounded fallback comparison while the full model-written answer is unavailable.",
+        "",
+        f"| Metric | {tickers[0]} | {tickers[1]} |",
+        "| --- | --- | --- |",
+        *comparison_rows,
+        *(["", "**Measured leaders**", *leader_lines] if leader_lines else []),
+        "",
+        "**Bottom line**",
+        (
+            "The measured-leader summary identifies the stronger supplied growth, profitability, valuation, and leverage signals. "
+            "Use those signals together rather than treating any single ratio as a complete investment verdict."
+            if leader_lines
+            else "Use this table as the reliable side-by-side baseline. Metrics missing for both companies were omitted rather than guessed."
+        ),
+        "",
+        "**Caveat**",
+        f"- {fallback_reason}",
+    ]
+    return "\n".join(lines)
+
+
+def build_finance_concept_fallback(query: str, fallback_reason: str) -> str:
+    normalized = normalize_user_text(query)
+    concepts = [
+        (("free cash flow yield", "fcf yield"), (
+            "**Direct answer**\n"
+            "Free cash flow yield measures how much free cash flow a company generates relative to its market value.\n\n"
+            "**Formula**\n"
+            "- Free cash flow yield = free cash flow / market capitalization\n\n"
+            "**How to interpret it**\n"
+            "- Higher can mean the stock is cheaper relative to cash generation.\n"
+            "- It should be checked together with balance-sheet quality and whether free cash flow is durable.\n\n"
+            "**Caveat**\n"
+            f"- {fallback_reason}"
+        )),
+        (("price to earnings", "p e ratio", "pe ratio"), (
+            "**Direct answer**\n"
+            "Price-to-earnings compares a company's share price with its earnings per share.\n\n"
+            "**Formula**\n"
+            "- P/E = share price / earnings per share\n\n"
+            "**How to interpret it**\n"
+            "- Higher P/E usually implies stronger growth expectations or a richer valuation.\n"
+            "- Low P/E can indicate value, cyclicality, or business risk.\n\n"
+            "**Caveat**\n"
+            f"- {fallback_reason}"
+        )),
+        (("return on equity", "roe"), (
+            "**Direct answer**\n"
+            "Return on equity measures how efficiently a company turns shareholder equity into profit.\n\n"
+            "**Formula**\n"
+            "- ROE = net income / average shareholder equity\n\n"
+            "**How to interpret it**\n"
+            "- Higher ROE is generally better, but very high ROE driven by heavy leverage needs caution.\n\n"
+            "**Caveat**\n"
+            f"- {fallback_reason}"
+        )),
+        (("wacc", "weighted average cost of capital"), (
+            "**Direct answer**\n"
+            "WACC is the blended required return demanded by a company's debt and equity investors. It is commonly used as the discount rate for unlevered free cash flow.\n\n"
+            "**Formula**\n"
+            "- WACC = E/(D+E) x cost of equity + D/(D+E) x pre-tax cost of debt x (1 - tax rate)\n"
+            "- Cost of equity is often estimated with CAPM: risk-free rate + beta x equity risk premium\n\n"
+            "**Interpretation**\n"
+            "A higher WACC lowers present value. Match capital structure, currency, inflation basis, and risk assumptions to the cash flows being discounted.\n\n"
+            "**Caveat**\n"
+            f"- {fallback_reason}"
+        )),
+        (("discounted cash flow", "dcf"), (
+            "**Direct answer**\n"
+            "A DCF values an asset by forecasting future cash flows and discounting them to today at a risk-adjusted rate.\n\n"
+            "**Core steps**\n"
+            "- Forecast operating performance and free cash flow over an explicit period.\n"
+            "- Estimate terminal value using perpetual growth or an exit multiple.\n"
+            "- Discount cash flows at WACC, subtract net debt, and divide equity value by diluted shares.\n"
+            "- Test revenue, margins, WACC, and terminal growth in a sensitivity table.\n\n"
+            "**Caveat**\n"
+            f"- {fallback_reason}"
+        )),
+        (("net present value", "npv"), (
+            "**Direct answer**\n"
+            "NPV is the present value of future cash inflows minus the present value of cash outflows.\n\n"
+            "**Formula**\n"
+            "- NPV = sum(cash flow at time t / (1 + discount rate)^t) - initial investment\n\n"
+            "**Decision rule**\n"
+            "Positive NPV creates value at the chosen discount rate; compare mutually exclusive projects by NPV, not IRR alone.\n\n"
+            "**Caveat**\n"
+            f"- {fallback_reason}"
+        )),
+        (("emergency fund",), (
+            "**Direct answer**\n"
+            "Target three to six months of essential expenses, or six to twelve months when income is volatile or dependents rely on you.\n\n"
+            "**Practical plan**\n"
+            "- Separate essential monthly spending from discretionary spending.\n"
+            "- Keep the first month immediately accessible, then use an insured high-liquidity account for the remainder.\n"
+            "- Automate contributions after payday and refill the fund after any withdrawal.\n"
+            "- Prioritize high-interest debt once a small starter buffer is in place.\n\n"
+            "**Caveat**\n"
+            f"- {fallback_reason}"
+        )),
+        (("bond duration", "duration"), (
+            "**Direct answer**\n"
+            "Duration estimates a bond's price sensitivity to interest-rate changes. Modified duration approximates the percentage price move for a one-percentage-point yield change.\n\n"
+            "**Rule of thumb**\n"
+            "- Approximate price change = -modified duration x change in yield\n"
+            "- Convexity improves the estimate for larger yield moves.\n\n"
+            "**Caveat**\n"
+            f"- {fallback_reason}"
+        )),
+    ]
+
+    for signals, answer in concepts:
+        if any(signal in normalized for signal in signals):
+            return answer
+
+    return (
+        "**Direct answer**\n"
+        "I can still help, but the model-written finance explainer is unavailable right now. Ask about a specific concept such as free cash flow yield, P/E, EV/EBITDA, ROE, WACC, or DCF and I can return a grounded fallback definition.\n\n"
+        "**Caveat**\n"
+        f"- {fallback_reason}"
+    )
+
+
+async def build_finance_response(
+    query: str,
+    route: Dict[str, Any],
+    facts: Any,
+    *,
+    prompt_route: Optional[Dict[str, Any]] = None,
+) -> str:
+    active_route = prompt_route or route
+    fallback_reason = "Qwen was unavailable, so QFin returned a deterministic finance summary from backend facts."
+
+    if not qwen_is_configured():
+        fallback_reason = "Qwen is not configured on the backend, so QFin returned a deterministic finance summary from backend facts."
+    else:
+        try:
+            return await ask_qwen(build_finance_prompt(query, active_route, facts))
+        except QwenClientError as exc:
+            fallback_reason = (
+                "Qwen was unavailable during response generation, so QFin returned a deterministic finance summary from backend facts. "
+                f"Reason: {clean_text(str(exc))[:220]}"
+            )
+
+    if route["kind"] == "company" and isinstance(facts, dict):
+        return build_company_facts_fallback(query, facts, fallback_reason)
+    if route["kind"] == "comparison" and isinstance(facts, dict):
+        return build_comparison_facts_fallback(query, route, facts, fallback_reason)
+    if route["kind"] in {"news", "headlines"} and isinstance(facts, dict):
+        digest = build_headline_digest(facts)
+        return f"{digest}\n\n**Caveat**\n- {fallback_reason}"
+    return build_finance_concept_fallback(query, fallback_reason)
 
 
 def build_evidence_packet(query: str, route: Dict[str, Any], facts: Any, used_live_data: bool) -> EvidencePacket:
@@ -2234,11 +2712,8 @@ async def generate_agent_reply(query: str, provided_ticker: Optional[str] = None
     if route["kind"] in {"news", "headlines"}:
         news = await generate_news(normalize_category(route["category"]))
         evidence = build_evidence_packet(query, route, news, used_live_data=True)
-        if not qwen_is_configured():
-            content = build_headline_digest(news)
-        else:
-            prompt_route = {**route, "kind": "news"}
-            content = await ask_qwen(build_finance_prompt(query, prompt_route, news))
+        prompt_route = {**route, "kind": "news"}
+        content = await build_finance_response(query, route, news, prompt_route=prompt_route)
         review = run_agent_risk_review(route, news, content)
         content = finalize_agent_content(content, review)
         remember_agent_session(evidence, review, content)
@@ -2260,13 +2735,7 @@ async def generate_agent_reply(query: str, provided_ticker: Optional[str] = None
             for ticker, data in zip(route["tickers"], comparison_results)
         }
         evidence = build_evidence_packet(query, route, facts, used_live_data=True)
-        if not qwen_is_configured():
-            content = (
-                f"Qwen is not configured, but I resolved the request to {route['tickers'][0]} and {route['tickers'][1]}. "
-                "Connect the DashScope key to let QFin write the full comparison."
-            )
-        else:
-            content = await ask_qwen(build_finance_prompt(query, route, facts))
+        content = await build_finance_response(query, route, facts)
         review = run_agent_risk_review(route, facts, content)
         content = finalize_agent_content(content, review)
         remember_agent_session(evidence, review, content)
@@ -2282,13 +2751,7 @@ async def generate_agent_reply(query: str, provided_ticker: Optional[str] = None
     if route["kind"] == "company":
         facts = await get_company_facts_async(route["ticker"])
         evidence = build_evidence_packet(query, route, facts, used_live_data=True)
-        if not qwen_is_configured():
-            content = (
-                f"I resolved this request to {route['ticker']}, but Qwen is not configured on the backend right now. "
-                "Add the DashScope key in Render so I can write the full report."
-            )
-        else:
-            content = await ask_qwen(build_finance_prompt(query, route, facts))
+        content = await build_finance_response(query, route, facts)
         review = run_agent_risk_review(route, facts, content)
         content = finalize_agent_content(content, review)
         remember_agent_session(evidence, review, content)
@@ -2302,14 +2765,7 @@ async def generate_agent_reply(query: str, provided_ticker: Optional[str] = None
         }
 
     if route["kind"] == "finance_concept":
-        if not qwen_is_configured():
-            return {
-                "route": route,
-                "content": "The backend is connected, but Qwen is unavailable right now. Add the DashScope key to enable full finance explanations.",
-                "facts": None,
-                "used_live_data": False,
-            }
-        content = await ask_qwen(build_finance_prompt(query, route, None))
+        content = await build_finance_response(query, route, None)
         review = run_agent_risk_review(route, None, content)
         content = finalize_agent_content(content, review)
         evidence = build_evidence_packet(query, route, None, used_live_data=False)
@@ -3303,4 +3759,5 @@ def builder_backtest(payload: BuilderRunRequest):
 @app.post("/builder/publish")
 def builder_publish(payload: BuilderPublishRequest):
     return create_community_model(payload)
+
 
