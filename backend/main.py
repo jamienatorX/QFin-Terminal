@@ -2338,96 +2338,113 @@ def display_periods(series: Dict[str, Any]) -> str:
     return ", ".join(str(period).split(" ", 1)[0] for period in series.keys())
 
 
+STANDARD_MARKET_METRICS = [
+    ("Last price", "last_price"), ("Price change", "price_change_pct"),
+    ("Market cap", "market_cap"), ("Enterprise value", "enterprise_value"),
+    ("Trailing P/E", "trailing_pe"), ("Forward P/E", "forward_pe"),
+    ("Price/book", "price_to_book"), ("Price/sales", "price_to_sales"),
+    ("EV/EBITDA", "ev_ebitda"), ("Dividend yield", "dividend_yield"),
+]
+STANDARD_FUNDAMENTAL_METRICS = [
+    ("Revenue", "total_revenue"), ("Revenue growth", "revenue_growth"),
+    ("Gross profit", "gross_profit"), ("Gross margin", "gross_margin"),
+    ("Operating income", "operating_income"), ("Operating margin", "operating_margin"),
+    ("EBITDA", "ebitda"), ("Net income", "net_income"), ("Net margin", "net_margin"),
+    ("Operating cash flow", "operating_cashflow"), ("Free cash flow", "free_cashflow"),
+    ("Total debt", "total_debt"), ("Cash", "cash"), ("Debt/equity", "debt_to_equity"),
+    ("Return on equity", "return_on_equity"), ("Return on assets", "return_on_assets"),
+]
+BANK_MARKET_METRICS = [
+    ("Last price", "last_price"), ("Price change", "price_change_pct"),
+    ("Market cap", "market_cap"), ("Trailing P/E", "trailing_pe"),
+    ("Forward P/E", "forward_pe"), ("Price/book", "price_to_book"),
+    ("Dividend yield", "dividend_yield"), ("52-week high", "52_week_high"),
+    ("52-week low", "52_week_low"),
+]
+BANK_FUNDAMENTAL_METRICS = [
+    ("Revenue", "total_revenue"), ("Revenue growth", "revenue_growth"),
+    ("Net income", "net_income"), ("Net margin", "net_margin"),
+    ("Return on equity", "return_on_equity"), ("Return on assets", "return_on_assets"),
+    ("Cash", "cash"),
+]
+FUND_MARKET_METRICS = [
+    ("Last price", "last_price"), ("Price change", "price_change_pct"),
+    ("Fund size / market value", "market_cap"), ("Portfolio P/E", "trailing_pe"),
+    ("Portfolio price/book", "price_to_book"), ("Distribution yield", "dividend_yield"),
+    ("Beta", "beta"), ("52-week high", "52_week_high"), ("52-week low", "52_week_low"),
+]
+REIT_MARKET_METRICS = [
+    ("Last price", "last_price"), ("Price change", "price_change_pct"),
+    ("Market cap", "market_cap"), ("Enterprise value", "enterprise_value"),
+    ("Price/book", "price_to_book"), ("Dividend yield", "dividend_yield"),
+    ("52-week high", "52_week_high"), ("52-week low", "52_week_low"),
+]
+REIT_FUNDAMENTAL_METRICS = [
+    ("Revenue", "total_revenue"), ("Revenue growth", "revenue_growth"),
+    ("Operating income", "operating_income"), ("Operating margin", "operating_margin"),
+    ("Net income", "net_income"), ("Operating cash flow", "operating_cashflow"),
+    ("Free cash flow", "free_cashflow"), ("Total debt", "total_debt"),
+    ("Cash", "cash"), ("Debt/equity", "debt_to_equity"),
+]
+INSURER_FUNDAMENTAL_METRICS = [
+    ("Revenue", "total_revenue"), ("Revenue growth", "revenue_growth"),
+    ("Operating income", "operating_income"), ("Net income", "net_income"),
+    ("Net margin", "net_margin"), ("Return on equity", "return_on_equity"),
+    ("Return on assets", "return_on_assets"), ("Cash", "cash"),
+]
+
+
+def company_analysis_profile(facts: Dict[str, Any]) -> Dict[str, Any]:
+    if is_fund_company(facts):
+        return {
+            "kind": "fund",
+            "market_metrics": FUND_MARKET_METRICS,
+            "fundamental_metrics": [],
+            "show_coverage": False,
+            "bottom_line": "For an ETF or fund, prioritize index exposure, portfolio valuation, distribution yield, liquidity, tracking quality, fees, and concentration; company revenue and cash-flow metrics do not describe the pooled vehicle.",
+        }
+    if is_reit_company(facts):
+        return {
+            "kind": "reit",
+            "market_metrics": REIT_MARKET_METRICS,
+            "fundamental_metrics": REIT_FUNDAMENTAL_METRICS,
+            "show_coverage": False,
+            "bottom_line": "For a REIT, prioritize FFO/AFFO per share, payout coverage, same-store NOI, occupancy, lease duration, net debt, and NAV alongside the connected market and cash-flow measures; accounting net income is secondary because property depreciation can distort it.",
+        }
+    if is_insurer_company(facts):
+        return {
+            "kind": "insurer",
+            "market_metrics": BANK_MARKET_METRICS,
+            "fundamental_metrics": INSURER_FUNDAMENTAL_METRICS,
+            "show_coverage": False,
+            "bottom_line": "For an insurer, prioritize premium growth, combined or benefit ratio, reserve adequacy, investment yield, solvency capital, book value, and ROE; generic EBITDA and gross-margin comparisons are not the right underwriting lens.",
+        }
+    if is_bank_company(facts):
+        return {
+            "kind": "bank",
+            "market_metrics": BANK_MARKET_METRICS,
+            "fundamental_metrics": BANK_FUNDAMENTAL_METRICS,
+            "show_coverage": False,
+            "bottom_line": "For a bank, prioritize valuation against book value and earnings together with ROE, ROA, earnings growth, and capital quality; industrial-company EBITDA and working-capital ratios are not decision-useful substitutes.",
+        }
+    return {
+        "kind": "operating_company",
+        "market_metrics": STANDARD_MARKET_METRICS,
+        "fundamental_metrics": STANDARD_FUNDAMENTAL_METRICS,
+        "show_coverage": True,
+        "bottom_line": "Use the valuation, growth, profitability, cash-flow, and leverage measures together; no single metric is a complete investment verdict.",
+    }
+
+
 def build_company_facts_fallback(query: str, facts: Dict[str, Any], fallback_reason: str) -> str:
     ticker = facts.get("ticker") or "Unknown ticker"
     company_name = clean_text(str(facts.get("company_name") or ticker))
     source = clean_text(str(facts.get("source") or "QFin backend finance stack"))
     historical_financials = facts.get("historical_financials") or {}
 
-    bank_company = is_bank_company(facts)
-    fund_company = is_fund_company(facts)
-    reit_company = is_reit_company(facts)
-    insurer_company = is_insurer_company(facts)
-    market_metrics = (
-        [
-            ("Last price", "last_price"), ("Price change", "price_change_pct"),
-            ("Fund size / market value", "market_cap"), ("Portfolio P/E", "trailing_pe"),
-            ("Portfolio price/book", "price_to_book"), ("Distribution yield", "dividend_yield"),
-            ("Beta", "beta"), ("52-week high", "52_week_high"), ("52-week low", "52_week_low"),
-        ]
-        if fund_company
-        else
-        [
-            ("Last price", "last_price"), ("Price change", "price_change_pct"),
-            ("Market cap", "market_cap"), ("Enterprise value", "enterprise_value"),
-            ("Price/book", "price_to_book"), ("Dividend yield", "dividend_yield"),
-            ("52-week high", "52_week_high"), ("52-week low", "52_week_low"),
-        ]
-        if reit_company
-        else
-        [
-            ("Last price", "last_price"), ("Price change", "price_change_pct"),
-            ("Market cap", "market_cap"), ("Trailing P/E", "trailing_pe"),
-            ("Forward P/E", "forward_pe"), ("Price/book", "price_to_book"),
-            ("Dividend yield", "dividend_yield"), ("52-week high", "52_week_high"),
-            ("52-week low", "52_week_low"),
-        ]
-        if insurer_company
-        else
-        [
-            ("Last price", "last_price"), ("Price change", "price_change_pct"),
-            ("Market cap", "market_cap"), ("Trailing P/E", "trailing_pe"),
-            ("Forward P/E", "forward_pe"), ("Price/book", "price_to_book"),
-            ("Dividend yield", "dividend_yield"), ("52-week high", "52_week_high"),
-            ("52-week low", "52_week_low"),
-        ]
-        if bank_company
-        else [
-            ("Last price", "last_price"), ("Price change", "price_change_pct"),
-            ("Market cap", "market_cap"), ("Enterprise value", "enterprise_value"),
-            ("Trailing P/E", "trailing_pe"), ("Forward P/E", "forward_pe"),
-            ("Price/book", "price_to_book"), ("Price/sales", "price_to_sales"),
-            ("EV/EBITDA", "ev_ebitda"), ("Dividend yield", "dividend_yield"),
-        ]
-    )
-    fundamental_metrics = (
-        []
-        if fund_company
-        else
-        [
-            ("Revenue", "total_revenue"), ("Revenue growth", "revenue_growth"),
-            ("Operating income", "operating_income"), ("Operating margin", "operating_margin"),
-            ("Net income", "net_income"), ("Operating cash flow", "operating_cashflow"),
-            ("Free cash flow", "free_cashflow"), ("Total debt", "total_debt"),
-            ("Cash", "cash"), ("Debt/equity", "debt_to_equity"),
-        ]
-        if reit_company
-        else
-        [
-            ("Revenue", "total_revenue"), ("Revenue growth", "revenue_growth"),
-            ("Operating income", "operating_income"), ("Net income", "net_income"),
-            ("Net margin", "net_margin"), ("Return on equity", "return_on_equity"),
-            ("Return on assets", "return_on_assets"), ("Cash", "cash"),
-        ]
-        if insurer_company
-        else
-        [
-            ("Revenue", "total_revenue"), ("Revenue growth", "revenue_growth"),
-            ("Net income", "net_income"), ("Net margin", "net_margin"),
-            ("Return on equity", "return_on_equity"), ("Return on assets", "return_on_assets"),
-            ("Cash", "cash"),
-        ]
-        if bank_company
-        else [
-            ("Revenue", "total_revenue"), ("Revenue growth", "revenue_growth"),
-            ("Gross profit", "gross_profit"), ("Gross margin", "gross_margin"),
-            ("Operating income", "operating_income"), ("Operating margin", "operating_margin"),
-            ("EBITDA", "ebitda"), ("Net income", "net_income"), ("Net margin", "net_margin"),
-            ("Operating cash flow", "operating_cashflow"), ("Free cash flow", "free_cashflow"),
-            ("Total debt", "total_debt"), ("Cash", "cash"), ("Debt/equity", "debt_to_equity"),
-            ("Return on equity", "return_on_equity"), ("Return on assets", "return_on_assets"),
-        ]
-    )
+    analysis_profile = company_analysis_profile(facts)
+    market_metrics = analysis_profile["market_metrics"]
+    fundamental_metrics = analysis_profile["fundamental_metrics"]
     market_lines, missing_market = available_metric_lines(
         facts,
         "market_data",
@@ -2461,7 +2478,7 @@ def build_company_facts_fallback(query: str, facts: Dict[str, Any], fallback_rea
         )
 
     missing_count = len(missing_market) + len(missing_fundamentals)
-    if missing_count and not bank_company and not fund_company and not reit_company and not insurer_company:
+    if missing_count and analysis_profile["show_coverage"]:
         lines.extend(
             [
                 "",
@@ -2474,17 +2491,7 @@ def build_company_facts_fallback(query: str, facts: Dict[str, Any], fallback_rea
         [
             "",
             "**Bottom line**",
-            (
-                "For an ETF or fund, prioritize index exposure, portfolio valuation, distribution yield, liquidity, tracking quality, fees, and concentration; company revenue and cash-flow metrics do not describe the pooled vehicle."
-                if fund_company
-                else "For a REIT, prioritize FFO/AFFO per share, payout coverage, same-store NOI, occupancy, lease duration, net debt, and NAV alongside the connected market and cash-flow measures; accounting net income is secondary because property depreciation can distort it."
-                if reit_company
-                else "For an insurer, prioritize premium growth, combined or benefit ratio, reserve adequacy, investment yield, solvency capital, book value, and ROE; generic EBITDA and gross-margin comparisons are not the right underwriting lens."
-                if insurer_company
-                else "For a bank, prioritize valuation against book value and earnings together with ROE, ROA, earnings growth, and capital quality; industrial-company EBITDA and working-capital ratios are not decision-useful substitutes."
-                if bank_company
-                else "Use the valuation, growth, profitability, cash-flow, and leverage measures together; no single metric is a complete investment verdict."
-            ),
+            analysis_profile["bottom_line"],
             "",
             "**Methodology**",
             "- Deterministic analysis over verified backend facts; values are not guessed.",
