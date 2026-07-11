@@ -163,6 +163,7 @@ US_SYMBOLS = {
     "KO", "LIN", "LLY", "MA", "MCD", "META", "MRK", "MS", "MSFT", "NFLX",
     "NVDA", "ORCL", "PEP", "PFE", "PG", "PLTR", "PYPL", "QCOM", "SE",
     "T", "TSLA", "UNH", "V", "WMT", "XOM", "O", "PLD", "AMT", "EQIX", "VICI", "WELL",
+    "PGR", "CB", "AIG", "MET", "PRU", "ALL",
 }
 
 MARKET_SYMBOLS = {
@@ -998,6 +999,12 @@ def default_symbol_master_records() -> List[Dict[str, Any]]:
         ("EQIX", "Equinix Inc.", ["equinix"]),
         ("VICI", "VICI Properties Inc.", ["vici properties"]),
         ("WELL", "Welltower Inc.", ["welltower"]),
+        ("PGR", "Progressive Corporation", ["progressive insurance"]),
+        ("CB", "Chubb Limited", ["chubb"]),
+        ("AIG", "American International Group Inc.", ["american international group"]),
+        ("MET", "MetLife Inc.", ["metlife"]),
+        ("PRU", "Prudential Financial Inc.", ["prudential financial"]),
+        ("ALL", "Allstate Corporation", ["allstate"]),
         ("AVGO", "Broadcom Inc.", ["broadcom"]),
         ("WMT", "Walmart Inc.", ["walmart"]),
         ("COST", "Costco Wholesale Corporation", ["costco"]),
@@ -2319,6 +2326,14 @@ def is_reit_company(facts: Dict[str, Any]) -> bool:
     return "reit" in classification or "real estate investment trust" in classification
 
 
+def is_insurer_company(facts: Dict[str, Any]) -> bool:
+    profile = ((facts.get("warehouse") or {}).get("profile") or {}) if isinstance(facts, dict) else {}
+    classification = normalize_user_text(
+        f"{facts.get('company_name') or ''} {profile.get('sector') or ''} {profile.get('industry') or ''}"
+    )
+    return "insurance" in classification or "insurer" in classification
+
+
 def display_periods(series: Dict[str, Any]) -> str:
     return ", ".join(str(period).split(" ", 1)[0] for period in series.keys())
 
@@ -2332,6 +2347,7 @@ def build_company_facts_fallback(query: str, facts: Dict[str, Any], fallback_rea
     bank_company = is_bank_company(facts)
     fund_company = is_fund_company(facts)
     reit_company = is_reit_company(facts)
+    insurer_company = is_insurer_company(facts)
     market_metrics = (
         [
             ("Last price", "last_price"), ("Price change", "price_change_pct"),
@@ -2348,6 +2364,15 @@ def build_company_facts_fallback(query: str, facts: Dict[str, Any], fallback_rea
             ("52-week high", "52_week_high"), ("52-week low", "52_week_low"),
         ]
         if reit_company
+        else
+        [
+            ("Last price", "last_price"), ("Price change", "price_change_pct"),
+            ("Market cap", "market_cap"), ("Trailing P/E", "trailing_pe"),
+            ("Forward P/E", "forward_pe"), ("Price/book", "price_to_book"),
+            ("Dividend yield", "dividend_yield"), ("52-week high", "52_week_high"),
+            ("52-week low", "52_week_low"),
+        ]
+        if insurer_company
         else
         [
             ("Last price", "last_price"), ("Price change", "price_change_pct"),
@@ -2377,6 +2402,14 @@ def build_company_facts_fallback(query: str, facts: Dict[str, Any], fallback_rea
             ("Cash", "cash"), ("Debt/equity", "debt_to_equity"),
         ]
         if reit_company
+        else
+        [
+            ("Revenue", "total_revenue"), ("Revenue growth", "revenue_growth"),
+            ("Operating income", "operating_income"), ("Net income", "net_income"),
+            ("Net margin", "net_margin"), ("Return on equity", "return_on_equity"),
+            ("Return on assets", "return_on_assets"), ("Cash", "cash"),
+        ]
+        if insurer_company
         else
         [
             ("Revenue", "total_revenue"), ("Revenue growth", "revenue_growth"),
@@ -2428,7 +2461,7 @@ def build_company_facts_fallback(query: str, facts: Dict[str, Any], fallback_rea
         )
 
     missing_count = len(missing_market) + len(missing_fundamentals)
-    if missing_count and not bank_company and not fund_company and not reit_company:
+    if missing_count and not bank_company and not fund_company and not reit_company and not insurer_company:
         lines.extend(
             [
                 "",
@@ -2446,6 +2479,8 @@ def build_company_facts_fallback(query: str, facts: Dict[str, Any], fallback_rea
                 if fund_company
                 else "For a REIT, prioritize FFO/AFFO per share, payout coverage, same-store NOI, occupancy, lease duration, net debt, and NAV alongside the connected market and cash-flow measures; accounting net income is secondary because property depreciation can distort it."
                 if reit_company
+                else "For an insurer, prioritize premium growth, combined or benefit ratio, reserve adequacy, investment yield, solvency capital, book value, and ROE; generic EBITDA and gross-margin comparisons are not the right underwriting lens."
+                if insurer_company
                 else "For a bank, prioritize valuation against book value and earnings together with ROE, ROA, earnings growth, and capital quality; industrial-company EBITDA and working-capital ratios are not decision-useful substitutes."
                 if bank_company
                 else "Use the valuation, growth, profitability, cash-flow, and leverage measures together; no single metric is a complete investment verdict."
