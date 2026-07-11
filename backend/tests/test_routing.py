@@ -190,6 +190,17 @@ class QwenModelRoutingTests(unittest.TestCase):
         )
         self.assertEqual(qwen_client._detect_task_type(messages), "fast")
 
+    def test_backend_fact_words_do_not_promote_standard_analysis_to_deep(self):
+        messages = main.build_finance_prompt(
+            "Analyze AAPL",
+            {"kind": "company", "ticker": "AAPL", "detail": "standard"},
+            {
+                "ticker": "AAPL",
+                "note": "Source includes a comprehensive annual financial report.",
+            },
+        )
+        self.assertEqual(qwen_client._detect_task_type(messages), "fast")
+
     def test_explicit_deep_analysis_uses_deep_profile(self):
         messages = main.build_finance_prompt(
             "Give me a comprehensive analysis of AAPL",
