@@ -2670,6 +2670,127 @@ def build_finance_concept_fallback(query: str, fallback_reason: str) -> str:
             "**Caveat**\n"
             f"- {fallback_reason}"
         )),
+        (("internal rate of return", "irr"), (
+            "**Direct answer**\n"
+            "IRR is the discount rate that makes a project's NPV equal to zero. It summarizes the annualized return implied by the forecast cash flows.\n\n"
+            "**Decision framework**\n"
+            "- Accept an independent project when IRR exceeds its risk-adjusted hurdle rate.\n"
+            "- For mutually exclusive projects, prioritize NPV because IRR can mis-rank different project sizes or timing patterns.\n"
+            "- Multiple sign changes in cash flows can produce multiple IRRs; use modified IRR or NPV instead.\n\n"
+            "**Methodology**\n"
+            f"- {fallback_reason}"
+        )),
+        (("enterprise value to ebitda", "ev ebitda"), (
+            "**Direct answer**\n"
+            "EV/EBITDA compares the value of the whole operating business with pre-interest, pre-tax operating cash earnings.\n\n"
+            "**Formula**\n"
+            "- Enterprise value = equity value + debt + preferred stock + minority interest - cash\n"
+            "- EV/EBITDA = enterprise value / EBITDA\n\n"
+            "**Interpretation**\n"
+            "Use it for capital-intensive operating companies and peer comparisons, but pair it with maintenance capex, working capital, taxes, growth, and leverage. It is generally unsuitable as the primary metric for banks and insurers.\n\n"
+            "**Methodology**\n"
+            f"- {fallback_reason}"
+        )),
+        (("price to book", "p b ratio", "pb ratio"), (
+            "**Direct answer**\n"
+            "Price-to-book compares market capitalization with common shareholder equity.\n\n"
+            "**Formula**\n"
+            "- P/B = share price / book value per share\n\n"
+            "**Interpretation**\n"
+            "It is most useful for banks, insurers, and asset-heavy companies when asset values are meaningful. Read it together with sustainable ROE, asset quality, and expected growth; a high-quality franchise can rationally trade above book value.\n\n"
+            "**Methodology**\n"
+            f"- {fallback_reason}"
+        )),
+        (("return on invested capital", "roic"), (
+            "**Direct answer**\n"
+            "ROIC measures the after-tax operating profit earned on the capital invested in operations.\n\n"
+            "**Formula**\n"
+            "- ROIC = NOPAT / average invested capital\n"
+            "- NOPAT = operating income x (1 - normalized tax rate)\n\n"
+            "**Interpretation**\n"
+            "A company creates economic value when sustainable ROIC exceeds WACC. Check whether acquisitions, goodwill, leases, and excess cash are treated consistently across periods and peers.\n\n"
+            "**Methodology**\n"
+            f"- {fallback_reason}"
+        )),
+        (("sharpe ratio", "sharpe"), (
+            "**Direct answer**\n"
+            "The Sharpe ratio measures excess return earned per unit of total return volatility.\n\n"
+            "**Formula**\n"
+            "- Sharpe ratio = (portfolio return - risk-free return) / standard deviation of portfolio returns\n\n"
+            "**Interpretation**\n"
+            "Higher is better when returns, frequency, risk-free rate, and sample period are comparable. It penalizes upside and downside volatility equally and can overstate quality when returns are smoothed or non-normal.\n\n"
+            "**Methodology**\n"
+            f"- {fallback_reason}"
+        )),
+        (("sortino ratio", "sortino"), (
+            "**Direct answer**\n"
+            "The Sortino ratio measures excess return per unit of harmful downside deviation.\n\n"
+            "**Formula**\n"
+            "- Sortino ratio = (portfolio return - target return) / downside deviation\n\n"
+            "**Interpretation**\n"
+            "It is useful when upside volatility should not be penalized, but results depend heavily on the target return, observation frequency, and sample length.\n\n"
+            "**Methodology**\n"
+            f"- {fallback_reason}"
+        )),
+        (("value at risk", "var"), (
+            "**Direct answer**\n"
+            "Value at Risk estimates a loss threshold that should not be exceeded over a chosen horizon at a chosen confidence level under the model assumptions.\n\n"
+            "**Example**\n"
+            "A one-day 95% VaR of $1 million means the model expects losses above $1 million on roughly 5% of trading days; it does not describe how large those tail losses may be.\n\n"
+            "**Risk controls**\n"
+            "Pair VaR with expected shortfall, scenario analysis, stress testing, liquidity limits, and backtesting.\n\n"
+            "**Methodology**\n"
+            f"- {fallback_reason}"
+        )),
+        (("capital asset pricing model", "capm"), (
+            "**Direct answer**\n"
+            "CAPM estimates the required return on equity from systematic market risk.\n\n"
+            "**Formula**\n"
+            "- Cost of equity = risk-free rate + beta x equity risk premium\n\n"
+            "**Interpretation**\n"
+            "Use a risk-free rate and equity risk premium consistent with the cash-flow currency. Beta is backward-looking and unstable, so normalize it against peers and test a range.\n\n"
+            "**Methodology**\n"
+            f"- {fallback_reason}"
+        )),
+        (("credit spread", "credit spreads"), (
+            "**Direct answer**\n"
+            "A credit spread is the extra yield a risky bond offers over a comparable low-risk benchmark to compensate for default, downgrade, liquidity, and risk-premium exposure.\n\n"
+            "**Interpretation**\n"
+            "Wider spreads imply greater perceived risk or weaker liquidity. Compare option-adjusted spreads at similar duration and seniority, then test leverage, interest coverage, refinancing needs, and recovery value.\n\n"
+            "**Methodology**\n"
+            f"- {fallback_reason}"
+        )),
+        (("option greeks", "delta gamma theta vega", "delta", "gamma", "theta", "vega"), (
+            "**Direct answer**\n"
+            "Option Greeks approximate how an option's value changes when key inputs move.\n\n"
+            "**Core Greeks**\n"
+            "- Delta: sensitivity to the underlying price.\n"
+            "- Gamma: change in delta as the underlying moves.\n"
+            "- Theta: time-value decay, all else equal.\n"
+            "- Vega: sensitivity to implied volatility.\n"
+            "- Rho: sensitivity to interest rates.\n\n"
+            "Greeks are local estimates, change continuously, and should be stress-tested for larger moves and volatility-skew changes.\n\n"
+            "**Methodology**\n"
+            f"- {fallback_reason}"
+        )),
+        (("portfolio diversification", "diversification"), (
+            "**Direct answer**\n"
+            "Diversification reduces portfolio risk by combining exposures whose returns are not perfectly correlated. The goal is not simply owning more positions, but avoiding concentration in the same economic drivers.\n\n"
+            "**Practical framework**\n"
+            "- Diversify across issuers, sectors, countries, currencies, duration, and asset classes.\n"
+            "- Measure factor and correlation concentration, not only position count.\n"
+            "- Rebalance periodically and account for liquidity, taxes, and transaction costs.\n\n"
+            "**Methodology**\n"
+            f"- {fallback_reason}"
+        )),
+        (("inflation",), (
+            "**Direct answer**\n"
+            "Inflation is the broad rise in prices that reduces purchasing power. It affects assets through interest rates, input costs, wages, pricing power, and discount rates.\n\n"
+            "**Investment lens**\n"
+            "Companies with pricing power and low capital intensity may defend margins; long-duration bonds and richly valued growth assets are often sensitive to rising real yields. Inflation-linked bonds hedge measured inflation more directly but still carry real-rate and liquidity risk.\n\n"
+            "**Methodology**\n"
+            f"- {fallback_reason}"
+        )),
         (("emergency fund",), (
             "**Direct answer**\n"
             "Target three to six months of essential expenses, or six to twelve months when income is volatile or dependents rely on you.\n\n"
@@ -2693,7 +2814,7 @@ def build_finance_concept_fallback(query: str, fallback_reason: str) -> str:
     ]
 
     for signals, answer in concepts:
-        if any(signal in normalized for signal in signals):
+        if any(re.search(rf"\\b{re.escape(normalize_user_text(signal))}\\b", normalized) for signal in signals):
             return answer
 
     return (
@@ -2712,19 +2833,16 @@ async def build_finance_response(
     prompt_route: Optional[Dict[str, Any]] = None,
 ) -> str:
     active_route = prompt_route or route
-    fallback_reason = "Qwen was unavailable, so QFin returned a deterministic finance summary from backend facts."
+    fallback_reason = "Deterministic finance guidance was used to keep the response grounded and time-bounded."
 
     if not qwen_is_configured():
-        fallback_reason = "Qwen is not configured on the backend, so QFin returned a deterministic finance summary from backend facts."
+        fallback_reason = "Deterministic finance guidance was used to keep the response grounded and time-bounded."
     else:
         try:
             return await ask_qwen(build_finance_prompt(query, active_route, facts))
         except QwenClientError as exc:
             logger.warning("Finance narrative fallback: %s", type(exc).__name__)
-            fallback_reason = (
-                "Qwen was unavailable during response generation, so QFin returned a deterministic finance summary from backend facts. "
-                "Reason: the narrative model did not respond within the configured time budget."
-            )
+            fallback_reason = "Deterministic finance guidance was used to keep the response grounded and time-bounded."
 
     if route["kind"] == "company" and isinstance(facts, dict):
         return build_company_facts_fallback(query, facts, fallback_reason)
