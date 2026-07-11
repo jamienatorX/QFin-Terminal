@@ -2814,7 +2814,7 @@ def build_finance_concept_fallback(query: str, fallback_reason: str) -> str:
     ]
 
     for signals, answer in concepts:
-        if any(re.search(rf"\\b{re.escape(normalize_user_text(signal))}\\b", normalized) for signal in signals):
+        if any(re.search(rf"\b{re.escape(normalize_user_text(signal))}\b", normalized) for signal in signals):
             return answer
 
     return (
