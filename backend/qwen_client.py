@@ -102,8 +102,14 @@ def _detect_task_type(messages: List[Dict[str, Any]]) -> str:
     if any(signal in text for signal in vision_signals):
         return "vision"
 
+    # Route metadata is authoritative. Backend facts can contain phrases such
+    # as "financial report" that must not promote a standard request to deep.
+    if "analysis depth: standard" in text:
+        return "fast"
+    if "analysis depth: deep" in text:
+        return "deep"
+
     deep_signals = [
-        "analysis depth: deep",
         "full analysis",
         "deep dive",
         "comprehensive",
