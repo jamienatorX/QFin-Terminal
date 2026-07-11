@@ -217,6 +217,18 @@ class QwenModelRoutingTests(unittest.TestCase):
         self.assertGreater(qwen_client._total_timeout_seconds("deep"), qwen_client._total_timeout_seconds("fast"))
 
 
+
+class FinanceFallbackTests(unittest.TestCase):
+    def test_emergency_fund_uses_supplied_monthly_spending(self):
+        result = main.build_finance_concept_fallback(
+            "Build an emergency fund plan for $2,000 monthly spending.",
+            "deterministic guidance",
+        )
+        self.assertIn("$6,000", result)
+        self.assertIn("$12,000", result)
+        self.assertIn("$24,000", result)
+
+
 if __name__ == "__main__":
     unittest.main()
 
