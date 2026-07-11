@@ -258,9 +258,28 @@ function sanitizeAssistantText(text: string) {
     .trim();
 }
 
-async function requestAgentReply(cleanInput: string) {
+async function requestAgentReply(cleanInput: string, attachment?: File | null) {
   const deadline = Date.now() + AGENT_REQUEST_TIMEOUT_MS;
   const streamTimeout = Math.max(1, Math.floor(AGENT_REQUEST_TIMEOUT_MS * 0.75));
+
+  if (attachment) {
+    const formData = new FormData();
+    formData.append('message', cleanInput);
+    formData.append('file', attachment);
+    const uploadResponse = await fetchWithTimeout(
+      `${API_BASE_URL}/agent/chat/upload`,
+      { method: 'POST', body: formData },
+      AGENT_REQUEST_TIMEOUT_MS
+    );
+    if (!uploadResponse.ok) {
+      const errorPayload = await uploadResponse.json().catch(() => ({}));
+      throw new Error(errorPayload?.detail || `Upload failed: ${uploadResponse.status}`);
+    }
+    const payload = await uploadResponse.json();
+    const content =
+      payload?.content || payload?.answer || payload?.data?.content || payload?.data?.answer || '';
+    return sanitizeAssistantText(String(content || ''));
+  }
 
   try {
     const streamResponse = await fetchWithTimeout(
@@ -1002,7 +1021,7 @@ function App() {
   const [loading, setLoading] = useState(false);
   const [backendStatus, setBackendStatus] = useState('Checking QFin backend...');
   const [backendOnline, setBackendOnline] = useState(false);
-  const [selectedFileName, setSelectedFileName] = useState('');
+  const [selectedFile, setSelectedFile] = useState<File | null>(null);
 
   const [newsCategory, setNewsCategory] =
     useState<(typeof NEWS_CATEGORIES)[number]>('Crypto');
@@ -1079,23 +1098,30 @@ function App() {
 
   async function sendMessage(input = prompt) {
     const cleanInput = input.trim();
-    if (!cleanInput || loading) return;
+    const attachment = selectedFile;
+    if ((!cleanInput && !attachment) || loading) return;
+    const effectiveInput = cleanInput || 'Analyze the attached file.';
 
     setPrompt('');
+    setSelectedFile(null);
     setView('home');
 
     const assistantId = makeId();
 
     setMessages((current) => [
       ...current,
-      { id: makeId(), role: 'user', content: cleanInput },
+      {
+        id: makeId(),
+        role: 'user',
+        content: attachment ? `${effectiveInput}\n\nAttached: ${attachment.name}` : effectiveInput
+      },
       { id: assistantId, role: 'assistant', content: 'QFin is thinking...' }
     ]);
 
     setLoading(true);
 
     try {
-      const finalText = (await requestAgentReply(cleanInput)) || FAILURE_MESSAGE;
+      const finalText = (await requestAgentReply(effectiveInput, attachment)) || FAILURE_MESSAGE;
 
       setMessages((current) =>
         current.map((message) =>
@@ -1442,19 +1468,20 @@ function App() {
                   <label className="uploadButton">
                     <input
                       type="file"
-                      accept=".csv,.xls,.xlsx"
-                      onChange={(event) =>
-                        setSelectedFileName(event.target.files?.[0]?.name || '')
-                      }
+                      accept=".pdf,.csv,.xls,.xlsx,.docx,.txt,.md,.rtf,.png,.jpg,.jpeg,.webp,.gif"
+                      onClick={(event) => {
+                        event.currentTarget.value = '';
+                      }}
+                      onChange={(event) => setSelectedFile(event.target.files?.[0] || null)}
                     />
                     <span>+</span>
-                    {selectedFileName || 'Upload CSV or Excel'}
+                    {selectedFile?.name || 'Attach PDF, sheet, document, or image'}
                   </label>
 
                   <button
                     type="submit"
                     className="sendButton"
-                    disabled={loading || !prompt.trim()}
+                    disabled={loading || (!prompt.trim() && !selectedFile)}
                     aria-label="Send prompt"
                   >
                     <IconSend />
