@@ -2428,6 +2428,46 @@ def build_comparison_facts_fallback(
 
 def build_finance_concept_fallback(query: str, fallback_reason: str) -> str:
     normalized = normalize_user_text(query)
+    if "emergency fund" in normalized:
+        amount_match = re.search(r"(?:\$|USD\s*)?([0-9]+(?:,[0-9]{3})*(?:\.[0-9]+)?)", query, flags=re.I)
+        monthly_spending = as_float(amount_match.group(1).replace(",", "")) if amount_match else None
+        if monthly_spending and monthly_spending > 0:
+            currency = "$" if "$" in query or "usd" in query.lower() else ""
+
+            def format_target(value: float) -> str:
+                return f"{currency}{value:,.0f}"
+
+            starter = monthly_spending
+            base_target = monthly_spending * 3
+            strong_target = monthly_spending * 6
+            conservative_target = monthly_spending * 12
+            monthly_contributions = [monthly_spending * 0.125, monthly_spending * 0.25]
+            timeline_lines = [
+                f"- At {format_target(contribution)} per month: reach {format_target(base_target)} in {math.ceil(base_target / contribution)} months and {format_target(strong_target)} in {math.ceil(strong_target / contribution)} months."
+                for contribution in monthly_contributions
+            ]
+            return "\n".join(
+                [
+                    "**Direct answer**",
+                    f"With {format_target(monthly_spending)} of monthly spending, target {format_target(base_target)}–{format_target(strong_target)} for a standard three-to-six-month emergency fund.",
+                    f"Use a more conservative target of up to {format_target(conservative_target)} if income is volatile, you have dependents, or replacing your job may take longer.",
+                    "",
+                    "**Milestones**",
+                    f"- Starter buffer: {format_target(starter)} (one month).",
+                    f"- Core target: {format_target(base_target)} (three months).",
+                    f"- Strong target: {format_target(strong_target)} (six months).",
+                    f"- High-security target: {format_target(conservative_target)} (twelve months).",
+                    "",
+                    "**Example timelines**",
+                    *timeline_lines,
+                    "",
+                    "**Execution plan**",
+                    "- Keep the first month immediately accessible, then use an insured high-liquidity savings account for the remainder.",
+                    "- Automate the transfer after payday and refill the fund after any withdrawal.",
+                    "- After the starter buffer, balance additional saving against any high-interest debt.",
+                ]
+            )
+
     concepts = [
         (("free cash flow yield", "fcf yield"), (
             "**Direct answer**\n"
