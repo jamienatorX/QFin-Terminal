@@ -351,6 +351,7 @@ FORUM_THREADS: List[Dict[str, Any]] = []
 COMMUNITY_MODELS: List[Dict[str, Any]] = []
 PRIVATE_MODELS: List[Dict[str, Any]] = []
 FINANCIAL_DATA_CACHE: Dict[str, Dict[str, Any]] = {}
+FINANCIAL_DATA_INFLIGHT: Dict[str, asyncio.Task] = {}
 AGENT_SESSION_LOGS: List[Dict[str, Any]] = []
 
 
@@ -2025,26 +2026,43 @@ def store_cached_financial_data(ticker: str, data: Dict[str, Any]) -> Dict[str, 
     return data
 
 
-async def fetch_financial_data_async(ticker: str, timeout_seconds: float = 25.0) -> Dict[str, Any]:
-    timeout_seconds = read_float_env("FINANCIAL_DATA_TIMEOUT_SECONDS", timeout_seconds)
-    cached = get_cached_financial_data(ticker)
-    if cached is not None:
-        return cached
-
+async def load_financial_data_with_timeout(ticker: str, timeout_seconds: float) -> Dict[str, Any]:
     try:
         data = await asyncio.wait_for(
             asyncio.to_thread(fetch_financial_data, ticker),
             timeout=timeout_seconds,
         )
     except asyncio.TimeoutError:
-        data = {
+        return {
             "ticker": ticker,
             "data_status": "unavailable",
             "error": f"Financial data request timed out after {timeout_seconds:.0f}s.",
         }
 
-    return store_cached_financial_data(ticker, data)
+    if data.get("data_status") == "available":
+        return store_cached_financial_data(ticker, data)
+    return data
 
+
+async def fetch_financial_data_async(ticker: str, timeout_seconds: float = 25.0) -> Dict[str, Any]:
+    key = ticker.strip().upper()
+    timeout_seconds = read_float_env("FINANCIAL_DATA_TIMEOUT_SECONDS", timeout_seconds)
+    cached = get_cached_financial_data(key)
+    if cached is not None:
+        return cached
+
+    task = FINANCIAL_DATA_INFLIGHT.get(key)
+    if task is None:
+        task = asyncio.create_task(load_financial_data_with_timeout(key, timeout_seconds))
+        FINANCIAL_DATA_INFLIGHT[key] = task
+
+        def clear_inflight(completed: asyncio.Task) -> None:
+            if FINANCIAL_DATA_INFLIGHT.get(key) is completed:
+                FINANCIAL_DATA_INFLIGHT.pop(key, None)
+
+        task.add_done_callback(clear_inflight)
+
+    return await asyncio.shield(task)
 
 def hash_slice(seed_text: str, offset: int) -> int:
     digest = hashlib.sha256(seed_text.encode("utf-8")).hexdigest()
