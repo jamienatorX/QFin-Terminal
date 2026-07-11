@@ -162,7 +162,7 @@ US_SYMBOLS = {
     "CVX", "DIS", "GOOG", "GOOGL", "HD", "IBM", "INTC", "JNJ", "JPM",
     "KO", "LIN", "LLY", "MA", "MCD", "META", "MRK", "MS", "MSFT", "NFLX",
     "NVDA", "ORCL", "PEP", "PFE", "PG", "PLTR", "PYPL", "QCOM", "SE",
-    "T", "TSLA", "UNH", "V", "WMT", "XOM",
+    "T", "TSLA", "UNH", "V", "WMT", "XOM", "O", "PLD", "AMT", "EQIX", "VICI", "WELL",
 }
 
 MARKET_SYMBOLS = {
@@ -230,6 +230,7 @@ STOP = {
     "AI", "API", "CEO", "CFO", "GDP", "CPI", "USD", "IDR", "WACC", "DCF", "ROE",
     "ROA", "NIM", "NPL", "CASA", "CAGR", "EBIT", "EBITDA", "EV", "IRR", "NPV",
     "ETF", "IPO", "REIT", "ESG", "CAPM", "FCF", "VAR", "FX", "FMP", "URL", "SPDR",
+    "FFO", "AFFO", "NOI", "NAV",
     "THE", "AND", "YOU", "HELLO", "HI", "HEY", "OK", "YES", "NO", "MODE", "QFIN",
     "S", "P", "SP", "VS"
 }
@@ -991,6 +992,12 @@ def default_symbol_master_records() -> List[Dict[str, Any]]:
         ("UNH", "UnitedHealth Group Incorporated", ["unitedhealth", "united health"]),
         ("LLY", "Eli Lilly and Company", ["eli lilly", "lilly"]),
         ("XOM", "Exxon Mobil Corporation", ["exxon", "exxonmobil"]),
+        ("O", "Realty Income Corporation", ["realty income"]),
+        ("PLD", "Prologis Inc.", ["prologis"]),
+        ("AMT", "American Tower Corporation", ["american tower"]),
+        ("EQIX", "Equinix Inc.", ["equinix"]),
+        ("VICI", "VICI Properties Inc.", ["vici properties"]),
+        ("WELL", "Welltower Inc.", ["welltower"]),
         ("AVGO", "Broadcom Inc.", ["broadcom"]),
         ("WMT", "Walmart Inc.", ["walmart"]),
         ("COST", "Costco Wholesale Corporation", ["costco"]),
@@ -1205,8 +1212,10 @@ def normalize_market_symbol(symbol: str, text: str = "") -> str:
 
 
 def should_accept_direct_symbol(symbol: str, text: str) -> bool:
-    if symbol in STOP or len(symbol) <= 1:
+    if symbol in STOP:
         return False
+    if len(symbol) <= 1:
+        return symbol in US_SYMBOLS
     if "." in symbol:
         return True
     suffixes = [suffix for suffix in preferred_market_suffixes(text) if suffix]
@@ -2302,6 +2311,14 @@ def is_fund_company(facts: Dict[str, Any]) -> bool:
     return bool(provider_profile.get("isEtf") or provider_profile.get("isFund") or " etf" in f" {name}")
 
 
+def is_reit_company(facts: Dict[str, Any]) -> bool:
+    profile = ((facts.get("warehouse") or {}).get("profile") or {}) if isinstance(facts, dict) else {}
+    classification = normalize_user_text(
+        f"{facts.get('company_name') or ''} {profile.get('sector') or ''} {profile.get('industry') or ''}"
+    )
+    return "reit" in classification or "real estate investment trust" in classification
+
+
 def display_periods(series: Dict[str, Any]) -> str:
     return ", ".join(str(period).split(" ", 1)[0] for period in series.keys())
 
@@ -2314,6 +2331,7 @@ def build_company_facts_fallback(query: str, facts: Dict[str, Any], fallback_rea
 
     bank_company = is_bank_company(facts)
     fund_company = is_fund_company(facts)
+    reit_company = is_reit_company(facts)
     market_metrics = (
         [
             ("Last price", "last_price"), ("Price change", "price_change_pct"),
@@ -2322,6 +2340,14 @@ def build_company_facts_fallback(query: str, facts: Dict[str, Any], fallback_rea
             ("Beta", "beta"), ("52-week high", "52_week_high"), ("52-week low", "52_week_low"),
         ]
         if fund_company
+        else
+        [
+            ("Last price", "last_price"), ("Price change", "price_change_pct"),
+            ("Market cap", "market_cap"), ("Enterprise value", "enterprise_value"),
+            ("Price/book", "price_to_book"), ("Dividend yield", "dividend_yield"),
+            ("52-week high", "52_week_high"), ("52-week low", "52_week_low"),
+        ]
+        if reit_company
         else
         [
             ("Last price", "last_price"), ("Price change", "price_change_pct"),
@@ -2342,6 +2368,15 @@ def build_company_facts_fallback(query: str, facts: Dict[str, Any], fallback_rea
     fundamental_metrics = (
         []
         if fund_company
+        else
+        [
+            ("Revenue", "total_revenue"), ("Revenue growth", "revenue_growth"),
+            ("Operating income", "operating_income"), ("Operating margin", "operating_margin"),
+            ("Net income", "net_income"), ("Operating cash flow", "operating_cashflow"),
+            ("Free cash flow", "free_cashflow"), ("Total debt", "total_debt"),
+            ("Cash", "cash"), ("Debt/equity", "debt_to_equity"),
+        ]
+        if reit_company
         else
         [
             ("Revenue", "total_revenue"), ("Revenue growth", "revenue_growth"),
@@ -2393,7 +2428,7 @@ def build_company_facts_fallback(query: str, facts: Dict[str, Any], fallback_rea
         )
 
     missing_count = len(missing_market) + len(missing_fundamentals)
-    if missing_count and not bank_company and not fund_company:
+    if missing_count and not bank_company and not fund_company and not reit_company:
         lines.extend(
             [
                 "",
@@ -2409,6 +2444,8 @@ def build_company_facts_fallback(query: str, facts: Dict[str, Any], fallback_rea
             (
                 "For an ETF or fund, prioritize index exposure, portfolio valuation, distribution yield, liquidity, tracking quality, fees, and concentration; company revenue and cash-flow metrics do not describe the pooled vehicle."
                 if fund_company
+                else "For a REIT, prioritize FFO/AFFO per share, payout coverage, same-store NOI, occupancy, lease duration, net debt, and NAV alongside the connected market and cash-flow measures; accounting net income is secondary because property depreciation can distort it."
+                if reit_company
                 else "For a bank, prioritize valuation against book value and earnings together with ROE, ROA, earnings growth, and capital quality; industrial-company EBITDA and working-capital ratios are not decision-useful substitutes."
                 if bank_company
                 else "Use the valuation, growth, profitability, cash-flow, and leverage measures together; no single metric is a complete investment verdict."
