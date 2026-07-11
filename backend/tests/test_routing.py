@@ -282,6 +282,30 @@ class FinanceFallbackTests(unittest.TestCase):
         self.assertNotIn("EV/EBITDA", result)
         self.assertNotIn("Coverage note", result)
 
+    def test_insurer_fallback_uses_underwriting_metrics(self):
+        facts = {
+            "ticker": "PGR",
+            "company_name": "Progressive Corporation",
+            "market_data": {
+                "last_price": 250.0,
+                "trailing_pe": "18.00x",
+                "price_to_book": "5.00x",
+            },
+            "financial_metrics": {
+                "total_revenue": "USD 80.00B",
+                "net_income": "USD 8.00B",
+                "return_on_equity": "30.00%",
+            },
+            "warehouse": {
+                "profile": {"sector": "Financial Services", "industry": "Insurance - Property & Casualty"}
+            },
+        }
+        result = main.build_company_facts_fallback("Analyze PGR", facts, "fallback")
+        self.assertIn("For an insurer", result)
+        self.assertNotIn("EV/EBITDA", result)
+        self.assertNotIn("Gross margin", result)
+        self.assertNotIn("Coverage note", result)
+
     def test_etf_fallback_uses_fund_metrics_and_correct_distribution_yield(self):
         warehouse = {
             "status": "available",
