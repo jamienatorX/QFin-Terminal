@@ -21,6 +21,7 @@ class DocumentIngestionTests(unittest.TestCase):
         self.assertEqual(parsed["rows"], 2)
         self.assertIn("revenue", parsed["text"])
         self.assertIn("2025", parsed["text"])
+        self.assertEqual(parsed["table_data"][0]["records"][1]["net_income"], 140)
 
     def test_xlsx_extracts_multiple_sheets(self):
         buffer = io.BytesIO()
@@ -100,6 +101,23 @@ class AttachmentEndpointTests(unittest.TestCase):
 
 
 class AttachmentPromptTests(unittest.IsolatedAsyncioTestCase):
+    async def test_generic_attachment_prompt_does_not_invent_ticker(self):
+        attachment = parse_document_bytes(
+            "report.csv",
+            "text/csv",
+            b"period,revenue,net_income\n2024,1000,100\n2025,1200,140\n",
+        )
+        with (
+            patch("main.ask_qwen", new=AsyncMock(side_effect=main.QwenClientError("timeout"))),
+            patch("main.remember_agent_session"),
+            patch("main.yahoo_symbol_search", return_value={"symbol": "TSCM"}),
+        ):
+            result = await main.generate_attachment_reply("Analyze the attached annual report", attachment)
+
+        self.assertEqual(result["route"]["kind"], "document_analysis")
+        self.assertIn("Revenue increased", result["content"])
+        self.assertIn("+20.0%", result["content"])
+
     async def test_image_attachment_builds_multimodal_message(self):
         attachment = parse_document_bytes("chart.png", "image/png", b"\x89PNG\r\n\x1a\nimage")
         with (
