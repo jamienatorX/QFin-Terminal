@@ -228,6 +228,31 @@ class FinanceFallbackTests(unittest.TestCase):
         self.assertIn("$12,000", result)
         self.assertIn("$24,000", result)
 
+    def test_bank_fallback_uses_sector_appropriate_metrics(self):
+        facts = {
+            "ticker": "BBCA.JK",
+            "company_name": "Bank Central Asia",
+            "market_data": {
+                "last_price": 6175,
+                "trailing_pe": "13.11x",
+                "price_to_book": "2.93x",
+                "ev_ebitda": None,
+            },
+            "financial_metrics": {
+                "net_income": "IDR 58.08T",
+                "return_on_equity": "22.97%",
+                "return_on_assets": "3.66%",
+                "ebitda": None,
+            },
+            "warehouse": {
+                "profile": {"sector": "Financial Services", "industry": "Banks - Regional"}
+            },
+        }
+        result = main.build_company_facts_fallback("Analyze BBCA", facts, "fallback")
+        self.assertIn("For a bank", result)
+        self.assertNotIn("EV/EBITDA", result)
+        self.assertNotIn("Coverage note", result)
+
 
 if __name__ == "__main__":
     unittest.main()
