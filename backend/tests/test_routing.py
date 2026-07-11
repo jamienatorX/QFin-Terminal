@@ -213,6 +213,7 @@ class QwenModelRoutingTests(unittest.TestCase):
         self.assertLessEqual(qwen_client._timeout_seconds("general"), 15)
         self.assertLessEqual(qwen_client._timeout_seconds("fast"), 10)
         self.assertLessEqual(qwen_client._total_timeout_seconds("fast"), 15)
+        self.assertLessEqual(qwen_client._total_timeout_seconds("deep"), 35)
         self.assertGreater(qwen_client._total_timeout_seconds("deep"), qwen_client._total_timeout_seconds("fast"))
 
 
