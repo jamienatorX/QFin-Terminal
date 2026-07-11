@@ -306,6 +306,23 @@ create policy "qfin_symbol_master_service_role_all"
 
 grant select, insert, update, delete on table public.qfin_symbol_master to service_role;
 
+-- Annual-report discovery is an internal backend workflow. Keep the table
+-- inaccessible to browser roles while allowing the Render service to manage it.
+alter table if exists public.qfin_annual_report_sources enable row level security;
+
+drop policy if exists "qfin_annual_report_sources_service_role_all"
+  on public.qfin_annual_report_sources;
+create policy "qfin_annual_report_sources_service_role_all"
+  on public.qfin_annual_report_sources
+  for all
+  to service_role
+  using (true)
+  with check (true);
+
+grant select, insert, update, delete
+  on table public.qfin_annual_report_sources
+  to service_role;
+
 create table if not exists public.qfin_data_source_runs (
   id uuid primary key default gen_random_uuid(),
   symbol text not null,
