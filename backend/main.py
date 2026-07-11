@@ -2791,6 +2791,112 @@ def build_finance_concept_fallback(query: str, fallback_reason: str) -> str:
             "**Methodology**\n"
             f"- {fallback_reason}"
         )),
+        (("working capital",), (
+            "**Direct answer**\n"
+            "Working capital is the short-term operating funding tied up in receivables and inventory, net of operating liabilities such as payables.\n\n"
+            "**Core measures**\n"
+            "- Accounting working capital = current assets - current liabilities\n"
+            "- Operating net working capital commonly excludes cash and interest-bearing debt.\n"
+            "- An increase in operating working capital is usually a use of cash; a decrease is usually a source of cash.\n\n"
+            "Interpret changes relative to revenue growth, seasonality, payment terms, inventory quality, and supplier financing.\n\n"
+            "**Methodology**\n"
+            f"- {fallback_reason}"
+        )),
+        (("income statement", "balance sheet", "cash flow statement", "financial statements"), (
+            "**Direct answer**\n"
+            "The three primary financial statements describe performance, financial position, and cash movement.\n\n"
+            "**How they connect**\n"
+            "- Income statement: revenue, expenses, and profit over a period.\n"
+            "- Balance sheet: assets, liabilities, and equity at a point in time.\n"
+            "- Cash-flow statement: reconciles profit to cash from operations, investing, and financing.\n"
+            "- Net income flows into retained earnings and begins the operating cash-flow reconciliation; closing cash links back to the balance sheet.\n\n"
+            "Analyze earnings quality by reconciling profit with operating cash flow and changes in working capital.\n\n"
+            "**Methodology**\n"
+            f"- {fallback_reason}"
+        )),
+        (("earnings per share", "eps"), (
+            "**Direct answer**\n"
+            "Earnings per share allocates profit available to common shareholders across the weighted-average share count.\n\n"
+            "**Formula**\n"
+            "- Basic EPS = (net income - preferred dividends) / weighted-average common shares\n"
+            "- Diluted EPS includes potential dilution from options, restricted shares, and convertible securities when dilutive.\n\n"
+            "Separate recurring operating earnings from one-offs and check whether buybacks, rather than profit growth, are driving EPS growth.\n\n"
+            "**Methodology**\n"
+            f"- {fallback_reason}"
+        )),
+        (("dividend yield", "dividends"), (
+            "**Direct answer**\n"
+            "Dividend yield measures annual cash distributions relative to the current share price.\n\n"
+            "**Formula**\n"
+            "- Dividend yield = annual dividend per share / share price\n\n"
+            "Assess sustainability using free-cash-flow payout, earnings payout, leverage, reinvestment needs, cyclicality, and the board's capital-allocation policy. A very high yield can signal an expected cut rather than a bargain.\n\n"
+            "**Methodology**\n"
+            f"- {fallback_reason}"
+        )),
+        (("financial leverage", "leverage ratio", "debt to equity"), (
+            "**Direct answer**\n"
+            "Financial leverage uses debt or other fixed claims to increase exposure to operating outcomes. It can enhance equity returns when business returns exceed financing costs, but magnifies losses and refinancing risk.\n\n"
+            "**Useful measures**\n"
+            "- Net debt / EBITDA for operating companies\n"
+            "- Debt / equity as a capital-structure measure\n"
+            "- Interest coverage = operating profit or EBITDA / interest expense\n"
+            "- Debt-service coverage for cash-based repayment capacity\n\n"
+            "Compare maturities, fixed versus floating rates, covenants, liquidity, and stress-case cash flow—not only a single ratio.\n\n"
+            "**Methodology**\n"
+            f"- {fallback_reason}"
+        )),
+        (("current ratio", "quick ratio", "liquidity ratio"), (
+            "**Direct answer**\n"
+            "Liquidity ratios estimate whether near-term assets can cover near-term obligations.\n\n"
+            "**Formulas**\n"
+            "- Current ratio = current assets / current liabilities\n"
+            "- Quick ratio = (cash + marketable securities + receivables) / current liabilities\n\n"
+            "Interpret them by industry and cash-conversion cycle. Inventory quality, receivable collectability, seasonal peaks, and unused credit lines can matter more than the headline ratio.\n\n"
+            "**Methodology**\n"
+            f"- {fallback_reason}"
+        )),
+        (("compound annual growth rate", "cagr"), (
+            "**Direct answer**\n"
+            "CAGR is the constant annual rate that would compound a beginning value into an ending value over a specified number of years.\n\n"
+            "**Formula**\n"
+            "- CAGR = (ending value / beginning value)^(1 / years) - 1\n\n"
+            "CAGR smooths the path and hides volatility, interim drawdowns, acquisitions, and base effects. Pair it with year-by-year growth and the economic drivers of the change.\n\n"
+            "**Methodology**\n"
+            f"- {fallback_reason}"
+        )),
+        (("terminal value",), (
+            "**Direct answer**\n"
+            "Terminal value estimates the value of cash flows beyond a DCF's explicit forecast period.\n\n"
+            "**Methods**\n"
+            "- Perpetuity growth: terminal FCF x (1 + g) / (WACC - g)\n"
+            "- Exit multiple: terminal operating metric x justified market multiple\n\n"
+            "Use a mature growth rate below long-run nominal economic growth, normalized margins and reinvestment, and a WACC consistent with steady-state risk. Cross-check both methods because terminal value often dominates total enterprise value.\n\n"
+            "**Methodology**\n"
+            f"- {fallback_reason}"
+        )),
+        (("equity beta", "beta"), (
+            "**Direct answer**\n"
+            "Beta estimates an asset's sensitivity to broad market returns and represents systematic risk in CAPM.\n\n"
+            "**Interpretation**\n"
+            "- Beta above 1 implies greater market sensitivity; below 1 implies less.\n"
+            "- Levered beta includes financial leverage; unlevered beta isolates operating risk.\n"
+            "- Estimates depend on benchmark, return frequency, lookback window, and unusual market regimes.\n\n"
+            "For valuation, compare peer betas, unlever and relever consistently, and use a reasonable range rather than false precision.\n\n"
+            "**Methodology**\n"
+            f"- {fallback_reason}"
+        )),
+        (("futures contract", "futures"), (
+            "**Direct answer**\n"
+            "A futures contract is a standardized exchange-traded agreement to buy or sell an underlying asset at a specified future date and price.\n\n"
+            "**Mechanics and risk**\n"
+            "- Positions are margined and marked to market daily.\n"
+            "- Hedgers reduce price exposure; speculators take directional or relative-value exposure.\n"
+            "- Leverage means small price moves can create large gains, losses, and margin calls.\n"
+            "- Futures prices reflect spot price, financing, storage, income, convenience yield, and time.\n\n"
+            "Account for contract size, expiry, roll yield, basis risk, liquidity, and collateral management.\n\n"
+            "**Methodology**\n"
+            f"- {fallback_reason}"
+        )),
         (("emergency fund",), (
             "**Direct answer**\n"
             "Target three to six months of essential expenses, or six to twelve months when income is volatile or dependents rely on you.\n\n"
