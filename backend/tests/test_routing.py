@@ -219,6 +219,26 @@ class QwenModelRoutingTests(unittest.TestCase):
 
 
 class FinanceFallbackTests(unittest.TestCase):
+    def test_core_finance_topics_have_specific_deterministic_answers(self):
+        prompts_and_markers = [
+            ("Explain IRR", "multiple IRRs"),
+            ("Explain EV/EBITDA", "Enterprise value"),
+            ("Explain price to book", "book value per share"),
+            ("Explain ROIC", "NOPAT"),
+            ("Explain the Sharpe ratio", "standard deviation"),
+            ("Explain the Sortino ratio", "downside deviation"),
+            ("Explain Value at Risk", "expected shortfall"),
+            ("Explain CAPM", "equity risk premium"),
+            ("Explain credit spreads", "option-adjusted"),
+            ("Explain option Greeks", "Gamma"),
+            ("Explain diversification", "correlation"),
+            ("How does inflation affect investments?", "purchasing power"),
+        ]
+        for prompt, marker in prompts_and_markers:
+            with self.subTest(prompt=prompt):
+                result = main.build_finance_concept_fallback(prompt, "deterministic guidance")
+                self.assertIn(marker, result)
+
     def test_emergency_fund_uses_supplied_monthly_spending(self):
         result = main.build_finance_concept_fallback(
             "Build an emergency fund plan for $2,000 monthly spending.",
