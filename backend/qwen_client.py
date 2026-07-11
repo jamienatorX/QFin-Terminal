@@ -17,18 +17,24 @@ def qwen_is_configured() -> bool:
     return bool(os.getenv("DASHSCOPE_API_KEY"))
 
 
-def _timeout_seconds() -> float:
+def _timeout_seconds(task_type: str = "fast") -> float:
+    defaults = {"general": 15.0, "fast": 20.0, "news": 20.0, "vision": 30.0, "deep": 40.0}
+    task_env = os.getenv(f"DASHSCOPE_TIMEOUT_SECONDS_{task_type.upper()}")
     try:
-        return max(5.0, float(os.getenv("DASHSCOPE_TIMEOUT_SECONDS", "45")))
+        configured = float(task_env or os.getenv("DASHSCOPE_TIMEOUT_SECONDS", "45"))
+        return max(5.0, min(configured, defaults.get(task_type, 20.0)))
     except Exception:
-        return 45.0
+        return defaults.get(task_type, 20.0)
 
 
-def _total_timeout_seconds() -> float:
+def _total_timeout_seconds(task_type: str = "fast") -> float:
+    defaults = {"general": 25.0, "fast": 35.0, "news": 35.0, "vision": 50.0, "deep": 65.0}
+    task_env = os.getenv(f"DASHSCOPE_TOTAL_TIMEOUT_SECONDS_{task_type.upper()}")
     try:
-        return max(10.0, float(os.getenv("DASHSCOPE_TOTAL_TIMEOUT_SECONDS", "75")))
+        configured = float(task_env or os.getenv("DASHSCOPE_TOTAL_TIMEOUT_SECONDS", "75"))
+        return max(10.0, min(configured, defaults.get(task_type, 35.0)))
     except Exception:
-        return 75.0
+        return defaults.get(task_type, 35.0)
 
 
 def _max_tokens(task_type: str) -> int:
@@ -119,6 +125,9 @@ def _detect_task_type(messages: List[Dict[str, Any]]) -> str:
     if any(signal in text for signal in news_signals):
         return "news"
 
+    if "internal route: general question" in text:
+        return "general"
+
     finance_signals = [
         "internal route: exact ticker comparison",
         "internal route: single company analysis",
@@ -184,8 +193,8 @@ async def call_qwen(
 
     task_type = _detect_task_type(messages)
     candidate_models = _model_chain(task_type, model)
-    attempt_timeout_seconds = _timeout_seconds()
-    total_timeout_seconds = _total_timeout_seconds()
+    attempt_timeout_seconds = _timeout_seconds(task_type)
+    total_timeout_seconds = _total_timeout_seconds(task_type)
     deadline = time.monotonic() + total_timeout_seconds
 
     headers = {

@@ -24,6 +24,10 @@ services:
         value: "45"
       - key: DASHSCOPE_TOTAL_TIMEOUT_SECONDS
         value: "75"
+      - key: FINANCIAL_DATA_TIMEOUT_SECONDS
+        value: "18"
+      - key: ALLOWED_ORIGINS
+        value: http://localhost:5173,http://127.0.0.1:5173,https://q-fin-terminal.vercel.app
       - key: NEWSAPI_KEY
         sync: false
       - key: SUPABASE_URL

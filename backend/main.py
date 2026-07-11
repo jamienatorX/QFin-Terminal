@@ -16,7 +16,7 @@ import httpx
 from fastapi import FastAPI, File, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from api_registry import fetch_public_api_facts, list_public_api_registry
 from financial_data_warehouse import (
@@ -33,11 +33,19 @@ from qwen_client import QwenClientError, call_qwen, qwen_is_configured
 
 logger = logging.getLogger("qfin")
 
-app = FastAPI(title="QFin Terminal API", version="qfin-agent-2.7")
+def configured_cors_origins() -> List[str]:
+    configured = os.getenv("ALLOWED_ORIGINS", "")
+    if configured.strip():
+        return [origin.strip() for origin in configured.split(",") if origin.strip()]
+    return ["http://localhost:5173", "http://127.0.0.1:5173"]
+
+
+app = FastAPI(title="QFin Terminal API", version="qfin-agent-2.8")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=configured_cors_origins(),
+    allow_origin_regex=r"https://q-fin-terminal(?:-[a-z0-9-]+)?\.vercel\.app",
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -56,7 +64,7 @@ Evidence policy:
 - For live company, market, quarter, comparison, news, or backtest questions, use only the backend facts provided in the prompt.
 - Never substitute one ticker for another. If a requested ticker is missing or unresolved, state exactly which ticker is missing.
 - Do not fabricate figures, dates, filings, sources, prices, ratios, or news.
-- If supplied facts are incomplete, say what is missing and continue with the reliable parts.
+- If supplied facts are incomplete, prioritize the reliable metrics and summarize material coverage gaps once.
 
 Style:
 - Use clean markdown with short headings, readable paragraphs, and concise tables.
@@ -74,7 +82,7 @@ Finance answer contract:
 - For news, summarize the five provided items, separate what happened from why it matters, and state sentiment.
 - For finance concepts, explain the idea clearly, include formulas when useful, and add practical interpretation.
 - Use markdown tables where they improve scanability.
-- If a metric is unavailable, write "Unavailable in supplied backend data" rather than guessing.
+- Never guess a missing metric. Omit nonessential missing rows and summarize material coverage gaps once.
 """.strip()
 
 AGENT_SOURCE_NOTE = """
@@ -221,6 +229,7 @@ MARKET_CONTEXTS = {
 STOP = {
     "AI", "API", "CEO", "CFO", "GDP", "CPI", "USD", "IDR", "WACC", "DCF", "ROE",
     "ROA", "NIM", "NPL", "CASA", "CAGR", "EBIT", "EBITDA", "EV", "IRR", "NPV",
+    "ETF", "IPO", "REIT", "ESG", "CAPM", "FCF", "VAR", "FX",
     "THE", "AND", "YOU", "HELLO", "HI", "HEY", "OK", "YES", "NO", "MODE", "QFIN",
     "S", "P", "SP", "VS"
 }
@@ -233,7 +242,13 @@ FINANCE_WORDS = [
     "balance sheet", "capm", "var", "beta", "sharpe", "sortino", "volatility",
     "wacc", "dcf", "discounted cash flow", "roe", "roa", "nim", "npl", "casa",
     "cagr", "ebit", "ebitda", "enterprise value", "irr", "npv", "cost of capital",
-    "portfolio", "investing", "investment", "budget", "emergency fund", "personal finance"
+    "portfolio", "investing", "investment", "budget", "emergency fund", "personal finance",
+    "inflation", "interest rate", "monetary policy", "fiscal policy", "recession", "gdp",
+    "bond", "bonds", "duration", "convexity", "credit spread", "treasury", "fixed income",
+    "option", "options", "future", "futures", "derivative", "derivatives", "hedge", "hedging",
+    "etf", "mutual fund", "index fund", "forex", "currency", "exchange rate", "commodity",
+    "working capital", "leverage", "goodwill", "depreciation", "amortization", "terminal value",
+    "mortgage", "loan", "retirement", "pension", "insurance", "tax", "taxes", "capital gains"
 ]
 
 DETAILED_SIGNALS = [
@@ -317,17 +332,17 @@ class EvidencePacket(BaseModel):
     query: str
     route: Dict[str, Any]
     gathered_at: str
-    items: List[EvidenceItem] = []
+    items: List[EvidenceItem] = Field(default_factory=list)
     used_live_data: bool = False
-    gaps: List[str] = []
-    warnings: List[str] = []
+    gaps: List[str] = Field(default_factory=list)
+    warnings: List[str] = Field(default_factory=list)
 
 
 class AgentRiskReview(BaseModel):
     status: Literal["pass", "review"]
-    warnings: List[str] = []
-    missing_data: List[str] = []
-    allowed_tickers: List[str] = []
+    warnings: List[str] = Field(default_factory=list)
+    missing_data: List[str] = Field(default_factory=list)
+    allowed_tickers: List[str] = Field(default_factory=list)
 
 
 FORUM_THREADS: List[Dict[str, Any]] = []
@@ -737,13 +752,17 @@ def warehouse_finance_overlay(snapshot: Dict[str, Any], live_data: Optional[Dict
 
     revenue = latest_statement_metric_value(statement_rows, "income_statement", ["revenue", "totalRevenue"])
     gross_profit = latest_statement_metric_value(statement_rows, "income_statement", ["grossProfit", "grossProfitRatio"])
+    operating_income = latest_statement_metric_value(statement_rows, "income_statement", ["operatingIncome"])
+    ebitda = latest_statement_metric_value(statement_rows, "income_statement", ["ebitda", "EBITDA"])
     net_income = latest_statement_metric_value(statement_rows, "income_statement", ["netIncome"])
     operating_cashflow = latest_statement_metric_value(statement_rows, "cash_flow", ["operatingCashFlow"])
     free_cashflow = latest_statement_metric_value(statement_rows, "cash_flow", ["freeCashFlow"])
+    capital_expenditure = latest_statement_metric_value(statement_rows, "cash_flow", ["capitalExpenditure"])
     debt = latest_statement_metric_value(statement_rows, "balance_sheet", ["totalDebt", "netDebt"])
     cash_value = latest_statement_metric_value(statement_rows, "balance_sheet", ["cashAndCashEquivalents", "cashAndShortTermInvestments"])
     equity = latest_statement_metric_value(statement_rows, "balance_sheet", ["totalStockholdersEquity", "totalEquity"])
     gross_margin = (gross_profit / revenue) if revenue not in (None, 0) and gross_profit is not None and gross_profit > 1 else None
+    operating_margin = (operating_income / revenue) if revenue not in (None, 0) and operating_income is not None else None
     net_margin = (net_income / revenue) if revenue not in (None, 0) and net_income is not None else None
     debt_to_equity = (debt / equity) if debt is not None and equity not in (None, 0) else None
 
@@ -752,14 +771,19 @@ def warehouse_finance_overlay(snapshot: Dict[str, Any], live_data: Optional[Dict
         "revenue_growth": warehouse_growth_pct(statement_rows, "income_statement", ["revenue", "totalRevenue"]),
         "gross_profit": money(gross_profit, currency) if gross_profit and gross_profit > 1 else None,
         "gross_margin": pct(gross_margin),
-        "operating_margin": None,
+        "operating_income": money(operating_income, currency),
+        "operating_margin": pct(operating_margin),
+        "ebitda": money(ebitda, currency),
         "net_income": money(net_income, currency),
         "net_margin": pct(net_margin),
         "operating_cashflow": money(operating_cashflow, currency),
         "free_cashflow": money(free_cashflow, currency),
+        "capital_expenditure": money(capital_expenditure, currency),
         "total_debt": money(debt, currency),
         "cash": money(cash_value, currency),
         "debt_to_equity": pct(debt_to_equity),
+        "return_on_equity": pct(valuation.get("roe")),
+        "return_on_assets": pct(valuation.get("roa")),
     }
 
     market_data = {
@@ -773,6 +797,7 @@ def warehouse_finance_overlay(snapshot: Dict[str, Any], live_data: Optional[Dict
         "price_to_book": f"{as_float(valuation.get('pb_ratio')):.2f}x" if as_float(valuation.get("pb_ratio")) is not None else None,
         "price_to_sales": f"{as_float(valuation.get('ps_ratio')):.2f}x" if as_float(valuation.get("ps_ratio")) is not None else None,
         "ev_ebitda": f"{as_float(valuation.get('ev_ebitda')):.2f}x" if as_float(valuation.get("ev_ebitda")) is not None else None,
+        "dividend_yield": pct(valuation.get("dividend_yield")),
     }
 
     historical_financials = {
@@ -854,22 +879,20 @@ def merge_financial_facts(ticker: str, warehouse_snapshot: Dict[str, Any], live_
 
 async def get_company_facts_async(ticker: str) -> Dict[str, Any]:
     normalized_ticker = ticker.strip().upper()
-    warehouse_snapshot = load_warehouse_snapshot(normalized_ticker)
+    warehouse_snapshot = await asyncio.to_thread(load_warehouse_snapshot, normalized_ticker)
+
+    # Current prices and provider-specific ratios complement even a healthy warehouse.
+    # Starting this early lets comparison requests enrich both companies concurrently.
+    live_task = asyncio.create_task(fetch_financial_data_async(normalized_ticker))
 
     warehouse_ingest = None
     if fmp_is_configured() and warehouse_needs_refresh(warehouse_snapshot):
         warehouse_ingest = await ingest_fmp_to_warehouse(normalized_ticker)
-        refreshed_snapshot = load_warehouse_snapshot(normalized_ticker)
+        refreshed_snapshot = await asyncio.to_thread(load_warehouse_snapshot, normalized_ticker)
         if warehouse_snapshot_is_usable(refreshed_snapshot) or refreshed_snapshot.get("status") != "error":
             warehouse_snapshot = refreshed_snapshot
 
-    live_needed = not warehouse_snapshot_is_usable(warehouse_snapshot)
-    if warehouse_snapshot_is_usable(warehouse_snapshot):
-        valuation = warehouse_snapshot.get("valuation") or {}
-        if as_float((valuation or {}).get("market_cap")) is None:
-            live_needed = True
-
-    live_data = await fetch_financial_data_async(normalized_ticker) if live_needed else None
+    live_data = await live_task
     merged = merge_financial_facts(normalized_ticker, warehouse_snapshot, live_data)
     if warehouse_ingest is not None:
         merged["warehouse_ingest"] = warehouse_ingest
@@ -1120,7 +1143,7 @@ def finance_intent(text: str) -> bool:
     lower = text.lower()
     return has_finance_keywords(text) or any(
         re.search(rf"\b{re.escape(alias)}\b", lower) for alias in ALIASES
-    ) or has_symbol_like_token(text) or has_market_context(text)
+    ) or has_symbol_like_token(text)
 
 
 def preferred_market_suffixes(text: str) -> List[str]:
@@ -1568,7 +1591,12 @@ def resolve_single_ticker(text: str, provided: Optional[str] = None, allow_searc
 
 
 def parse_compare_request(text: str) -> Optional[Dict[str, Any]]:
-    match = re.search(r"\bcompare\b(.+?)\b(vs\.?|versus|and)\b(.+)", text, flags=re.I)
+    patterns = [
+        r"\bcompare\b(.+?)\b(vs\.?|versus|and|with)\b(.+)",
+        r"^(.+?)\b(vs\.?|versus)\b(.+)$",
+        r"\bwhich(?:\s+stock)?\s+is\s+better[,:]?\s+(.+?)\b(or)\b(.+)",
+    ]
+    match = next((candidate for pattern in patterns if (candidate := re.search(pattern, text, flags=re.I))), None)
     if not match:
         return None
 
@@ -1594,11 +1622,11 @@ def parse_compare_request(text: str) -> Optional[Dict[str, Any]]:
     if len(direct_candidates) >= 2:
         left_ticker, right_ticker = direct_candidates[:2]
     else:
-        left_ticker = resolve_single_ticker(left_text, allow_search=False)
-        right_ticker = resolve_single_ticker(right_text, allow_search=False)
-        if separator != "and":
-            left_ticker = left_ticker or resolve_single_ticker(left_text)
-            right_ticker = right_ticker or resolve_single_ticker(right_text)
+        left_ticker = resolve_single_ticker(f"stock {left_text}", allow_search=False)
+        right_ticker = resolve_single_ticker(f"stock {right_text}", allow_search=False)
+        if separator in {"vs", "versus", "with", "or"}:
+            left_ticker = left_ticker or resolve_single_ticker(f"stock {left_text}")
+            right_ticker = right_ticker or resolve_single_ticker(f"stock {right_text}")
 
     if not left_ticker or not right_ticker:
         return None
@@ -1819,9 +1847,12 @@ def fetch_financial_data(ticker: str) -> Dict[str, Any]:
 
         revenue = as_float(info.get("totalRevenue")) or row(income, ["Total Revenue", "Operating Revenue"])
         gross_profit = as_float(info.get("grossProfits")) or row(income, ["Gross Profit"])
+        operating_income = as_float(info.get("operatingIncome")) or row(income, ["Operating Income"])
+        ebitda = as_float(info.get("ebitda")) or row(income, ["EBITDA", "Normalized EBITDA"])
         net_income = as_float(info.get("netIncomeToCommon")) or row(income, ["Net Income", "Net Income Common Stockholders"])
         operating_cashflow = as_float(info.get("operatingCashflow")) or row(cashflow, ["Operating Cash Flow", "Total Cash From Operating Activities"])
         free_cashflow = as_float(info.get("freeCashflow")) or row(cashflow, ["Free Cash Flow"])
+        capital_expenditure = row(cashflow, ["Capital Expenditure", "Capital Expenditures"])
         debt = as_float(info.get("totalDebt")) or row(balance, ["Total Debt", "Net Debt"])
         cash = as_float(info.get("totalCash")) or row(balance, ["Cash And Cash Equivalents", "Cash Cash Equivalents And Short Term Investments"])
         equity = row(balance, ["Stockholders Equity", "Total Equity Gross Minority Interest", "Total Stockholder Equity"])
@@ -1859,7 +1890,11 @@ def fetch_financial_data(ticker: str) -> Dict[str, Any]:
         if net_margin is None:
             net_margin = as_float(finnhub_metrics.get("netMarginTTM"))
         operating_margin = None
-        if as_float(finnhub_metrics.get("operatingMarginTTM")) is not None:
+        if operating_income is not None and revenue not in (None, 0):
+            operating_margin = operating_income / revenue
+        elif as_float(info.get("operatingMargins")) is not None:
+            operating_margin = as_float(info.get("operatingMargins"))
+        elif as_float(finnhub_metrics.get("operatingMarginTTM")) is not None:
             operating_margin = as_float(finnhub_metrics.get("operatingMarginTTM"))
 
         debt_to_equity = debt / equity if debt is not None and equity not in (None, 0) else None
@@ -1867,6 +1902,18 @@ def fetch_financial_data(ticker: str) -> Dict[str, Any]:
             raw = as_float(info.get("debtToEquity"))
             if raw is not None:
                 debt_to_equity = raw / 100 if raw > 5 else raw
+
+        price_to_book = as_float(info.get("priceToBook")) or as_float(finnhub_metrics.get("pbAnnual"))
+        price_to_sales = as_float(info.get("priceToSalesTrailing12Months")) or as_float(finnhub_metrics.get("psTTM"))
+        ev_ebitda = as_float(info.get("enterpriseToEbitda")) or as_float(finnhub_metrics.get("evEbitdaTTM"))
+        dividend_yield = as_float(info.get("dividendYield")) or as_float(finnhub_metrics.get("dividendYieldIndicatedAnnual"))
+        return_on_equity = as_float(info.get("returnOnEquity")) or as_float(finnhub_metrics.get("roeTTM"))
+        return_on_assets = as_float(info.get("returnOnAssets")) or as_float(finnhub_metrics.get("roaTTM"))
+        current_ratio = as_float(info.get("currentRatio")) or as_float(finnhub_metrics.get("currentRatioAnnual"))
+        quick_ratio = as_float(info.get("quickRatio")) or as_float(finnhub_metrics.get("quickRatioAnnual"))
+        beta = as_float(info.get("beta")) or as_float(finnhub_metrics.get("beta"))
+        week_52_high = as_float(info.get("fiftyTwoWeekHigh")) or as_float(fast.get("year_high"))
+        week_52_low = as_float(info.get("fiftyTwoWeekLow")) or as_float(fast.get("year_low"))
 
         historical_financials = {
             "annual_revenue": extract_historical_series(income, ["Total Revenue", "Operating Revenue"], currency),
@@ -1894,20 +1941,34 @@ def fetch_financial_data(ticker: str) -> Dict[str, Any]:
                 "enterprise_value": money(enterprise_value, currency),
                 "trailing_pe": f"{trailing_pe:.2f}x" if trailing_pe is not None else None,
                 "forward_pe": f"{forward_pe:.2f}x" if forward_pe is not None else None,
+                "price_to_book": f"{price_to_book:.2f}x" if price_to_book is not None else None,
+                "price_to_sales": f"{price_to_sales:.2f}x" if price_to_sales is not None else None,
+                "ev_ebitda": f"{ev_ebitda:.2f}x" if ev_ebitda is not None else None,
+                "dividend_yield": pct(dividend_yield),
+                "beta": round(beta, 2) if beta is not None else None,
+                "52_week_high": round(week_52_high, 2) if week_52_high is not None else None,
+                "52_week_low": round(week_52_low, 2) if week_52_low is not None else None,
             },
             "financial_metrics": {
                 "total_revenue": money(revenue, currency),
                 "revenue_growth": pct(revenue_growth),
                 "gross_profit": money(gross_profit, currency),
                 "gross_margin": pct(gross_margin),
+                "operating_income": money(operating_income, currency),
                 "operating_margin": pct(operating_margin),
+                "ebitda": money(ebitda, currency),
                 "net_income": money(net_income, currency),
                 "net_margin": pct(net_margin),
                 "operating_cashflow": money(operating_cashflow, currency),
                 "free_cashflow": money(free_cashflow, currency),
+                "capital_expenditure": money(capital_expenditure, currency),
                 "total_debt": money(debt, currency),
                 "cash": money(cash, currency),
                 "debt_to_equity": pct(debt_to_equity),
+                "return_on_equity": pct(return_on_equity),
+                "return_on_assets": pct(return_on_assets),
+                "current_ratio": f"{current_ratio:.2f}x" if current_ratio is not None else None,
+                "quick_ratio": f"{quick_ratio:.2f}x" if quick_ratio is not None else None,
             },
             "historical_financials": historical_financials,
             "earnings_history": finnhub.get("earnings"),
@@ -2073,7 +2134,7 @@ def build_model_highlights(stats: Dict[str, str], profile: Dict[str, str]) -> Li
 def build_general_prompt(query: str) -> List[Dict[str, str]]:
     return [
         {"role": "system", "content": f"{SYSTEM_PROMPT}\n\n{agent_runtime_context()}"},
-        {"role": "user", "content": query},
+        {"role": "user", "content": f"Internal route: general question\nUser request: {query}"},
     ]
 
 
@@ -2167,47 +2228,98 @@ def build_headline_digest(news: Dict[str, Any], limit: int = 5) -> str:
     return "\n".join(lines)
 
 
-def metric_from_payload(payload: Dict[str, Any], section: str, key: str) -> str:
+def metric_from_payload(payload: Dict[str, Any], section: str, key: str) -> Optional[str]:
     value = (payload.get(section) or {}).get(key)
     if value in (None, "", [], {}):
-        return "Unavailable in supplied backend data"
+        return None
     return clean_text(str(value))
+
+
+def available_metric_lines(
+    payload: Dict[str, Any],
+    section: str,
+    metrics: List[tuple[str, str]],
+) -> tuple[List[str], List[str]]:
+    lines: List[str] = []
+    missing: List[str] = []
+    for label, key in metrics:
+        value = metric_from_payload(payload, section, key)
+        if value is None:
+            missing.append(label)
+        else:
+            lines.append(f"- {label}: {value}")
+    return lines, missing
+
+
+def metric_number(payload: Dict[str, Any], section: str, key: str) -> Optional[float]:
+    value = metric_from_payload(payload, section, key)
+    if value is None:
+        return None
+    match = re.search(r"-?[0-9]+(?:,[0-9]{3})*(?:\.[0-9]+)?", value)
+    return as_float(match.group(0).replace(",", "")) if match else None
+
+
+def comparison_leader_line(
+    label: str,
+    left_ticker: str,
+    left: Dict[str, Any],
+    right_ticker: str,
+    right: Dict[str, Any],
+    section: str,
+    key: str,
+    *,
+    prefer_lower: bool = False,
+) -> Optional[str]:
+    left_number = metric_number(left, section, key)
+    right_number = metric_number(right, section, key)
+    if left_number is None or right_number is None or left_number == right_number:
+        return None
+    left_wins = left_number < right_number if prefer_lower else left_number > right_number
+    winner = left_ticker if left_wins else right_ticker
+    left_text = metric_from_payload(left, section, key)
+    right_text = metric_from_payload(right, section, key)
+    return f"- {label}: {winner} leads ({left_ticker} {left_text} vs {right_ticker} {right_text})."
 
 
 def build_company_facts_fallback(query: str, facts: Dict[str, Any], fallback_reason: str) -> str:
     ticker = facts.get("ticker") or "Unknown ticker"
     company_name = clean_text(str(facts.get("company_name") or ticker))
     source = clean_text(str(facts.get("source") or "QFin backend finance stack"))
-    market_data = facts.get("market_data") or {}
-    financial_metrics = facts.get("financial_metrics") or {}
     historical_financials = facts.get("historical_financials") or {}
 
+    market_lines, missing_market = available_metric_lines(
+        facts,
+        "market_data",
+        [
+            ("Last price", "last_price"), ("Price change", "price_change_pct"),
+            ("Market cap", "market_cap"), ("Enterprise value", "enterprise_value"),
+            ("Trailing P/E", "trailing_pe"), ("Forward P/E", "forward_pe"),
+            ("Price/book", "price_to_book"), ("Price/sales", "price_to_sales"),
+            ("EV/EBITDA", "ev_ebitda"), ("Dividend yield", "dividend_yield"),
+        ],
+    )
+    fundamental_lines, missing_fundamentals = available_metric_lines(
+        facts,
+        "financial_metrics",
+        [
+            ("Revenue", "total_revenue"), ("Revenue growth", "revenue_growth"),
+            ("Gross profit", "gross_profit"), ("Gross margin", "gross_margin"),
+            ("Operating income", "operating_income"), ("Operating margin", "operating_margin"),
+            ("EBITDA", "ebitda"), ("Net income", "net_income"), ("Net margin", "net_margin"),
+            ("Operating cash flow", "operating_cashflow"), ("Free cash flow", "free_cashflow"),
+            ("Total debt", "total_debt"), ("Cash", "cash"), ("Debt/equity", "debt_to_equity"),
+            ("Return on equity", "return_on_equity"), ("Return on assets", "return_on_assets"),
+        ],
+    )
+
     lines = [
-        f"**Direct answer**",
+        "**Direct answer**",
         f"I pulled the available backend facts for {company_name} ({ticker}). This is a grounded fallback summary while the full model-written report is unavailable.",
-        "",
-        "**Market snapshot**",
-        f"- Last price: {metric_from_payload(facts, 'market_data', 'last_price')}",
-        f"- Price change: {metric_from_payload(facts, 'market_data', 'price_change_pct')}",
-        f"- Market cap: {metric_from_payload(facts, 'market_data', 'market_cap')}",
-        f"- Enterprise value: {metric_from_payload(facts, 'market_data', 'enterprise_value')}",
-        f"- Trailing P/E: {metric_from_payload(facts, 'market_data', 'trailing_pe')}",
-        f"- Forward P/E: {metric_from_payload(facts, 'market_data', 'forward_pe')}",
-        "",
-        "**Fundamentals**",
-        f"- Revenue: {metric_from_payload(facts, 'financial_metrics', 'total_revenue')}",
-        f"- Revenue growth: {metric_from_payload(facts, 'financial_metrics', 'revenue_growth')}",
-        f"- Gross profit: {metric_from_payload(facts, 'financial_metrics', 'gross_profit')}",
-        f"- Gross margin: {metric_from_payload(facts, 'financial_metrics', 'gross_margin')}",
-        f"- Operating margin: {metric_from_payload(facts, 'financial_metrics', 'operating_margin')}",
-        f"- Net income: {metric_from_payload(facts, 'financial_metrics', 'net_income')}",
-        f"- Net margin: {metric_from_payload(facts, 'financial_metrics', 'net_margin')}",
-        f"- Operating cash flow: {metric_from_payload(facts, 'financial_metrics', 'operating_cashflow')}",
-        f"- Free cash flow: {metric_from_payload(facts, 'financial_metrics', 'free_cashflow')}",
-        f"- Total debt: {metric_from_payload(facts, 'financial_metrics', 'total_debt')}",
-        f"- Cash: {metric_from_payload(facts, 'financial_metrics', 'cash')}",
-        f"- Debt to equity: {metric_from_payload(facts, 'financial_metrics', 'debt_to_equity')}",
     ]
+    if market_lines:
+        lines.extend(["", "**Market snapshot**", *market_lines])
+    if fundamental_lines:
+        lines.extend(["", "**Fundamentals**", *fundamental_lines])
 
     annual_revenue = historical_financials.get("annual_revenue") or {}
     annual_net_income = historical_financials.get("annual_net_income") or {}
@@ -2216,8 +2328,18 @@ def build_company_facts_fallback(query: str, facts: Dict[str, Any], fallback_rea
             [
                 "",
                 "**History available**",
-                f"- Annual revenue periods: {', '.join(annual_revenue.keys()) if annual_revenue else 'Unavailable in supplied backend data'}",
-                f"- Annual net income periods: {', '.join(annual_net_income.keys()) if annual_net_income else 'Unavailable in supplied backend data'}",
+                *([f"- Annual revenue periods: {', '.join(annual_revenue.keys())}"] if annual_revenue else []),
+                *([f"- Annual net income periods: {', '.join(annual_net_income.keys())}"] if annual_net_income else []),
+            ]
+        )
+
+    missing_count = len(missing_market) + len(missing_fundamentals)
+    if missing_count:
+        lines.extend(
+            [
+                "",
+                "**Coverage note**",
+                f"- {missing_count} secondary metrics were not returned by the connected providers and were omitted rather than guessed.",
             ]
         )
 
@@ -2249,10 +2371,37 @@ def build_comparison_facts_fallback(
     left = facts.get(tickers[0]) or {}
     right = facts.get(tickers[1]) or {}
 
-    def row_line(label: str, section: str, key: str) -> str:
+    def row_line(label: str, section: str, key: str) -> Optional[str]:
         left_value = metric_from_payload(left, section, key)
         right_value = metric_from_payload(right, section, key)
-        return f"| {label} | {left_value} | {right_value} |"
+        if left_value is None and right_value is None:
+            return None
+        return f"| {label} | {left_value or 'Not reported'} | {right_value or 'Not reported'} |"
+
+    comparison_rows = [
+        row_line("Last price", "market_data", "last_price"),
+        row_line("Market cap", "market_data", "market_cap"),
+        row_line("Trailing P/E", "market_data", "trailing_pe"),
+        row_line("Forward P/E", "market_data", "forward_pe"),
+        row_line("Price/book", "market_data", "price_to_book"),
+        row_line("EV/EBITDA", "market_data", "ev_ebitda"),
+        row_line("Revenue", "financial_metrics", "total_revenue"),
+        row_line("Revenue growth", "financial_metrics", "revenue_growth"),
+        row_line("Gross margin", "financial_metrics", "gross_margin"),
+        row_line("Operating margin", "financial_metrics", "operating_margin"),
+        row_line("Net margin", "financial_metrics", "net_margin"),
+        row_line("Free cash flow", "financial_metrics", "free_cashflow"),
+        row_line("Debt/equity", "financial_metrics", "debt_to_equity"),
+        row_line("Return on equity", "financial_metrics", "return_on_equity"),
+    ]
+    comparison_rows = [row for row in comparison_rows if row]
+    leader_lines = [
+        comparison_leader_line("Revenue growth", tickers[0], left, tickers[1], right, "financial_metrics", "revenue_growth"),
+        comparison_leader_line("Operating margin", tickers[0], left, tickers[1], right, "financial_metrics", "operating_margin"),
+        comparison_leader_line("Forward P/E valuation", tickers[0], left, tickers[1], right, "market_data", "forward_pe", prefer_lower=True),
+        comparison_leader_line("Balance-sheet leverage", tickers[0], left, tickers[1], right, "financial_metrics", "debt_to_equity", prefer_lower=True),
+    ]
+    leader_lines = [line for line in leader_lines if line]
 
     lines = [
         "**Direct answer**",
@@ -2260,20 +2409,16 @@ def build_comparison_facts_fallback(
         "",
         f"| Metric | {tickers[0]} | {tickers[1]} |",
         "| --- | --- | --- |",
-        row_line("Last price", "market_data", "last_price"),
-        row_line("Market cap", "market_data", "market_cap"),
-        row_line("Trailing P/E", "market_data", "trailing_pe"),
-        row_line("Forward P/E", "market_data", "forward_pe"),
-        row_line("Revenue", "financial_metrics", "total_revenue"),
-        row_line("Revenue growth", "financial_metrics", "revenue_growth"),
-        row_line("Gross margin", "financial_metrics", "gross_margin"),
-        row_line("Operating margin", "financial_metrics", "operating_margin"),
-        row_line("Net margin", "financial_metrics", "net_margin"),
-        row_line("Free cash flow", "financial_metrics", "free_cashflow"),
-        row_line("Debt to equity", "financial_metrics", "debt_to_equity"),
+        *comparison_rows,
+        *(["", "**Measured leaders**", *leader_lines] if leader_lines else []),
         "",
         "**Bottom line**",
-        "Use this table as the reliable side-by-side baseline. Any field marked unavailable is genuinely missing from the supplied backend data rather than guessed.",
+        (
+            "The measured-leader summary identifies the stronger supplied growth, profitability, valuation, and leverage signals. "
+            "Use those signals together rather than treating any single ratio as a complete investment verdict."
+            if leader_lines
+            else "Use this table as the reliable side-by-side baseline. Metrics missing for both companies were omitted rather than guessed."
+        ),
         "",
         "**Caveat**",
         f"- {fallback_reason}",
@@ -2283,8 +2428,8 @@ def build_comparison_facts_fallback(
 
 def build_finance_concept_fallback(query: str, fallback_reason: str) -> str:
     normalized = normalize_user_text(query)
-    concepts = {
-        "free cash flow yield": (
+    concepts = [
+        (("free cash flow yield", "fcf yield"), (
             "**Direct answer**\n"
             "Free cash flow yield measures how much free cash flow a company generates relative to its market value.\n\n"
             "**Formula**\n"
@@ -2294,8 +2439,8 @@ def build_finance_concept_fallback(query: str, fallback_reason: str) -> str:
             "- It should be checked together with balance-sheet quality and whether free cash flow is durable.\n\n"
             "**Caveat**\n"
             f"- {fallback_reason}"
-        ),
-        "price to earnings": (
+        )),
+        (("price to earnings", "p e ratio", "pe ratio"), (
             "**Direct answer**\n"
             "Price-to-earnings compares a company's share price with its earnings per share.\n\n"
             "**Formula**\n"
@@ -2305,8 +2450,8 @@ def build_finance_concept_fallback(query: str, fallback_reason: str) -> str:
             "- Low P/E can indicate value, cyclicality, or business risk.\n\n"
             "**Caveat**\n"
             f"- {fallback_reason}"
-        ),
-        "return on equity": (
+        )),
+        (("return on equity", "roe"), (
             "**Direct answer**\n"
             "Return on equity measures how efficiently a company turns shareholder equity into profit.\n\n"
             "**Formula**\n"
@@ -2315,11 +2460,63 @@ def build_finance_concept_fallback(query: str, fallback_reason: str) -> str:
             "- Higher ROE is generally better, but very high ROE driven by heavy leverage needs caution.\n\n"
             "**Caveat**\n"
             f"- {fallback_reason}"
-        ),
-    }
+        )),
+        (("wacc", "weighted average cost of capital"), (
+            "**Direct answer**\n"
+            "WACC is the blended required return demanded by a company's debt and equity investors. It is commonly used as the discount rate for unlevered free cash flow.\n\n"
+            "**Formula**\n"
+            "- WACC = E/(D+E) x cost of equity + D/(D+E) x pre-tax cost of debt x (1 - tax rate)\n"
+            "- Cost of equity is often estimated with CAPM: risk-free rate + beta x equity risk premium\n\n"
+            "**Interpretation**\n"
+            "A higher WACC lowers present value. Match capital structure, currency, inflation basis, and risk assumptions to the cash flows being discounted.\n\n"
+            "**Caveat**\n"
+            f"- {fallback_reason}"
+        )),
+        (("discounted cash flow", "dcf"), (
+            "**Direct answer**\n"
+            "A DCF values an asset by forecasting future cash flows and discounting them to today at a risk-adjusted rate.\n\n"
+            "**Core steps**\n"
+            "- Forecast operating performance and free cash flow over an explicit period.\n"
+            "- Estimate terminal value using perpetual growth or an exit multiple.\n"
+            "- Discount cash flows at WACC, subtract net debt, and divide equity value by diluted shares.\n"
+            "- Test revenue, margins, WACC, and terminal growth in a sensitivity table.\n\n"
+            "**Caveat**\n"
+            f"- {fallback_reason}"
+        )),
+        (("net present value", "npv"), (
+            "**Direct answer**\n"
+            "NPV is the present value of future cash inflows minus the present value of cash outflows.\n\n"
+            "**Formula**\n"
+            "- NPV = sum(cash flow at time t / (1 + discount rate)^t) - initial investment\n\n"
+            "**Decision rule**\n"
+            "Positive NPV creates value at the chosen discount rate; compare mutually exclusive projects by NPV, not IRR alone.\n\n"
+            "**Caveat**\n"
+            f"- {fallback_reason}"
+        )),
+        (("emergency fund",), (
+            "**Direct answer**\n"
+            "Target three to six months of essential expenses, or six to twelve months when income is volatile or dependents rely on you.\n\n"
+            "**Practical plan**\n"
+            "- Separate essential monthly spending from discretionary spending.\n"
+            "- Keep the first month immediately accessible, then use an insured high-liquidity account for the remainder.\n"
+            "- Automate contributions after payday and refill the fund after any withdrawal.\n"
+            "- Prioritize high-interest debt once a small starter buffer is in place.\n\n"
+            "**Caveat**\n"
+            f"- {fallback_reason}"
+        )),
+        (("bond duration", "duration"), (
+            "**Direct answer**\n"
+            "Duration estimates a bond's price sensitivity to interest-rate changes. Modified duration approximates the percentage price move for a one-percentage-point yield change.\n\n"
+            "**Rule of thumb**\n"
+            "- Approximate price change = -modified duration x change in yield\n"
+            "- Convexity improves the estimate for larger yield moves.\n\n"
+            "**Caveat**\n"
+            f"- {fallback_reason}"
+        )),
+    ]
 
-    for phrase, answer in concepts.items():
-        if phrase in normalized:
+    for signals, answer in concepts:
+        if any(signal in normalized for signal in signals):
             return answer
 
     return (

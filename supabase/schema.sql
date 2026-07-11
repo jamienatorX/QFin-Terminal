@@ -304,6 +304,8 @@ create policy "qfin_symbol_master_service_role_all"
   using (true)
   with check (true);
 
+grant select, insert, update, delete on table public.qfin_symbol_master to service_role;
+
 create table if not exists public.qfin_data_source_runs (
   id uuid primary key default gen_random_uuid(),
   symbol text not null,
