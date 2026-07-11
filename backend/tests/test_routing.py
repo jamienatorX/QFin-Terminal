@@ -211,8 +211,8 @@ class QwenModelRoutingTests(unittest.TestCase):
 
     def test_standard_tasks_have_shorter_budgets_than_deep_analysis(self):
         self.assertLessEqual(qwen_client._timeout_seconds("general"), 15)
-        self.assertLessEqual(qwen_client._timeout_seconds("fast"), 20)
-        self.assertLessEqual(qwen_client._total_timeout_seconds("fast"), 35)
+        self.assertLessEqual(qwen_client._timeout_seconds("fast"), 10)
+        self.assertLessEqual(qwen_client._total_timeout_seconds("fast"), 15)
         self.assertGreater(qwen_client._total_timeout_seconds("deep"), qwen_client._total_timeout_seconds("fast"))
 
 
