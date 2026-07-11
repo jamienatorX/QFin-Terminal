@@ -3257,6 +3257,9 @@ async def generate_attachment_reply(
     provided_ticker: Optional[str] = None,
 ) -> Dict[str, Any]:
     route = classify_message(query, provided_ticker)
+    explicit_symbols = extract_symbol_candidates(query)
+    if not provided_ticker and not explicit_symbols and route["kind"] in {"company", "comparison"}:
+        route = {"kind": "document_analysis", "detail": "deep"}
     facts: Any = None
     if route["kind"] == "company":
         facts = await get_company_facts_async(route["ticker"])
@@ -3269,7 +3272,7 @@ async def generate_attachment_reply(
     attachment_metadata = {
         key: value
         for key, value in attachment.items()
-        if key not in {"text", "image_data_url"}
+        if key not in {"text", "image_data_url", "table_data"}
     }
     prompt_text = (
         f"User request: {query}\n"
@@ -3302,17 +3305,7 @@ async def generate_attachment_reply(
         )
     except QwenClientError as exc:
         logger.warning("Attachment analysis fallback: %s", type(exc).__name__)
-        preview = clean_text(str(attachment.get("text") or ""))[:2500]
-        content = (
-            "**Attachment received and parsed**\n"
-            f"- File: {attachment['filename']}\n"
-            f"- Type: {attachment['kind']}\n"
-            f"- Size: {attachment['size_bytes']:,} bytes\n\n"
-            "**Extracted preview**\n"
-            f"{preview or 'The image was accepted, but vision analysis did not complete within the response budget.'}\n\n"
-            "**Next step**\n"
-            "The file parser succeeded, but the narrative analysis model did not complete in time. Retry the same message; the file must be attached again for privacy and is not stored."
-        )
+        content = build_attachment_fallback(attachment)
 
     evidence = build_evidence_packet(query, route, facts, used_live_data=bool(facts))
     review = run_agent_risk_review(route, facts, content)
@@ -3327,6 +3320,102 @@ async def generate_attachment_reply(
         "evidence": evidence.dict(),
         "risk_review": review.dict(),
     }
+
+
+def attachment_metric_label(value: str) -> str:
+    return value.replace("_", " ").strip().title()
+
+
+def build_spreadsheet_attachment_fallback(attachment: Dict[str, Any]) -> str:
+    trend_lines: List[str] = []
+    for table in attachment.get("table_data") or []:
+        records = table.get("records") or []
+        if not records:
+            continue
+        columns = table.get("columns") or []
+        period_column = next(
+            (column for column in columns if normalize_user_text(column) in {"period", "year", "date", "fiscal year"}),
+            None,
+        )
+        first_record = records[0]
+        last_record = records[-1]
+        first_period = first_record.get(period_column) if period_column else "first period"
+        last_period = last_record.get(period_column) if period_column else "latest period"
+        for column in columns:
+            if column == period_column:
+                continue
+            first_value = as_float(first_record.get(column))
+            last_value = as_float(last_record.get(column))
+            if first_value is None or last_value is None:
+                continue
+            change = last_value - first_value
+            change_pct = (change / abs(first_value) * 100) if first_value else None
+            direction = "increased" if change > 0 else "decreased" if change < 0 else "was unchanged"
+            change_text = f" ({change_pct:+.1f}%)" if change_pct is not None else ""
+            trend_lines.append(
+                f"- {attachment_metric_label(column)} {direction} from {first_value:,.2f} in {first_period} to {last_value:,.2f} in {last_period}{change_text}."
+            )
+
+    if not trend_lines:
+        trend_lines.append("- The spreadsheet was parsed, but it did not contain a comparable first-to-last numeric series.")
+    return "\n".join(
+        [
+            "**Attachment analysis**",
+            f"- File: {attachment['filename']}",
+            f"- Sheets: {', '.join(str(sheet) for sheet in attachment.get('sheets') or [])}",
+            f"- Parsed rows: {attachment.get('rows') or 0}",
+            "",
+            "**Financial trends**",
+            *trend_lines[:20],
+            "",
+            "**Interpretation**",
+            "- Compare revenue growth with operating and net income growth to assess margin direction.",
+            "- Rising cash alongside falling debt strengthens liquidity and financial flexibility; the reverse warrants closer review.",
+            "- Validate units, currency, accounting scope, and whether periods are annual or quarterly before using the figures for valuation.",
+            "",
+            "**Methodology**",
+            "- QFin calculated these trends directly from the uploaded table. The file is processed in memory and is not stored.",
+        ]
+    )
+
+
+def build_attachment_fallback(attachment: Dict[str, Any]) -> str:
+    if attachment.get("kind") == "spreadsheet":
+        return build_spreadsheet_attachment_fallback(attachment)
+
+    text = str(attachment.get("text") or "")
+    key_lines = []
+    financial_terms = (
+        "revenue", "sales", "profit", "income", "margin", "cash flow", "cash", "debt",
+        "assets", "liabilities", "equity", "dividend", "earnings", "risk",
+    )
+    for raw_line in text.splitlines():
+        line = clean_text(raw_line)
+        if line and any(term in line.lower() for term in financial_terms) and re.search(r"\d", line):
+            key_lines.append(f"- {line[:300]}")
+        if len(key_lines) >= 20:
+            break
+
+    if attachment.get("kind") == "image":
+        key_lines = ["- The image was accepted, but vision analysis did not complete within the response budget."]
+    elif not key_lines:
+        preview = clean_text(text)[:2000]
+        key_lines = [f"- {preview}" if preview else "- No financial text could be summarized deterministically."]
+
+    return "\n".join(
+        [
+            "**Attachment received and parsed**",
+            f"- File: {attachment['filename']}",
+            f"- Type: {attachment['kind']}",
+            f"- Size: {attachment['size_bytes']:,} bytes",
+            "",
+            "**Key extracted disclosures**",
+            *key_lines,
+            "",
+            "**Methodology**",
+            "- QFin extracted these items directly from the upload. Retry with the same file for a model-written narrative; files are not stored.",
+        ]
+    )
 
 
 def default_forum_threads() -> List[Dict[str, Any]]:
