@@ -1,3 +1,4 @@
+import asyncio
 import unittest
 from unittest.mock import AsyncMock, patch
 
@@ -216,6 +217,44 @@ class QwenModelRoutingTests(unittest.TestCase):
         self.assertLessEqual(qwen_client._total_timeout_seconds("deep"), 35)
         self.assertGreater(qwen_client._total_timeout_seconds("deep"), qwen_client._total_timeout_seconds("fast"))
 
+
+
+class FinancialDataConcurrencyTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        main.FINANCIAL_DATA_CACHE.clear()
+        main.FINANCIAL_DATA_INFLIGHT.clear()
+
+    async def asyncTearDown(self):
+        main.FINANCIAL_DATA_CACHE.clear()
+        main.FINANCIAL_DATA_INFLIGHT.clear()
+
+    async def test_concurrent_requests_share_one_provider_fetch(self):
+        calls = 0
+
+        async def fake_to_thread(function, ticker):
+            nonlocal calls
+            calls += 1
+            await asyncio.sleep(0.01)
+            return {"ticker": ticker, "data_status": "available", "market_data": {"last_price": 100}}
+
+        with patch("main.asyncio.to_thread", side_effect=fake_to_thread):
+            results = await asyncio.gather(
+                main.fetch_financial_data_async("AAPL"),
+                main.fetch_financial_data_async("aapl"),
+                main.fetch_financial_data_async(" AAPL "),
+            )
+
+        self.assertEqual(calls, 1)
+        self.assertEqual([result["ticker"] for result in results], ["AAPL", "AAPL", "AAPL"])
+
+    async def test_transient_failure_is_not_cached(self):
+        with patch(
+            "main.asyncio.to_thread",
+            new=AsyncMock(return_value={"ticker": "AAPL", "data_status": "unavailable"}),
+        ):
+            await main.fetch_financial_data_async("AAPL")
+
+        self.assertNotIn("AAPL", main.FINANCIAL_DATA_CACHE)
 
 
 class FinanceFallbackTests(unittest.TestCase):
