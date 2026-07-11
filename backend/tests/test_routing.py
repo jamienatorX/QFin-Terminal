@@ -233,6 +233,16 @@ class FinanceFallbackTests(unittest.TestCase):
             ("Explain option Greeks", "Gamma"),
             ("Explain diversification", "correlation"),
             ("How does inflation affect investments?", "purchasing power"),
+            ("Explain working capital", "use of cash"),
+            ("How do financial statements connect?", "retained earnings"),
+            ("Explain diluted EPS", "potential dilution"),
+            ("Explain dividend yield", "expected cut"),
+            ("Explain financial leverage", "refinancing risk"),
+            ("Explain the current ratio", "current assets"),
+            ("Explain CAGR", "ending value"),
+            ("Explain terminal value", "Perpetuity growth"),
+            ("Explain equity beta", "systematic risk"),
+            ("Explain futures contracts", "marked to market"),
         ]
         for prompt, marker in prompts_and_markers:
             with self.subTest(prompt=prompt):
