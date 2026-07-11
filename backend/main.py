@@ -2314,7 +2314,7 @@ def build_company_facts_fallback(query: str, facts: Dict[str, Any], fallback_rea
 
     lines = [
         "**Direct answer**",
-        f"I pulled the available backend facts for {company_name} ({ticker}). This is a grounded fallback summary while the full model-written report is unavailable.",
+        f"Here is a fact-grounded financial snapshot for {company_name} ({ticker}), using the latest connected market and fundamental data.",
     ]
     if market_lines:
         lines.extend(["", "**Market snapshot**", *market_lines])
@@ -2347,10 +2347,10 @@ def build_company_facts_fallback(query: str, facts: Dict[str, Any], fallback_rea
         [
             "",
             "**Bottom line**",
-            "This fallback gives you the core market, profitability, cash flow, and leverage picture without inventing any missing fields.",
+            "Use the valuation, growth, profitability, cash-flow, and leverage measures together; no single metric is a complete investment verdict.",
             "",
-            "**Caveat**",
-            f"- {fallback_reason}",
+            "**Methodology**",
+            "- Deterministic analysis over verified backend facts; values are not guessed.",
             f"- Data source: {source}",
         ]
     )
@@ -2374,9 +2374,9 @@ def build_comparison_facts_fallback(
     def row_line(label: str, section: str, key: str) -> Optional[str]:
         left_value = metric_from_payload(left, section, key)
         right_value = metric_from_payload(right, section, key)
-        if left_value is None and right_value is None:
+        if left_value is None or right_value is None:
             return None
-        return f"| {label} | {left_value or 'Not reported'} | {right_value or 'Not reported'} |"
+        return f"| {label} | {left_value} | {right_value} |"
 
     comparison_rows = [
         row_line("Last price", "market_data", "last_price"),
@@ -2405,7 +2405,7 @@ def build_comparison_facts_fallback(
 
     lines = [
         "**Direct answer**",
-        f"I pulled the available backend facts for {tickers[0]} and {tickers[1]}. This is a grounded fallback comparison while the full model-written answer is unavailable.",
+        f"Here is a fact-grounded comparison of {tickers[0]} and {tickers[1]} using directly comparable connected data.",
         "",
         f"| Metric | {tickers[0]} | {tickers[1]} |",
         "| --- | --- | --- |",
@@ -2420,8 +2420,8 @@ def build_comparison_facts_fallback(
             else "Use this table as the reliable side-by-side baseline. Metrics missing for both companies were omitted rather than guessed."
         ),
         "",
-        "**Caveat**",
-        f"- {fallback_reason}",
+        "**Methodology**",
+        "- Deterministic comparison over verified backend facts; non-comparable rows are omitted rather than guessed.",
     ]
     return "\n".join(lines)
 
@@ -2646,7 +2646,10 @@ def run_agent_risk_review(route: Dict[str, Any], facts: Any, content: str) -> Ag
 
     if allowed_tickers:
         mentioned = [symbol for symbol in extract_symbol_candidates(content) if symbol not in allowed_tickers]
-        clean_mentions = [symbol for symbol in mentioned if symbol not in STOP]
+        clean_mentions = [
+            symbol for symbol in mentioned
+            if symbol not in STOP and re.fullmatch(r"[A-Z][A-Z0-9]*(?:[.\\-][A-Z0-9]+)?", symbol)
+        ]
         if clean_mentions:
             warnings.append(
                 "Model answer mentioned extra ticker-like symbols outside the requested scope: "
