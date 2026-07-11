@@ -253,6 +253,40 @@ class FinanceFallbackTests(unittest.TestCase):
         self.assertNotIn("EV/EBITDA", result)
         self.assertNotIn("Coverage note", result)
 
+    def test_etf_fallback_uses_fund_metrics_and_correct_distribution_yield(self):
+        warehouse = {
+            "status": "available",
+            "profile": {
+                "company_name": "State Street SPDR S&P 500 ETF",
+                "provider_payload": {
+                    "profile": {
+                        "isEtf": True,
+                        "lastDividend": 7.525,
+                        "price": 754.95,
+                    }
+                },
+            },
+        }
+        live = {
+            "company_name": "State Street SPDR S&P 500 ETF",
+            "currency": "USD",
+            "market_data": {
+                "last_price": 754.95,
+                "market_cap": "USD 692.88B",
+                "dividend_yield": "101.00%",
+            },
+            "financial_metrics": {},
+            "historical_financials": {},
+            "data_status": "available",
+        }
+        merged = main.merge_financial_facts("SPY", warehouse, live)
+        result = main.build_company_facts_fallback("Analyze SPY", merged, "fallback")
+        self.assertEqual(merged["market_data"]["dividend_yield"], "1.00%")
+        self.assertIn("For an ETF or fund", result)
+        self.assertIn("Fund size / market value", result)
+        self.assertNotIn("Fundamentals", result)
+        self.assertNotIn("Coverage note", result)
+
 
 if __name__ == "__main__":
     unittest.main()
