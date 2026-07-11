@@ -229,7 +229,7 @@ MARKET_CONTEXTS = {
 STOP = {
     "AI", "API", "CEO", "CFO", "GDP", "CPI", "USD", "IDR", "WACC", "DCF", "ROE",
     "ROA", "NIM", "NPL", "CASA", "CAGR", "EBIT", "EBITDA", "EV", "IRR", "NPV",
-    "ETF", "IPO", "REIT", "ESG", "CAPM", "FCF", "VAR", "FX", "FMP", "URL",
+    "ETF", "IPO", "REIT", "ESG", "CAPM", "FCF", "VAR", "FX", "FMP", "URL", "SPDR",
     "THE", "AND", "YOU", "HELLO", "HI", "HEY", "OK", "YES", "NO", "MODE", "QFIN",
     "S", "P", "SP", "VS"
 }
@@ -836,6 +836,14 @@ def merge_financial_facts(ticker: str, warehouse_snapshot: Dict[str, Any], live_
     for key in ["last_price", "previous_close", "price_change_pct", "forward_pe"]:
         if market_data.get(key) is None:
             market_data[key] = (live.get("market_data") or {}).get(key)
+
+    profile = warehouse_snapshot.get("profile") or {}
+    provider_profile = ((profile.get("provider_payload") or {}).get("profile") or {})
+    if provider_profile.get("isEtf") or provider_profile.get("isFund"):
+        annual_distribution = as_float(provider_profile.get("lastDividend"))
+        fund_price = as_float(market_data.get("last_price")) or as_float(provider_profile.get("price"))
+        if annual_distribution is not None and fund_price and fund_price > 0:
+            market_data["dividend_yield"] = pct(annual_distribution / fund_price)
 
     financial_metrics = dict(live.get("financial_metrics") or {})
     for key, value in (warehouse_view.get("financial_metrics") or {}).items():
@@ -2287,6 +2295,13 @@ def is_bank_company(facts: Dict[str, Any]) -> bool:
     return "bank" in classification
 
 
+def is_fund_company(facts: Dict[str, Any]) -> bool:
+    profile = ((facts.get("warehouse") or {}).get("profile") or {}) if isinstance(facts, dict) else {}
+    provider_profile = ((profile.get("provider_payload") or {}).get("profile") or {})
+    name = normalize_user_text(f"{facts.get('company_name') or ''} {profile.get('company_name') or ''}")
+    return bool(provider_profile.get("isEtf") or provider_profile.get("isFund") or " etf" in f" {name}")
+
+
 def display_periods(series: Dict[str, Any]) -> str:
     return ", ".join(str(period).split(" ", 1)[0] for period in series.keys())
 
@@ -2298,7 +2313,16 @@ def build_company_facts_fallback(query: str, facts: Dict[str, Any], fallback_rea
     historical_financials = facts.get("historical_financials") or {}
 
     bank_company = is_bank_company(facts)
+    fund_company = is_fund_company(facts)
     market_metrics = (
+        [
+            ("Last price", "last_price"), ("Price change", "price_change_pct"),
+            ("Fund size / market value", "market_cap"), ("Portfolio P/E", "trailing_pe"),
+            ("Portfolio price/book", "price_to_book"), ("Distribution yield", "dividend_yield"),
+            ("Beta", "beta"), ("52-week high", "52_week_high"), ("52-week low", "52_week_low"),
+        ]
+        if fund_company
+        else
         [
             ("Last price", "last_price"), ("Price change", "price_change_pct"),
             ("Market cap", "market_cap"), ("Trailing P/E", "trailing_pe"),
@@ -2316,6 +2340,9 @@ def build_company_facts_fallback(query: str, facts: Dict[str, Any], fallback_rea
         ]
     )
     fundamental_metrics = (
+        []
+        if fund_company
+        else
         [
             ("Revenue", "total_revenue"), ("Revenue growth", "revenue_growth"),
             ("Net income", "net_income"), ("Net margin", "net_margin"),
@@ -2366,7 +2393,7 @@ def build_company_facts_fallback(query: str, facts: Dict[str, Any], fallback_rea
         )
 
     missing_count = len(missing_market) + len(missing_fundamentals)
-    if missing_count and not bank_company:
+    if missing_count and not bank_company and not fund_company:
         lines.extend(
             [
                 "",
@@ -2380,7 +2407,9 @@ def build_company_facts_fallback(query: str, facts: Dict[str, Any], fallback_rea
             "",
             "**Bottom line**",
             (
-                "For a bank, prioritize valuation against book value and earnings together with ROE, ROA, earnings growth, and capital quality; industrial-company EBITDA and working-capital ratios are not decision-useful substitutes."
+                "For an ETF or fund, prioritize index exposure, portfolio valuation, distribution yield, liquidity, tracking quality, fees, and concentration; company revenue and cash-flow metrics do not describe the pooled vehicle."
+                if fund_company
+                else "For a bank, prioritize valuation against book value and earnings together with ROE, ROA, earnings growth, and capital quality; industrial-company EBITDA and working-capital ratios are not decision-useful substitutes."
                 if bank_company
                 else "Use the valuation, growth, profitability, cash-flow, and leverage measures together; no single metric is a complete investment verdict."
             ),
