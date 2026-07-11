@@ -79,6 +79,23 @@ def dataframe_to_context(frame: pd.DataFrame, label: str) -> str:
     return f"[{label}]\n{safe.to_csv(index=False)}"
 
 
+def dataframe_records(frame: pd.DataFrame) -> Dict[str, Any]:
+    safe = frame.iloc[:MAX_TABLE_ROWS, :MAX_TABLE_COLUMNS].copy()
+    safe.columns = [str(column) for column in safe.columns]
+    records: List[Dict[str, Any]] = []
+    for raw_record in safe.to_dict(orient="records"):
+        record: Dict[str, Any] = {}
+        for key, value in raw_record.items():
+            if pd.isna(value):
+                record[key] = None
+            elif hasattr(value, "item"):
+                record[key] = value.item()
+            else:
+                record[key] = value
+        records.append(record)
+    return {"columns": list(safe.columns), "records": records}
+
+
 def parse_spreadsheet(data: bytes, extension: str) -> Dict[str, Any]:
     try:
         if extension == ".csv":
@@ -104,6 +121,10 @@ def parse_spreadsheet(data: bytes, extension: str) -> Dict[str, Any]:
         "text": text,
         "sheets": list(sheets.keys()),
         "rows": sum(len(frame.index) for frame in sheets.values()),
+        "table_data": [
+            {"sheet": str(name), **dataframe_records(frame)}
+            for name, frame in sheets.items()
+        ],
     }
 
 
