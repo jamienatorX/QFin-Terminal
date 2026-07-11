@@ -3544,7 +3544,7 @@ def health():
     return {
         "status": "ok",
         "service": "qfin-terminal-api",
-        "version": "qfin-agent-2.7",
+        "version": "qfin-agent-2.8",
         "qwen_configured": qwen_is_configured(),
         "supabase_configured": supabase_is_configured(),
         "fmp_configured": fmp_is_configured(),
