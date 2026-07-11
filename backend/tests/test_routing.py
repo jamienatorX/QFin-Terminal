@@ -253,6 +253,35 @@ class FinanceFallbackTests(unittest.TestCase):
         self.assertNotIn("EV/EBITDA", result)
         self.assertNotIn("Coverage note", result)
 
+    def test_known_single_letter_reit_symbol_routes_correctly(self):
+        route = main.classify_message("Analyze O")
+        self.assertEqual(route["kind"], "company")
+        self.assertEqual(route["ticker"], "O")
+
+    def test_reit_fallback_uses_property_metrics(self):
+        facts = {
+            "ticker": "O",
+            "company_name": "Realty Income Corporation",
+            "market_data": {
+                "last_price": 60.0,
+                "market_cap": "USD 55.00B",
+                "dividend_yield": "5.50%",
+            },
+            "financial_metrics": {
+                "total_revenue": "USD 5.00B",
+                "operating_cashflow": "USD 3.00B",
+                "total_debt": "USD 26.00B",
+            },
+            "warehouse": {
+                "profile": {"sector": "Real Estate", "industry": "REIT - Retail"}
+            },
+        }
+        result = main.build_company_facts_fallback("Analyze O", facts, "fallback")
+        self.assertIn("For a REIT", result)
+        self.assertIn("Operating cash flow", result)
+        self.assertNotIn("EV/EBITDA", result)
+        self.assertNotIn("Coverage note", result)
+
     def test_etf_fallback_uses_fund_metrics_and_correct_distribution_yield(self):
         warehouse = {
             "status": "available",
