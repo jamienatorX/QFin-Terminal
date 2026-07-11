@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Literal, Optional
 
 import httpx
-from fastapi import FastAPI, File, Request, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
@@ -30,6 +30,7 @@ from financial_data_warehouse import (
 )
 from news_module import generate_news, normalize_category
 from qwen_client import QwenClientError, call_qwen, qwen_is_configured
+from document_ingestion import DocumentParseError, MAX_UPLOAD_BYTES, parse_document_bytes
 
 logger = logging.getLogger("qfin")
 
@@ -2064,6 +2065,7 @@ async def fetch_financial_data_async(ticker: str, timeout_seconds: float = 25.0)
 
     return await asyncio.shield(task)
 
+
 def hash_slice(seed_text: str, offset: int) -> int:
     digest = hashlib.sha256(seed_text.encode("utf-8")).hexdigest()
     start = (offset * 2) % (len(digest) - 2)
@@ -3074,7 +3076,7 @@ def run_agent_risk_review(route: Dict[str, Any], facts: Any, content: str) -> Ag
         mentioned = [symbol for symbol in extract_symbol_candidates(content) if symbol not in allowed_tickers]
         clean_mentions = [
             symbol for symbol in mentioned
-            if symbol not in STOP and re.fullmatch(r"[A-Z][A-Z0-9]*(?:[.\\-][A-Z0-9]+)?", symbol)
+            if symbol not in STOP and re.fullmatch(r"[A-Z][A-Z0-9]*(?:[.\-][A-Z0-9]+)?", symbol)
         ]
         if clean_mentions:
             warnings.append(
@@ -3244,6 +3246,83 @@ async def generate_agent_reply(query: str, provided_ticker: Optional[str] = None
         "content": content,
         "facts": None,
         "used_live_data": False,
+        "evidence": evidence.dict(),
+        "risk_review": review.dict(),
+    }
+
+
+async def generate_attachment_reply(
+    query: str,
+    attachment: Dict[str, Any],
+    provided_ticker: Optional[str] = None,
+) -> Dict[str, Any]:
+    route = classify_message(query, provided_ticker)
+    facts: Any = None
+    if route["kind"] == "company":
+        facts = await get_company_facts_async(route["ticker"])
+    elif route["kind"] == "comparison":
+        comparison_results = await asyncio.gather(
+            *(get_company_facts_async(ticker) for ticker in route["tickers"])
+        )
+        facts = {ticker: data for ticker, data in zip(route["tickers"], comparison_results)}
+
+    attachment_metadata = {
+        key: value
+        for key, value in attachment.items()
+        if key not in {"text", "image_data_url"}
+    }
+    prompt_text = (
+        f"User request: {query}\n"
+        f"Resolved route: {json.dumps(route, ensure_ascii=True)}\n"
+        "Analysis depth: deep. Analyze the attached file itself and answer the user's request. "
+        "For financial statements or annual reports, identify the reporting period, currency, revenue, profitability, cash flow, balance sheet, leverage, trends, risks, and valuation implications supported by the file. "
+        "Reconcile the attachment with any backend market facts, distinguish reported values from calculations, cite page or sheet labels when present, and never invent unreadable values.\n"
+        f"Attachment metadata: {json.dumps(attachment_metadata, ensure_ascii=True, default=str)}\n"
+        f"Backend market facts: {serialize_agent_facts(facts)}\n"
+    )
+
+    if attachment["kind"] == "image":
+        user_content: Any = [
+            {"type": "text", "text": prompt_text + "The attachment is an image. Read its visible text, tables, and charts before analyzing it."},
+            {"type": "image_url", "image_url": {"url": attachment["image_data_url"]}},
+        ]
+    else:
+        user_content = prompt_text + f"Attachment contents:\n{attachment.get('text') or ''}"
+
+    try:
+        content = await ask_qwen(
+            [
+                {
+                    "role": "system",
+                    "content": f"{SYSTEM_PROMPT}\n\n{FINANCE_DETAIL_PROMPT}\n\n{AGENT_SOURCE_NOTE}\n\n{agent_runtime_context()}",
+                },
+                {"role": "user", "content": user_content},
+            ]
+        )
+    except QwenClientError as exc:
+        logger.warning("Attachment analysis fallback: %s", type(exc).__name__)
+        preview = clean_text(str(attachment.get("text") or ""))[:2500]
+        content = (
+            "**Attachment received and parsed**\n"
+            f"- File: {attachment['filename']}\n"
+            f"- Type: {attachment['kind']}\n"
+            f"- Size: {attachment['size_bytes']:,} bytes\n\n"
+            "**Extracted preview**\n"
+            f"{preview or 'The image was accepted, but vision analysis did not complete within the response budget.'}\n\n"
+            "**Next step**\n"
+            "The file parser succeeded, but the narrative analysis model did not complete in time. Retry the same message; the file must be attached again for privacy and is not stored."
+        )
+
+    evidence = build_evidence_packet(query, route, facts, used_live_data=bool(facts))
+    review = run_agent_risk_review(route, facts, content)
+    content = finalize_agent_content(content, review)
+    remember_agent_session(evidence, review, content)
+    return {
+        "route": route,
+        "content": content,
+        "facts": facts,
+        "used_live_data": bool(facts),
+        "attachment": attachment_metadata,
         "evidence": evidence.dict(),
         "risk_review": review.dict(),
     }
@@ -4090,18 +4169,51 @@ async def market_data_route(ticker: str):
     return await get_company_facts_async(ticker.strip().upper())
 
 
-@app.post("/upload")
-async def upload_statement(file: UploadFile = File(...)):
+@app.post("/agent/chat/upload")
+async def agent_chat_upload(
+    file: UploadFile = File(...),
+    message: str = Form("Analyze the attached file."),
+    ticker: Optional[str] = Form(None),
+):
+    data = await file.read(MAX_UPLOAD_BYTES + 1)
+    try:
+        attachment = await asyncio.to_thread(
+            parse_document_bytes,
+            file.filename or "upload",
+            file.content_type or "application/octet-stream",
+            data,
+        )
+    except DocumentParseError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    finally:
+        await file.close()
+
+    result = await generate_attachment_reply(message.strip() or "Analyze the attached file.", attachment, ticker)
     return {
-        "filename": file.filename,
-        "status": "received",
-        "next_step": "Parse CSV or Excel, normalize financial statement rows, then send the extracted facts to /agent/chat.",
+        "id": "qfin-agent-attachment-response",
+        "role": "assistant",
+        "content": result["content"],
+        "answer": result["content"],
+        "data": result,
     }
 
 
+@app.post("/upload")
+async def upload_statement(
+    file: UploadFile = File(...),
+    message: str = Form("Analyze the attached file."),
+    ticker: Optional[str] = Form(None),
+):
+    return await agent_chat_upload(file, message, ticker)
+
+
 @app.post("/chat/upload")
-async def chat_upload(file: UploadFile = File(...)):
-    return await upload_statement(file)
+async def chat_upload(
+    file: UploadFile = File(...),
+    message: str = Form("Analyze the attached file."),
+    ticker: Optional[str] = Form(None),
+):
+    return await agent_chat_upload(file, message, ticker)
 
 
 @app.get("/community/news/{category}")
