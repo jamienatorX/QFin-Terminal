@@ -336,6 +336,29 @@ class FinancialDataConcurrencyTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertNotIn("AAPL", main.FINANCIAL_DATA_CACHE)
 
+    async def test_company_facts_starts_warehouse_and_live_reads_together(self):
+        warehouse_started = asyncio.Event()
+        live_started = asyncio.Event()
+
+        async def fake_to_thread(function, ticker):
+            if function is main.load_warehouse_snapshot:
+                warehouse_started.set()
+                await live_started.wait()
+                return {"symbol": ticker, "status": "unavailable"}
+            if function is main.fetch_financial_data:
+                live_started.set()
+                await warehouse_started.wait()
+                return {"ticker": ticker, "data_status": "available", "market_data": {"last_price": 100}}
+            raise AssertionError(f"Unexpected threaded function: {function}")
+
+        with (
+            patch("main.asyncio.to_thread", side_effect=fake_to_thread),
+            patch("main.fmp_is_configured", return_value=False),
+        ):
+            result = await main.get_company_facts_async("AAPL")
+
+        self.assertEqual(result["market_data"]["last_price"], 100)
+
 
 class FinanceFallbackTests(unittest.TestCase):
     def test_core_finance_topics_have_specific_deterministic_answers(self):
