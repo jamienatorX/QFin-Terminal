@@ -38,6 +38,16 @@ type ForumThread = {
   score: number;
   upvotes: number;
   downvotes: number;
+  comment_count?: number;
+  comments?: ForumComment[];
+};
+
+type ForumComment = {
+  id: string;
+  thread_id: string;
+  body: string;
+  author: string;
+  created_at: string;
 };
 
 type CommunityModel = {
@@ -1037,6 +1047,9 @@ function App() {
   const [threadTitle, setThreadTitle] = useState('');
   const [threadBody, setThreadBody] = useState('');
   const [threadAuthor, setThreadAuthor] = useState('MarketNomad');
+  const [expandedThreadId, setExpandedThreadId] = useState<string | null>(null);
+  const [commentAuthor, setCommentAuthor] = useState('QuantGuest');
+  const [commentDrafts, setCommentDrafts] = useState<Record<string, string>>({});
 
   const [models, setModels] = useState<CommunityModel[]>([]);
   const [modelsLoading, setModelsLoading] = useState(false);
@@ -1222,6 +1235,23 @@ function App() {
       },
       15000
     );
+    loadForum();
+  }
+
+  async function postComment(threadId: string) {
+    const body = (commentDrafts[threadId] || '').trim();
+    if (!body) return;
+    await fetchWithTimeout(
+      `${API_BASE_URL}/community/forum/${threadId}/comments`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ body, author: commentAuthor })
+      },
+      20000
+    );
+    setCommentDrafts((current) => ({ ...current, [threadId]: '' }));
+    setExpandedThreadId(threadId);
     loadForum();
   }
 
@@ -1681,6 +1711,49 @@ function App() {
                             <span>{thread.downvotes} down</span>
                             <span>{relativeTime(thread.created_at)}</span>
                           </div>
+                          <button
+                            type="button"
+                            className="threadDiscussButton"
+                            onClick={() => setExpandedThreadId((current) => current === thread.id ? null : thread.id)}
+                          >
+                            {expandedThreadId === thread.id ? 'Close discussion' : `Discuss (${thread.comment_count || 0})`}
+                          </button>
+                          {expandedThreadId === thread.id && (
+                            <section className="threadDiscussion" aria-label={`Discussion for ${thread.title}`}>
+                              <div className="commentList">
+                                {(thread.comments || []).length === 0 ? (
+                                  <p className="commentEmpty">No replies yet. Be the first to add a useful perspective.</p>
+                                ) : (
+                                  (thread.comments || []).map((comment) => (
+                                    <article key={comment.id} className="commentCard">
+                                      <div className="commentMeta">
+                                        <strong>{comment.author}</strong>
+                                        <span>{relativeTime(comment.created_at)}</span>
+                                      </div>
+                                      <p>{comment.body}</p>
+                                    </article>
+                                  ))
+                                )}
+                              </div>
+                              <div className="commentComposer">
+                                <input
+                                  className="forumAuthorInput"
+                                  value={commentAuthor}
+                                  onChange={(event) => setCommentAuthor(event.target.value)}
+                                  placeholder="Your name"
+                                />
+                                <textarea
+                                  className="forumTextArea commentTextArea"
+                                  value={commentDrafts[thread.id] || ''}
+                                  onChange={(event) => setCommentDrafts((current) => ({ ...current, [thread.id]: event.target.value }))}
+                                  placeholder="Add a constructive reply."
+                                />
+                                <button type="button" className="threadDiscussButton" onClick={() => postComment(thread.id)}>
+                                  Post reply
+                                </button>
+                              </div>
+                            </section>
+                          )}
                         </div>
                       </article>
                     ))}
@@ -1902,3 +1975,4 @@ ReactDOM.createRoot(document.getElementById('root') as HTMLElement).render(
     <App />
   </React.StrictMode>
 );
+
