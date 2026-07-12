@@ -1,5 +1,5 @@
-Warning: truncated output (original token count: 51102)
-Total output lines: 4632
+Warning: truncated output (original token count: 51097)
+Total output lines: 4623
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -12,6 +12,7 @@ import os
 import random
 import re
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Literal, Optional
 
@@ -642,31 +643,21 @@ def load_warehouse_snapshot(symbol: str) -> Dict[str, Any]:
         return base
 
     try:
-        profile_rows = supabase_request(
-            "GET",
-            "qfin_company_profiles",
-            params={"select": "*", "symbol": f"eq.{symbol}", "limit": "1"},
-        ) or []
-        valuation_rows = supabase_request(
-            "GET",
-            "qfin_valuation_snapshots",
-            params={"select": "*", "symbol": f"eq.{symbol}", "order": "snapshot_date.desc,created_at.desc", "limit": "1"},
-        ) or []
-        bank_rows = supabase_request(
-            "GET",
-            "qfin_bank_kpis",
-            params={"select": "*", "symbol": f"eq.{symbol}", "order": "fiscal_year.desc,created_at.desc", "limit": "1"},
-        ) or []
-        statement_rows = supabase_request(
-            "GET",
-            "qfin_financial_statements",
-            params={"select": "*", "symbol": f"eq.{symbol}", "order": "fiscal_year.desc,statement_type.asc,metric_name.asc", "limit": "250"},
-        ) or []
-        coverage_rows = supabase_request(
-            "GET",
-            "qfin_metric_coverage",
-            params={"select": "*", "symbol": f"eq.{symbol}", "order": "fiscal_year.desc,metric_group.asc,metric_name.asc", "limit": "250"},
-        ) or []
+        query_specs = [
+            ("qfin_company_profiles", {"select": "*", "symbol": f"eq.{symbol}", "limit": "1"}),
+            ("qfin_valuation_snapshots", {"select": "*", "symbol": f"eq.{symbol}", "order": "snapshot_date.desc,created_at.desc", "limit": "1"}),
+            ("qfin_bank_kpis", {"select": "*", "symbol": f"eq.{symbol}", "order": "fiscal_year.desc,created_at.desc", "limit": "1"}),
+            ("qfin_financial_statements", {"select": "*", "symbol": f"eq.{symbol}", "order": "fiscal_year.desc,statement_type.asc,metric_name.asc", "limit": "250"}),
+            ("qfin_metric_coverage", {"select": "*", "symbol": f"eq.{symbol}", "order": "fiscal_year.desc,metric_group.asc,metric_name.asc", "limit": "250"}),
+        ]
+        with ThreadPoolExecutor(max_workers=len(query_specs)) as executor:
+            futures = [
+                executor.submit(supabase_request, "GET", table, params=params)
+                for table, params in query_specs
+            ]
+            profile_rows, valuation_rows, bank_rows, statement_rows, coverage_rows = [
+                future.result() or [] for future in futures
+            ]
         profile = profile_rows[0] if isinstance(profile_rows, list) and profile_rows else None
         valuation = valuation_rows[0] if isinstance(valuation_rows, list) and valuation_rows else None
         bank_kpi = bank_rows[0] if isinstance(bank_rows, list) and bank_rows else None
@@ -2346,7 +2337,9 @@ def serialize_agent_facts(facts: Any) -> str:
         return json.dumps(facts, ensure_ascii=True, indent=2, default=str)
     except Exception:
         return str(facts)
-…1102 tokens truncated…turn None
+
+
+def build_fina…1097 tokens truncated…turn None
     match = re.search(r"-?[0-9]+(?:,[0-9]{3})*(?:\.[0-9]+)?", value)
     return as_float(match.group(0).replace(",", "")) if match else None
 
