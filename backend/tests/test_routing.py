@@ -199,6 +199,14 @@ class AgentRoutingTests(unittest.TestCase):
             with self.subTest(prompt=prompt):
                 self.assertIn(expected, main.build_finance_concept_fallback(prompt, "fallback"))
 
+    def test_finance_concept_fallback_hides_internal_fallback_caveat(self):
+        answer = main.build_finance_concept_fallback(
+            "Explain WACC",
+            "Deterministic finance guidance was used to keep the response grounded and time-bounded.",
+        )
+        self.assertNotIn("**Caveat**", answer)
+        self.assertNotIn("Deterministic finance guidance", answer)
+
 
 class FinanceEnrichmentTests(unittest.IsolatedAsyncioTestCase):
     async def test_usable_warehouse_is_still_enriched_with_live_market_data(self):
