@@ -241,21 +241,20 @@ class FinanceEnrichmentTests(unittest.IsolatedAsyncioTestCase):
             "company_name": "Apple",
             "currency": "USD",
             "market_data": {"last_price": 200.0, "forward_pe": "25.00x"},
-            "financial_metrics": {"return_on_equity": "150.00%"},
+            "financial_metrics": {},
             "historical_financials": {},
             "data_status": "available",
         }
         with (
             patch("main.load_warehouse_snapshot", return_value=warehouse),
             patch("main.fmp_is_configured", return_value=False),
-            patch("main.fetch_financial_data_async", new=AsyncMock(return_value=live)) as fetch_live,
+            patch("main.fetch_live_market_snapshot_async", new=AsyncMock(return_value=live)) as fetch_live,
         ):
             result = await main.get_company_facts_async("AAPL")
 
         fetch_live.assert_awaited_once_with("AAPL")
         self.assertEqual(result["market_data"]["last_price"], 200.0)
         self.assertEqual(result["market_data"]["forward_pe"], "25.00x")
-        self.assertEqual(result["financial_metrics"]["return_on_equity"], "150.00%")
 
 
 class QwenModelRoutingTests(unittest.TestCase):
@@ -303,10 +302,14 @@ class FinancialDataConcurrencyTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         main.FINANCIAL_DATA_CACHE.clear()
         main.FINANCIAL_DATA_INFLIGHT.clear()
+        main.LIVE_MARKET_CACHE.clear()
+        main.LIVE_MARKET_INFLIGHT.clear()
 
     async def asyncTearDown(self):
         main.FINANCIAL_DATA_CACHE.clear()
         main.FINANCIAL_DATA_INFLIGHT.clear()
+        main.LIVE_MARKET_CACHE.clear()
+        main.LIVE_MARKET_INFLIGHT.clear()
 
     async def test_concurrent_requests_share_one_provider_fetch(self):
         calls = 0
@@ -345,7 +348,7 @@ class FinancialDataConcurrencyTests(unittest.IsolatedAsyncioTestCase):
                 warehouse_started.set()
                 await live_started.wait()
                 return {"symbol": ticker, "status": "unavailable"}
-            if function is main.fetch_financial_data:
+            if function is main.fetch_live_market_snapshot:
                 live_started.set()
                 await warehouse_started.wait()
                 return {"ticker": ticker, "data_status": "available", "market_data": {"last_price": 100}}
@@ -354,6 +357,7 @@ class FinancialDataConcurrencyTests(unittest.IsolatedAsyncioTestCase):
         with (
             patch("main.asyncio.to_thread", side_effect=fake_to_thread),
             patch("main.fmp_is_configured", return_value=False),
+            patch("main.warehouse_snapshot_is_usable", return_value=True),
         ):
             result = await main.get_company_facts_async("AAPL")
 
