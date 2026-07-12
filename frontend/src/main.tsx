@@ -269,9 +269,6 @@ function sanitizeAssistantText(text: string) {
 }
 
 async function requestAgentReply(cleanInput: string, attachment?: File | null) {
-  const deadline = Date.now() + AGENT_REQUEST_TIMEOUT_MS;
-  const streamTimeout = Math.max(1, Math.floor(AGENT_REQUEST_TIMEOUT_MS * 0.75));
-
   if (attachment) {
     const formData = new FormData();
     formData.append('message', cleanInput);
@@ -291,29 +288,6 @@ async function requestAgentReply(cleanInput: string, attachment?: File | null) {
     return sanitizeAssistantText(String(content || ''));
   }
 
-  try {
-    const streamResponse = await fetchWithTimeout(
-      `${API_BASE_URL}/agent/chat/stream`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: cleanInput })
-      },
-      streamTimeout
-    );
-
-    if (streamResponse.ok) {
-      const streamedText = sanitizeAssistantText(await streamResponse.text());
-      if (streamedText) {
-        return streamedText;
-      }
-    }
-  } catch {
-    // The JSON route can still succeed when a proxy or platform disrupts streaming.
-  }
-
-  const remainingTimeout = Math.max(1, deadline - Date.now());
-
   const jsonResponse = await fetchWithTimeout(
     `${API_BASE_URL}/agent/chat`,
     {
@@ -321,7 +295,7 @@ async function requestAgentReply(cleanInput: string, attachment?: File | null) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ message: cleanInput })
     },
-    remainingTimeout
+    AGENT_REQUEST_TIMEOUT_MS
   );
 
   if (!jsonResponse.ok) {
