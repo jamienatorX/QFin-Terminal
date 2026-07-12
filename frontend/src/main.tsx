@@ -1026,6 +1026,7 @@ function IconPlusBox() {
 
 function App() {
   const [view, setView] = useState<View>('home');
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [prompt, setPrompt] = useState('');
   const [loading, setLoading] = useState(false);
@@ -1365,7 +1366,7 @@ function App() {
   }, [view, communityTab, newsCategory]);
 
   return (
-    <div className="appShell">
+    <div className={`appShell ${sidebarCollapsed ? 'sidebarCollapsed' : ''}`}>
       <aside className="sidebar">
         <div className="brandBlock">
           <div className="brandIcon">
@@ -1375,6 +1376,15 @@ function App() {
             <strong>QFin</strong>
             <span>Terminal</span>
           </div>
+          <button
+            type="button"
+            className="sidebarToggleButton"
+            onClick={() => setSidebarCollapsed(true)}
+            aria-label="Hide navigation"
+            title="Hide navigation"
+          >
+            <span aria-hidden="true">&#8249;</span>
+          </button>
         </div>
 
         <nav className="sideNav" aria-label="Main navigation">
@@ -1403,6 +1413,18 @@ function App() {
       </aside>
 
       <main className="mainSurface">
+        {sidebarCollapsed && (
+          <button
+            type="button"
+            className="sidebarReopenButton"
+            onClick={() => setSidebarCollapsed(false)}
+            aria-label="Open navigation"
+            title="Open navigation"
+          >
+            <span aria-hidden="true">&#8250;</span>
+            Navigation
+          </button>
+        )}
         {view === 'home' && (
           <>
             <header className="topBar">
