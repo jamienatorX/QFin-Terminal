@@ -112,6 +112,62 @@ class AgentRoutingTests(unittest.TestCase):
         self.assertIn("Gross margin: 46.00%", answer)
         self.assertNotIn("Unavailable in supplied backend data", answer)
 
+    def test_standard_fallbacks_hide_methodology_and_source_boilerplate(self):
+        company = main.build_company_facts_fallback(
+            "Analyze AAPL",
+            {
+                "ticker": "AAPL",
+                "company_name": "Apple",
+                "market_data": {"last_price": 200.0},
+                "financial_metrics": {},
+                "source": "test provider",
+            },
+            "fallback",
+        )
+        comparison = main.build_comparison_facts_fallback(
+            "Compare AAA and BBB",
+            {"tickers": ["AAA", "BBB"]},
+            {"AAA": {}, "BBB": {}},
+            "fallback",
+        )
+        self.assertNotIn("Methodology", company)
+        self.assertNotIn("Data source", company)
+        self.assertNotIn("Methodology", comparison)
+
+    def test_data_sources_are_available_only_when_explicitly_requested(self):
+        route = main.classify_message("Where does QFin get its data?")
+        self.assertEqual(route["kind"], "data_sources")
+        result = asyncio.run(main.generate_agent_reply("Where does QFin get its data?"))
+        self.assertIn("**Data sources**", result["content"])
+        self.assertIn("Supabase warehouse", result["content"])
+
+    def test_attachment_fallback_hides_methodology_boilerplate(self):
+        result = main.build_spreadsheet_attachment_fallback(
+            {
+                "filename": "financials.csv",
+                "sheets": ["CSV"],
+                "rows": 2,
+                "table_data": [],
+            }
+        )
+        self.assertNotIn("Methodology", result)
+
+    def test_forum_comments_are_saved_and_returned_with_the_thread(self):
+        main.FORUM_THREADS.clear()
+        main.FORUM_COMMENTS.clear()
+        thread = main.create_forum_thread_record(
+            main.ForumCreateRequest(title="Test thread", body="Looking for views.", author="Starter")
+        )["thread"]
+        created = main.create_forum_comment_record(
+            thread["id"],
+            main.ForumCommentCreateRequest(body="Here is a useful perspective.", author="Responder"),
+        )
+        self.assertEqual(created["status"], "created")
+        state = main.load_forum_threads()
+        loaded = next(item for item in state["threads"] if item["id"] == thread["id"])
+        self.assertEqual(loaded["comment_count"], 1)
+        self.assertEqual(loaded["comments"][0]["author"], "Responder")
+
     def test_comparison_fallback_identifies_measured_leaders(self):
         facts = {
             "AAA": {
@@ -216,7 +272,6 @@ class QwenModelRoutingTests(unittest.TestCase):
         self.assertLessEqual(qwen_client._total_timeout_seconds("fast"), 15)
         self.assertLessEqual(qwen_client._total_timeout_seconds("deep"), 35)
         self.assertGreater(qwen_client._total_timeout_seconds("deep"), qwen_client._total_timeout_seconds("fast"))
-
 
 
 class FinancialDataConcurrencyTests(unittest.IsolatedAsyncioTestCase):
@@ -412,4 +467,5 @@ class FinanceFallbackTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
 
