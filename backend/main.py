@@ -899,11 +899,11 @@ def merge_financial_facts(ticker: str, warehouse_snapshot: Dict[str, Any], live_
 
 async def get_company_facts_async(ticker: str) -> Dict[str, Any]:
     normalized_ticker = ticker.strip().upper()
-    warehouse_snapshot = await asyncio.to_thread(load_warehouse_snapshot, normalized_ticker)
-
-    # Current prices and provider-specific ratios complement even a healthy warehouse.
-    # Starting this early lets comparison requests enrich both companies concurrently.
+    # Warehouse statements and live market fields are independent. Start them together so
+    # standard company and comparison requests wait for the slower source, not both in series.
+    warehouse_task = asyncio.create_task(asyncio.to_thread(load_warehouse_snapshot, normalized_ticker))
     live_task = asyncio.create_task(fetch_financial_data_async(normalized_ticker))
+    warehouse_snapshot = await warehouse_task
 
     warehouse_ingest = None
     if fmp_is_configured() and warehouse_needs_refresh(warehouse_snapshot):
