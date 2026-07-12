@@ -312,6 +312,15 @@ svg {
   display: grid;
   grid-template-columns: 360px minmax(0, 1fr);
   background: var(--page);
+  transition: grid-template-columns 220ms ease;
+}
+
+.appShell.sidebarCollapsed {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.appShell.sidebarCollapsed .sidebar {
+  display: none;
 }
 
 .sidebar {
@@ -1236,6 +1245,51 @@ svg {
   font-size: 15px;
 }
 
+.sidebarToggleButton,
+.sidebarReopenButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--ink-soft);
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.sidebarToggleButton {
+  width: 34px;
+  height: 34px;
+  margin-left: auto;
+  border-radius: 10px;
+  font-size: 25px;
+  line-height: 1;
+}
+
+.sidebarToggleButton:hover,
+.sidebarReopenButton:hover {
+  border-color: var(--purple);
+  color: var(--purple-dark);
+}
+
+.sidebarReopenButton {
+  position: fixed;
+  top: 22px;
+  left: 22px;
+  z-index: 20;
+  min-height: 40px;
+  gap: 8px;
+  padding: 0 14px;
+  border-radius: 999px;
+  box-shadow: 0 8px 24px rgba(17, 24, 39, 0.12);
+  font-size: 14px;
+}
+
+.sidebarReopenButton span {
+  font-size: 22px;
+  line-height: 1;
+}
+
 .commentComposer {
   display: grid;
   gap: 10px;
@@ -1963,6 +2017,15 @@ svg {
   .sidebar {
     position: static;
     min-height: auto;
+  }
+
+  .appShell.sidebarCollapsed .sidebar {
+    display: flex;
+  }
+
+  .sidebarToggleButton,
+  .sidebarReopenButton {
+    display: none;
   }
 
   .brandBlock {
