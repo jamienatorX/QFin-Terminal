@@ -1189,6 +1189,67 @@ svg {
   font-size: 14px;
 }
 
+.threadDiscussButton {
+  margin-top: 18px;
+  min-height: 36px;
+  padding: 0 14px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: #fbfbfe;
+  color: var(--ink-soft);
+  font-weight: 800;
+}
+
+.threadDiscussion {
+  margin-top: 20px;
+  padding-top: 18px;
+  border-top: 1px solid var(--line);
+}
+
+.commentList {
+  display: grid;
+  gap: 10px;
+}
+
+.commentCard {
+  padding: 14px 16px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #fbfbfe;
+}
+
+.commentMeta {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--muted-soft);
+  font-size: 13px;
+}
+
+.commentMeta strong {
+  color: var(--ink-soft);
+}
+
+.threadContent .commentCard p,
+.commentEmpty {
+  margin-top: 8px;
+  font-size: 15px;
+}
+
+.commentComposer {
+  display: grid;
+  gap: 10px;
+  margin-top: 14px;
+}
+
+.commentComposer .forumAuthorInput {
+  min-height: 42px;
+}
+
+.commentTextArea {
+  min-height: 92px;
+}
+
 .forumComposer .modelToolbar {
   border-bottom: 0;
 }
@@ -2037,3 +2098,4 @@ svg {
     border-bottom: 1px solid var(--line);
   }
 }
+
