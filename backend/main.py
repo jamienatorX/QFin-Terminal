@@ -72,6 +72,7 @@ Style:
 - Do not overuse bold styling. Use it only for headings, verdicts, and key metrics.
 - If the user asks a basic non-finance question, answer directly without forcing a finance report.
 - End finance answers with a clear bottom-line verdict and a short caveat when data is limited.
+- Do not add a methodology or data-source section unless the user explicitly asks where the data comes from or how QFin gets it.
 """.strip()
 
 FINANCE_DETAIL_PROMPT = """
@@ -272,6 +273,7 @@ DETAILED_SIGNALS = [
 ]
 
 SUPABASE_FORUM_TABLE = "qfin_forum_threads"
+SUPABASE_FORUM_COMMENT_TABLE = "qfin_forum_comments"
 SUPABASE_MODEL_TABLE = "qfin_builder_models"
 SUPABASE_SYMBOL_TABLE = "qfin_symbol_master"
 FINANCIAL_DATA_CACHE_TTL_SECONDS = 900
@@ -297,6 +299,11 @@ class AgentChatRequest(BaseModel):
 
 class ForumCreateRequest(BaseModel):
     title: str
+    body: str
+    author: Optional[str] = None
+
+
+class ForumCommentCreateRequest(BaseModel):
     body: str
     author: Optional[str] = None
 
@@ -349,6 +356,7 @@ class AgentRiskReview(BaseModel):
 
 
 FORUM_THREADS: List[Dict[str, Any]] = []
+FORUM_COMMENTS: List[Dict[str, Any]] = []
 COMMUNITY_MODELS: List[Dict[str, Any]] = []
 PRIVATE_MODELS: List[Dict[str, Any]] = []
 FINANCIAL_DATA_CACHE: Dict[str, Dict[str, Any]] = {}
@@ -1671,6 +1679,8 @@ def classify_message(text: str, provided_ticker: Optional[str] = None) -> Dict[s
         return {"kind": "casual", "reply": casual}
     if is_time_prompt(text):
         return {"kind": "time"}
+    if asks_about_data_sources(text):
+        return {"kind": "data_sources"}
 
     compare = parse_compare_request(text)
     if compare:
@@ -1703,6 +1713,35 @@ def classify_message(text: str, provided_ticker: Optional[str] = None) -> Dict[s
     if finance_intent(text):
         return {"kind": "finance_concept", "detail": "deep" if needs_detail(text) else "standard"}
     return {"kind": "general"}
+
+
+def asks_about_data_sources(text: str) -> bool:
+    normalized = normalize_user_text(text)
+    explicit_questions = (
+        "where does qfin get its data",
+        "where do you get your data",
+        "how do you get your data",
+        "where is this data from",
+        "where does this data come from",
+        "what are your data sources",
+        "what is your data source",
+        "source of this data",
+        "qfin data source",
+        "qfin data sources",
+    )
+    return any(question in normalized for question in explicit_questions)
+
+
+def build_data_sources_reply() -> str:
+    return "\n".join(
+        [
+            "**Data sources**",
+            "- Company fundamentals can come from QFin's Supabase warehouse, which is populated from Financial Modeling Prep (FMP).",
+            "- Current market context can use Yahoo Finance and Finnhub when those providers are available.",
+            "- Uploaded PDFs, spreadsheets, documents, and images are analyzed from the file you provide; uploads are processed in memory and are not retained by the chat service.",
+            "- If a requested field is unavailable, QFin should say so rather than inventing a value.",
+        ]
+    )
 
 
 def as_float(value: Any) -> Optional[float]:
@@ -2459,7 +2498,6 @@ def company_analysis_profile(facts: Dict[str, Any]) -> Dict[str, Any]:
 def build_company_facts_fallback(query: str, facts: Dict[str, Any], fallback_reason: str) -> str:
     ticker = facts.get("ticker") or "Unknown ticker"
     company_name = clean_text(str(facts.get("company_name") or ticker))
-    source = clean_text(str(facts.get("source") or "QFin backend finance stack"))
     historical_financials = facts.get("historical_financials") or {}
 
     analysis_profile = company_analysis_profile(facts)
@@ -2512,16 +2550,8 @@ def build_company_facts_fallback(query: str, facts: Dict[str, Any], fallback_rea
             "",
             "**Bottom line**",
             analysis_profile["bottom_line"],
-            "",
-            "**Methodology**",
-            "- Deterministic analysis over verified backend facts; values are not guessed.",
-            f"- Data source: {source}",
         ]
     )
-
-    note = clean_text(str(facts.get("note") or ""))
-    if note:
-        lines.append(f"- {note}")
     return "\n".join(lines)
 
 
@@ -2583,11 +2613,18 @@ def build_comparison_facts_fallback(
             if leader_lines
             else "Use this table as the reliable side-by-side baseline. Metrics missing for both companies were omitted rather than guessed."
         ),
-        "",
-        "**Methodology**",
-        "- Deterministic comparison over verified backend facts; non-comparable rows are omitted rather than guessed.",
     ]
     return "\n".join(lines)
+
+
+def remove_default_methodology(content: str) -> str:
+    """Keep source details on demand, not as repetitive boilerplate in every answer."""
+    return re.sub(
+        r"\n{2}\*\*Methodology\*\*\n(?:- [^\n]*(?:\n|$))*",
+        "\n",
+        content,
+        flags=re.I,
+    ).strip()
 
 
 def build_finance_concept_fallback(query: str, fallback_reason: str) -> str:
@@ -2948,9 +2985,9 @@ def build_finance_concept_fallback(query: str, fallback_reason: str) -> str:
 
     for signals, answer in concepts:
         if any(re.search(rf"\b{re.escape(normalize_user_text(signal))}\b", normalized) for signal in signals):
-            return answer
+            return remove_default_methodology(answer)
 
-    return (
+    return remove_default_methodology(
         "**Direct answer**\n"
         "I can still help, but the model-written finance explainer is unavailable right now. Ask about a specific concept such as free cash flow yield, P/E, EV/EBITDA, ROE, WACC, or DCF and I can return a grounded fallback definition.\n\n"
         "**Caveat**\n"
@@ -3094,6 +3131,7 @@ def run_agent_risk_review(route: Dict[str, Any], facts: Any, content: str) -> Ag
 
 
 def finalize_agent_content(content: str, review: AgentRiskReview) -> str:
+    content = remove_default_methodology(content)
     notes: List[str] = []
     if review.missing_data:
         notes.extend(review.missing_data)
@@ -3140,6 +3178,9 @@ async def generate_agent_reply(query: str, provided_ticker: Optional[str] = None
 
     if route["kind"] == "time":
         return {"route": route, "content": local_time_reply(), "facts": None, "used_live_data": False}
+
+    if route["kind"] == "data_sources":
+        return {"route": route, "content": build_data_sources_reply(), "facts": None, "used_live_data": False}
 
     if route["kind"] in {"news", "headlines"}:
         news = await generate_news(normalize_category(route["category"]))
@@ -3372,9 +3413,6 @@ def build_spreadsheet_attachment_fallback(attachment: Dict[str, Any]) -> str:
             "- Compare revenue growth with operating and net income growth to assess margin direction.",
             "- Rising cash alongside falling debt strengthens liquidity and financial flexibility; the reverse warrants closer review.",
             "- Validate units, currency, accounting scope, and whether periods are annual or quarterly before using the figures for valuation.",
-            "",
-            "**Methodology**",
-            "- QFin calculated these trends directly from the uploaded table. The file is processed in memory and is not stored.",
         ]
     )
 
@@ -3411,9 +3449,6 @@ def build_attachment_fallback(attachment: Dict[str, Any]) -> str:
             "",
             "**Key extracted disclosures**",
             *key_lines,
-            "",
-            "**Methodology**",
-            "- QFin extracted these items directly from the upload. Retry with the same file for a model-written narrative; files are not stored.",
         ]
     )
 
@@ -3567,7 +3602,30 @@ def normalize_thread_record(record: Dict[str, Any]) -> Dict[str, Any]:
         "upvotes": int(record.get("upvotes") or 0),
         "downvotes": int(record.get("downvotes") or 0),
         "created_at": str(record.get("created_at") or utc_now()),
+        "comments": [],
+        "comment_count": 0,
     }
+
+
+def normalize_forum_comment_record(record: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "id": str(record.get("id") or make_id("comment")),
+        "thread_id": str(record.get("thread_id") or ""),
+        "body": clean_text(str(record.get("body") or "")),
+        "author": clean_text(str(record.get("author") or "Anonymous")),
+        "created_at": str(record.get("created_at") or utc_now()),
+    }
+
+
+def attach_forum_comments(threads: List[Dict[str, Any]], comments: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    comments_by_thread: Dict[str, List[Dict[str, Any]]] = {}
+    for comment in comments:
+        comments_by_thread.setdefault(comment["thread_id"], []).append(comment)
+    for thread in threads:
+        thread_comments = comments_by_thread.get(thread["id"], [])
+        thread["comments"] = thread_comments
+        thread["comment_count"] = len(thread_comments)
+    return threads
 
 
 def normalize_model_record(record: Dict[str, Any]) -> Dict[str, Any]:
@@ -3616,15 +3674,21 @@ def load_forum_threads() -> Dict[str, Any]:
                 params={"select": "*", "order": "score.desc,created_at.desc", "limit": "100"},
             ) or []
             threads = [normalize_thread_record(row) for row in rows]
-            return {"threads": threads, "storage": "supabase"}
+            comment_rows = supabase_request(
+                "GET",
+                SUPABASE_FORUM_COMMENT_TABLE,
+                params={"select": "*", "order": "created_at.asc", "limit": "500"},
+            ) or []
+            comments = [normalize_forum_comment_record(row) for row in comment_rows]
+            return {"threads": attach_forum_comments(threads, comments), "storage": "supabase"}
         except Exception as exc:
             seed_forum()
             threads = sorted(FORUM_THREADS, key=lambda item: (item["score"], item["created_at"]), reverse=True)
-            return {"threads": threads, "storage": "memory", "warning": str(exc)}
+            return {"threads": attach_forum_comments(threads, FORUM_COMMENTS), "storage": "memory", "warning": str(exc)}
 
     seed_forum()
     threads = sorted(FORUM_THREADS, key=lambda item: (item["score"], item["created_at"]), reverse=True)
-    return {"threads": threads, "storage": "memory"}
+    return {"threads": attach_forum_comments(threads, FORUM_COMMENTS), "storage": "memory"}
 
 
 def create_forum_thread_record(payload: ForumCreateRequest) -> Dict[str, Any]:
@@ -3691,6 +3755,47 @@ def vote_forum_thread_record(thread_id: str, direction: str) -> Dict[str, Any]:
                 thread["score"] -= 1
             return {"status": "updated", "thread": thread, "storage": "memory"}
     return {"status": "not_found"}
+
+
+def create_forum_comment_record(thread_id: str, payload: ForumCommentCreateRequest) -> Dict[str, Any]:
+    body = clean_text(payload.body)
+    if not body:
+        return {"status": "invalid", "message": "Comment body is required."}
+
+    record = {
+        "thread_id": thread_id,
+        "body": body,
+        "author": clean_text(payload.author or f"Analyst{random.randint(17, 98)}"),
+        "created_at": utc_now(),
+        "updated_at": utc_now(),
+    }
+
+    if supabase_is_configured():
+        try:
+            threads = supabase_request(
+                "GET",
+                SUPABASE_FORUM_TABLE,
+                params={"select": "id", "id": f"eq.{thread_id}", "limit": "1"},
+            ) or []
+            if not threads:
+                return {"status": "not_found"}
+            rows = supabase_request(
+                "POST",
+                SUPABASE_FORUM_COMMENT_TABLE,
+                json_body=record,
+                prefer="return=representation",
+            ) or []
+            comment = normalize_forum_comment_record(rows[0] if isinstance(rows, list) else rows)
+            return {"status": "created", "comment": comment, "storage": "supabase"}
+        except Exception:
+            pass
+
+    seed_forum()
+    if not any(thread["id"] == thread_id for thread in FORUM_THREADS):
+        return {"status": "not_found"}
+    comment = normalize_forum_comment_record({"id": make_id("comment"), **record})
+    FORUM_COMMENTS.append(comment)
+    return {"status": "created", "comment": comment, "storage": "memory"}
 
 
 def load_community_models() -> Dict[str, Any]:
@@ -4349,6 +4454,16 @@ def vote_forum_thread(thread_id: str, payload: VoteRequest):
     return vote_forum_thread_record(thread_id, payload.direction)
 
 
+@app.post("/community/forum/{thread_id}/comments")
+def create_forum_comment(thread_id: str, payload: ForumCommentCreateRequest):
+    created = create_forum_comment_record(thread_id, payload)
+    if created["status"] == "not_found":
+        raise HTTPException(status_code=404, detail="Forum thread not found.")
+    if created["status"] == "invalid":
+        raise HTTPException(status_code=422, detail=created["message"])
+    return {"status": "created", "comment": created["comment"], "storage": created["storage"]}
+
+
 @app.get("/community/models")
 def community_models():
     model_state = load_community_models()
@@ -4391,5 +4506,6 @@ def builder_backtest(payload: BuilderRunRequest):
 @app.post("/builder/publish")
 def builder_publish(payload: BuilderPublishRequest):
     return create_community_model(payload)
+
 
 
