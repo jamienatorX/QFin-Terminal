@@ -1,3 +1,6 @@
+Warning: truncated output (original token count: 51102)
+Total output lines: 4632
+
 from dotenv import load_dotenv
 load_dotenv()
 
@@ -361,6 +364,8 @@ COMMUNITY_MODELS: List[Dict[str, Any]] = []
 PRIVATE_MODELS: List[Dict[str, Any]] = []
 FINANCIAL_DATA_CACHE: Dict[str, Dict[str, Any]] = {}
 FINANCIAL_DATA_INFLIGHT: Dict[str, asyncio.Task] = {}
+LIVE_MARKET_CACHE: Dict[str, Dict[str, Any]] = {}
+LIVE_MARKET_INFLIGHT: Dict[str, asyncio.Task] = {}
 AGENT_SESSION_LOGS: List[Dict[str, Any]] = []
 
 
@@ -902,7 +907,7 @@ async def get_company_facts_async(ticker: str) -> Dict[str, Any]:
     # Warehouse statements and live market fields are independent. Start them together so
     # standard company and comparison requests wait for the slower source, not both in series.
     warehouse_task = asyncio.create_task(asyncio.to_thread(load_warehouse_snapshot, normalized_ticker))
-    live_task = asyncio.create_task(fetch_financial_data_async(normalized_ticker))
+    live_task = asyncio.create_task(fetch_live_market_snapshot_async(normalized_ticker))
     warehouse_snapshot = await warehouse_task
 
     warehouse_ingest = None
@@ -911,6 +916,12 @@ async def get_company_facts_async(ticker: str) -> Dict[str, Any]:
         refreshed_snapshot = await asyncio.to_thread(load_warehouse_snapshot, normalized_ticker)
         if warehouse_snapshot_is_usable(refreshed_snapshot) or refreshed_snapshot.get("status") != "error":
             warehouse_snapshot = refreshed_snapshot
+
+    if not warehouse_snapshot_is_usable(warehouse_snapshot):
+        # Without usable warehouse statements, use the fuller provider packet as a fallback.
+        if not live_task.done():
+            live_task.cancel()
+        live_task = asyncio.create_task(fetch_financial_data_async(normalized_ticker))
 
     live_data = await live_task
     merged = merge_financial_facts(normalized_ticker, warehouse_snapshot, live_data)
@@ -1860,6 +1871,67 @@ def fetch_finnhub_data(symbol: str) -> Dict[str, Any]:
     return result
 
 
+def fetch_live_market_snapshot(ticker: str) -> Dict[str, Any]:
+    """Fetch only fast-moving market fields when warehouse statements are already available."""
+    try:
+        import yfinance as yf
+
+        asset = yf.Ticker(ticker)
+        try:
+            fast = dict(asset.fast_info or {})
+        except Exception:
+            fast = {}
+        try:
+            info = asset.get_info() or {}
+        except Exception:
+            info = {}
+        try:
+            history = asset.history(period="5d", interval="1d", auto_adjust=False)
+        except Exception:
+            history = None
+
+        currency = info.get("financialCurrency") or info.get("currency") or fast.get("currency") or "USD"
+        price = as_float(fast.get("last_price") or info.get("currentPrice") or info.get("regularMarketPrice"))
+        previous_close = as_float(fast.get("previous_close") or info.get("previousClose"))
+        if history is not None and not history.empty and "Close" in history:
+            closes = history["Close"].dropna()
+            if price is None and len(closes) > 0:
+                price = as_float(closes.iloc[-1])
+            if previous_close is None and len(closes) > 1:
+                previous_close = as_float(closes.iloc[-2])
+
+        change = (price - previous_close) / previous_close if price is not None and previous_close not in (None, 0) else None
+        market_cap = as_float(info.get("marketCap")) or as_float(fast.get("market_cap"))
+        return {
+            "ticker": ticker,
+            "company_name": info.get("longName") or info.get("shortName") or ticker,
+            "currency": currency,
+            "retrieved_at_utc": utc_now(),
+            "market_data": {
+                "last_price": round(price, 2) if price is not None else None,
+                "previous_close": round(previous_close, 2) if previous_close is not None else None,
+                "price_change_pct": pct(change),
+                "market_cap": money(market_cap, currency),
+                "enterprise_value": money(as_float(info.get("enterpriseValue")), currency),
+                "trailing_pe": f"{as_float(info.get('trailingPE')):.2f}x" if as_float(info.get("trailingPE")) is not None else None,
+                "forward_pe": f"{as_float(info.get('forwardPE')):.2f}x" if as_float(info.get("forwardPE")) is not None else None,
+                "price_to_book": f"{as_float(info.get('priceToBook')):.2f}x" if as_float(info.get("priceToBook")) is not None else None,
+                "price_to_sales": f"{as_float(info.get('priceToSalesTrailing12Months')):.2f}x" if as_float(info.get("priceToSalesTrailing12Months")) is not None else None,
+                "ev_ebitda": f"{as_float(info.get('enterpriseToEbitda')):.2f}x" if as_float(info.get("enterpriseToEbitda")) is not None else None,
+                "dividend_yield": pct(as_float(info.get("dividendYield"))),
+                "beta": round(as_float(info.get("beta")), 2) if as_float(info.get("beta")) is not None else None,
+                "52_week_high": round(as_float(info.get("fiftyTwoWeekHigh") or fast.get("year_high")), 2) if as_float(info.get("fiftyTwoWeekHigh") or fast.get("year_high")) is not None else None,
+                "52_week_low": round(as_float(info.get("fiftyTwoWeekLow") or fast.get("year_low")), 2) if as_float(info.get("fiftyTwoWeekLow") or fast.get("year_low")) is not None else None,
+            },
+            "financial_metrics": {},
+            "historical_financials": {},
+            "source": "Yahoo Finance live market snapshot.",
+            "data_status": "available" if any([price, market_cap, as_float(info.get("forwardPE"))]) else "unavailable",
+        }
+    except Exception as exc:
+        return {"ticker": ticker, "data_status": "unavailable", "error": str(exc)}
+
+
 def fetch_financial_data(ticker: str) -> Dict[str, Any]:
     try:
         import yfinance as yf
@@ -2084,6 +2156,39 @@ async def load_financial_data_with_timeout(ticker: str, timeout_seconds: float) 
     return data
 
 
+async def fetch_live_market_snapshot_async(ticker: str, timeout_seconds: float = 12.0) -> Dict[str, Any]:
+    key = ticker.strip().upper()
+    timeout_seconds = read_float_env("LIVE_MARKET_TIMEOUT_SECONDS", timeout_seconds)
+    cached = LIVE_MARKET_CACHE.get(key)
+    if cached and (datetime.now(timezone.utc) - cached["stored_at"]).total_seconds() <= 120:
+        return cached["data"]
+
+    task = LIVE_MARKET_INFLIGHT.get(key)
+    if task is None:
+        async def load_snapshot() -> Dict[str, Any]:
+            try:
+                return await asyncio.wait_for(
+                    asyncio.to_thread(fetch_live_market_snapshot, key),
+                    timeout=timeout_seconds,
+                )
+            except asyncio.TimeoutError:
+                return {"ticker": key, "data_status": "unavailable", "error": "Live market request timed out."}
+
+        task = asyncio.create_task(load_snapshot())
+        LIVE_MARKET_INFLIGHT[key] = task
+
+        def clear_inflight(completed: asyncio.Task) -> None:
+            if LIVE_MARKET_INFLIGHT.get(key) is completed:
+                LIVE_MARKET_INFLIGHT.pop(key, None)
+
+        task.add_done_callback(clear_inflight)
+
+    data = await asyncio.shield(task)
+    if data.get("data_status") == "available":
+        LIVE_MARKET_CACHE[key] = {"data": data, "stored_at": datetime.now(timezone.utc)}
+    return data
+
+
 async def fetch_financial_data_async(ticker: str, timeout_seconds: float = 25.0) -> Dict[str, Any]:
     key = ticker.strip().upper()
     timeout_seconds = read_float_env("FINANCIAL_DATA_TIMEOUT_SECONDS", timeout_seconds)
@@ -2241,103 +2346,7 @@ def serialize_agent_facts(facts: Any) -> str:
         return json.dumps(facts, ensure_ascii=True, indent=2, default=str)
     except Exception:
         return str(facts)
-
-
-def build_finance_prompt(query: str, route: Dict[str, Any], facts: Any) -> List[Dict[str, str]]:
-    route_kind = route["kind"]
-    detail = route.get("detail") or "standard"
-    depth_instruction = (
-        "Analysis depth: deep. Give a comprehensive analyst-grade answer with all material sections."
-        if detail == "deep"
-        else "Analysis depth: standard. Be concise but complete, prioritizing the most decision-useful facts."
-    )
-    fact_block = serialize_agent_facts(facts)
-    if route_kind == "comparison":
-        user_content = (
-            f"User request: {query}\n"
-            f"Internal route: exact ticker comparison\n"
-            f"Required tickers: {route['tickers']}\n"
-            f"Topic: {route['topic']}\n"
-            f"{depth_instruction}\n"
-            f"Backend facts:\n{fact_block}\n"
-            "Use only these exact tickers. Do not substitute any other symbol. "
-            "Prefer warehouse-backed statements and valuation when available, and use live fields only for current market context or explicit gaps. "
-            "Write a side-by-side finance comparison and clearly state what data is missing if any metric is unavailable. "
-            "Do not mention the internal route or backend mechanics in the final answer."
-        )
-    elif route_kind == "company":
-        user_content = (
-            f"User request: {query}\n"
-            f"Internal route: single company analysis\n"
-            f"Resolved ticker: {route['ticker']}\n"
-            f"{depth_instruction}\n"
-            f"Backend facts:\n{fact_block}\n"
-            "Use only this backend data. Prefer warehouse-backed statements and valuation when available, and use live fields only for current market context or explicit gaps. "
-            "If the user asked about the latest quarter, focus on the latest quarter context first, then the broader fundamentals. "
-            "Do not mention the internal route or backend mechanics in the final answer."
-        )
-    elif route_kind == "news":
-        user_content = (
-            f"User request: {query}\n"
-            f"Internal route: market news summary\n"
-            f"Category: {route['category']}\n"
-            f"Backend facts:\n{fact_block}\n"
-            "Summarize the five news items, explain what matters most, and mention market sentiment. "
-            "Do not mention the internal route or backend mechanics in the final answer."
-        )
-    else:
-        user_content = (
-            f"User request: {query}\n"
-            "Internal route: finance concept\n"
-            "Answer as a finance expert. Use formulas, interpretation, and caveats where useful."
-        )
-
-    return [
-        {"role": "system", "content": f"{SYSTEM_PROMPT}\n\n{FINANCE_DETAIL_PROMPT}\n\n{AGENT_SOURCE_NOTE}\n\n{agent_runtime_context()}"},
-        {"role": "user", "content": user_content},
-    ]
-
-
-def build_headline_digest(news: Dict[str, Any], limit: int = 5) -> str:
-    lines = ["Here are the latest market headlines I found:"]
-    for item in news.get("news", [])[:limit]:
-        headline = clean_text(str(item.get("headline") or "Market update"))
-        source = item.get("source") or {}
-        source_name = clean_text(str(source.get("name") or "Aggregated market commentary"))
-        teaser = clean_text(str(item.get("teaser") or ""))
-        lines.append(f"- {headline} ({source_name})")
-        if teaser:
-            lines.append(f"  {teaser}")
-    return "\n".join(lines)
-
-
-def metric_from_payload(payload: Dict[str, Any], section: str, key: str) -> Optional[str]:
-    value = (payload.get(section) or {}).get(key)
-    if value in (None, "", [], {}):
-        return None
-    return clean_text(str(value))
-
-
-def available_metric_lines(
-    payload: Dict[str, Any],
-    section: str,
-    metrics: List[tuple[str, str]],
-) -> tuple[List[str], List[str]]:
-    lines: List[str] = []
-    missing: List[str] = []
-    for label, key in metrics:
-        value = metric_from_payload(payload, section, key)
-        if value is None:
-            missing.append(label)
-        else:
-            lines.append(f"- {label}: {value}")
-    return lines, missing
-
-
-def metric_number(payload: Dict[str, Any], section: str, key: str) -> Optional[float]:
-    value = metric_from_payload(payload, section, key)
-    if value is None:
-        return None
+…1102 tokens truncated…turn None
     match = re.search(r"-?[0-9]+(?:,[0-9]{3})*(?:\.[0-9]+)?", value)
     return as_float(match.group(0).replace(",", "")) if match else None
 
