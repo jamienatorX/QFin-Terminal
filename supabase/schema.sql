@@ -101,6 +101,22 @@ create index if not exists qfin_forum_threads_score_created_idx
 create index if not exists idx_qfin_forum_threads_owner_id
   on public.qfin_forum_threads(owner_id);
 
+create table if not exists public.qfin_forum_comments (
+  id uuid primary key default gen_random_uuid(),
+  thread_id uuid not null references public.qfin_forum_threads(id) on delete cascade,
+  owner_id uuid default auth.uid() references auth.users(id) on delete set null,
+  body text not null,
+  author text not null,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create index if not exists qfin_forum_comments_thread_created_idx
+  on public.qfin_forum_comments (thread_id, created_at asc);
+
+create index if not exists idx_qfin_forum_comments_owner_id
+  on public.qfin_forum_comments(owner_id);
+
 create table if not exists public.qfin_builder_models (
   id uuid primary key default gen_random_uuid(),
   owner_id uuid default auth.uid() references auth.users(id) on delete set null,
@@ -164,6 +180,7 @@ alter table public.qfin_watchlist enable row level security;
 alter table public.qfin_model_templates enable row level security;
 alter table public.qfin_community_posts enable row level security;
 alter table public.qfin_forum_threads enable row level security;
+alter table public.qfin_forum_comments enable row level security;
 alter table public.qfin_builder_models enable row level security;
 alter table public.qfin_symbol_master enable row level security;
 
@@ -261,6 +278,35 @@ create policy "forum_threads_owner_update"
 drop policy if exists "forum_threads_owner_delete" on public.qfin_forum_threads;
 create policy "forum_threads_owner_delete"
   on public.qfin_forum_threads for delete to authenticated
+  using (owner_id = (select auth.uid()));
+
+drop policy if exists "forum_comments_public_read" on public.qfin_forum_comments;
+create policy "forum_comments_public_read"
+  on public.qfin_forum_comments for select to anon, authenticated
+  using (true);
+
+drop policy if exists "forum_comments_authenticated_insert" on public.qfin_forum_comments;
+create policy "forum_comments_authenticated_insert"
+  on public.qfin_forum_comments for insert to authenticated
+  with check (
+    owner_id = (select auth.uid())
+    and nullif(btrim(body), '') is not null
+    and nullif(btrim(author), '') is not null
+  );
+
+drop policy if exists "forum_comments_owner_update" on public.qfin_forum_comments;
+create policy "forum_comments_owner_update"
+  on public.qfin_forum_comments for update to authenticated
+  using (owner_id = (select auth.uid()))
+  with check (
+    owner_id = (select auth.uid())
+    and nullif(btrim(body), '') is not null
+    and nullif(btrim(author), '') is not null
+  );
+
+drop policy if exists "forum_comments_owner_delete" on public.qfin_forum_comments;
+create policy "forum_comments_owner_delete"
+  on public.qfin_forum_comments for delete to authenticated
   using (owner_id = (select auth.uid()));
 
 drop policy if exists "builder_models_public_or_owner_read" on public.qfin_builder_models;
@@ -544,3 +590,4 @@ create policy "qfin_manual_overrides_service_role_all"
   to service_role
   using (true)
   with check (true);
+
