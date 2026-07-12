@@ -2618,10 +2618,16 @@ def build_comparison_facts_fallback(
 
 
 def remove_default_methodology(content: str) -> str:
-    """Keep source details on demand, not as repetitive boilerplate in every answer."""
-    return re.sub(
+    """Keep internal fallback mechanics out of otherwise complete user-facing answers."""
+    content = re.sub(
         r"\n{2}\*\*Methodology\*\*\n(?:- [^\n]*(?:\n|$))*",
         "\n",
+        content,
+        flags=re.I,
+    )
+    return re.sub(
+        r"\n{2}\*\*Caveat\*\*\n- Deterministic finance guidance was used to keep the response grounded and time-bounded\.",
+        "",
         content,
         flags=re.I,
     ).strip()
