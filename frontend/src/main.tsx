@@ -969,6 +969,17 @@ function IconUsers() {
   );
 }
 
+function IconSidebar({ direction }: { direction: 'open' | 'close' }) {
+  const chevron = direction === 'open' ? 'M10 8l4 4-4 4' : 'M14 8l-4 4 4 4';
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M4.5 5.5h15v13h-15v-13Z" />
+      <path d="M9 5.5v13" />
+      <path d={chevron} />
+    </svg>
+  );
+}
+
 function IconFolder() {
   return (
     <svg viewBox="0 0 24 24" aria-hidden="true">
@@ -1381,9 +1392,10 @@ function App() {
             className="sidebarToggleButton"
             onClick={() => setSidebarCollapsed(true)}
             aria-label="Hide navigation"
+            aria-expanded="true"
             title="Hide navigation"
           >
-            <span aria-hidden="true">&#8249;</span>
+            <IconSidebar direction="close" />
           </button>
         </div>
 
@@ -1419,10 +1431,10 @@ function App() {
             className="sidebarReopenButton"
             onClick={() => setSidebarCollapsed(false)}
             aria-label="Open navigation"
+            aria-expanded="false"
             title="Open navigation"
           >
-            <span aria-hidden="true">&#8250;</span>
-            Navigation
+            <IconSidebar direction="open" />
           </button>
         )}
         {view === 'home' && (
