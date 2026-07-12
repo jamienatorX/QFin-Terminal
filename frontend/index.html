@@ -8,6 +8,93 @@
       .homeHero .heroCopy > p {
         display: none !important;
       }
+
+      .builderCanvasPane {
+        min-width: 0;
+        container-type: inline-size;
+        container-name: qfin-builder-output;
+      }
+
+      .richOutputPanel,
+      .richOutputPanel .outputHeader,
+      .richOutputPanel .builderMetricGrid,
+      .richOutputPanel .builderInsightGrid,
+      .richOutputPanel .builderInsightCard,
+      .richOutputPanel .builderFacts,
+      .richOutputPanel .builderFacts > div,
+      .richOutputPanel .builderMetricCard {
+        min-width: 0;
+        width: 100%;
+      }
+
+      .richOutputPanel .builderMetricGrid {
+        grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)) !important;
+        align-items: stretch;
+      }
+
+      .richOutputPanel .builderMetricCard {
+        min-height: 108px;
+        overflow: hidden;
+      }
+
+      .richOutputPanel .builderMetricCard span,
+      .richOutputPanel .builderMetricCard strong,
+      .richOutputPanel .builderFacts dt,
+      .richOutputPanel .builderFacts dd,
+      .richOutputPanel .builderBulletList strong,
+      .richOutputPanel .builderBulletList span {
+        max-width: 100%;
+        overflow-wrap: break-word;
+        word-break: normal;
+      }
+
+      .richOutputPanel .builderInsightGrid {
+        grid-template-columns: repeat(auto-fit, minmax(360px, 1fr)) !important;
+        align-items: start;
+      }
+
+      .richOutputPanel .builderFacts {
+        grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)) !important;
+      }
+
+      .richOutputPanel .builderInsightCard {
+        overflow: hidden;
+      }
+
+      .richOutputPanel .builderBulletList li {
+        padding-left: 22px;
+      }
+
+      @container qfin-builder-output (max-width: 720px) {
+        .richOutputPanel .outputHeader {
+          flex-direction: column;
+          align-items: flex-start;
+        }
+
+        .richOutputPanel .statusBadge {
+          align-self: flex-start;
+        }
+
+        .richOutputPanel .builderInsightGrid {
+          grid-template-columns: 1fr !important;
+        }
+      }
+
+      @container qfin-builder-output (max-width: 520px) {
+        .richOutputPanel .builderMetricGrid {
+          grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+        }
+
+        .richOutputPanel .builderFacts {
+          grid-template-columns: 1fr !important;
+        }
+
+        .richOutputPanel .builderMetricCard,
+        .richOutputPanel .builderInsightCard,
+        .richOutputPanel .builderChartCard {
+          padding: 14px;
+        }
+      }
     </style>
   </head>
   <body>
