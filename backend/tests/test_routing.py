@@ -209,6 +209,23 @@ class AgentRoutingTests(unittest.TestCase):
 
 
 class FinanceEnrichmentTests(unittest.IsolatedAsyncioTestCase):
+    async def test_standard_comparison_skips_optional_narrative_model(self):
+        facts = {
+            "AAA": {"market_data": {"forward_pe": "20.00x"}, "financial_metrics": {}},
+            "BBB": {"market_data": {"forward_pe": "15.00x"}, "financial_metrics": {}},
+        }
+        with (
+            patch("main.qwen_is_configured", return_value=True),
+            patch("main.ask_qwen", new=AsyncMock()) as ask_qwen,
+        ):
+            answer = await main.build_finance_response(
+                "Compare AAA and BBB",
+                {"kind": "comparison", "tickers": ["AAA", "BBB"], "detail": "standard"},
+                facts,
+            )
+        ask_qwen.assert_not_awaited()
+        self.assertIn("Forward P/E", answer)
+
     async def test_usable_warehouse_is_still_enriched_with_live_market_data(self):
         warehouse = {
             "symbol": "AAPL",
