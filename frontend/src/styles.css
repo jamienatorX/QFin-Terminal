@@ -1250,44 +1250,55 @@ svg {
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  width: 44px;
+  height: 44px;
   border: 1px solid var(--line);
-  background: var(--surface);
   color: var(--ink-soft);
-  font-weight: 800;
   cursor: pointer;
+  transition: background 180ms ease, color 180ms ease, border-color 180ms ease, transform 180ms ease;
+}
+
+.sidebarToggleButton svg,
+.sidebarReopenButton svg {
+  width: 21px;
+  height: 21px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.8;
 }
 
 .sidebarToggleButton {
-  width: 34px;
-  height: 34px;
   margin-left: auto;
-  border-radius: 10px;
-  font-size: 25px;
-  line-height: 1;
+  border-radius: 14px;
+  background: #f8f7ff;
 }
 
 .sidebarToggleButton:hover,
 .sidebarReopenButton:hover {
-  border-color: var(--purple);
+  border-color: var(--purple-dark);
+  background: var(--purple-soft);
   color: var(--purple-dark);
+  transform: translateY(-1px);
+}
+
+.sidebarToggleButton:focus-visible,
+.sidebarReopenButton:focus-visible {
+  outline: 3px solid rgba(104, 72, 214, 0.26);
+  outline-offset: 3px;
 }
 
 .sidebarReopenButton {
   position: fixed;
-  top: 22px;
-  left: 22px;
+  top: 128px;
+  left: 0;
   z-index: 20;
-  min-height: 40px;
-  gap: 8px;
-  padding: 0 14px;
-  border-radius: 999px;
-  box-shadow: 0 8px 24px rgba(17, 24, 39, 0.12);
-  font-size: 14px;
-}
-
-.sidebarReopenButton span {
-  font-size: 22px;
-  line-height: 1;
+  border-color: #101525;
+  border-radius: 0 14px 14px 0;
+  background: #101525;
+  color: #ffffff;
+  box-shadow: 0 8px 20px rgba(16, 21, 37, 0.18);
 }
 
 .commentComposer {
