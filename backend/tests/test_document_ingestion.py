@@ -52,6 +52,7 @@ class DocumentIngestionTests(unittest.TestCase):
                 b"Gross profit,55295,47833\n"
                 b"Operating income,38275,31653\n"
                 b"Net income,38458,24108\n"
+                b"Free cash flow,30125,22000\n"
             ),
         )
 
@@ -60,6 +61,9 @@ class DocumentIngestionTests(unittest.TestCase):
         self.assertIn("Financial statement analysis", content)
         self.assertIn("Total revenue: 81,273.00 in FY26 Q2 vs 69,632.00 in FY25 Q2 (+16.7% YoY)", content)
         self.assertIn("Operating margin: 47.1% vs 45.5% (+1.6 percentage points)", content)
+        self.assertIn("Free cash flow: 30,125.00 in FY26 Q2 vs 22,000.00 in FY25 Q2 (+36.9% YoY)", content)
+        self.assertIn("Free-cash-flow movement should be compared with profit growth", content)
+        self.assertNotIn("cash flow, balance sheet, and valuation need", content)
         self.assertNotIn("first period", content)
 
     def test_document_analysis_does_not_flag_file_labels_as_tickers(self):
