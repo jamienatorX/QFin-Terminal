@@ -7,6 +7,7 @@ import httpx
 
 
 logger = logging.getLogger("qfin.qwen")
+MODEL_COOLDOWNS: Dict[str, float] = {}
 
 
 class QwenClientError(Exception):
@@ -171,6 +172,20 @@ def _is_terminal_api_status(status_code: int) -> bool:
     return status_code == 401
 
 
+def _cooldown_key(task_type: str, model_name: str) -> str:
+    return f"{task_type}:{model_name}"
+
+
+def _model_is_available(task_type: str, model_name: str, now: Optional[float] = None) -> bool:
+    expires_at = MODEL_COOLDOWNS.get(_cooldown_key(task_type, model_name), 0.0)
+    return (time.monotonic() if now is None else now) >= expires_at
+
+
+def _defer_model(task_type: str, model_name: str, seconds: float, now: Optional[float] = None) -> None:
+    base_time = time.monotonic() if now is None else now
+    MODEL_COOLDOWNS[_cooldown_key(task_type, model_name)] = base_time + seconds
+
+
 def _model_chain(task_type: str, explicit_model: Optional[str] = None) -> List[str]:
     if explicit_model:
         return [explicit_model]
@@ -203,7 +218,10 @@ async def call_qwen(
     ).rstrip("/")
 
     task_type = _detect_task_type(messages)
-    candidate_models = _model_chain(task_type, model)
+    candidate_models = [
+        model_name for model_name in _model_chain(task_type, model)
+        if _model_is_available(task_type, model_name)
+    ]
     attempt_timeout_seconds = _timeout_seconds(task_type)
     total_timeout_seconds = _total_timeout_seconds(task_type)
     deadline = time.monotonic() + total_timeout_seconds
@@ -245,6 +263,9 @@ async def call_qwen(
                 f"Model={model_name}. Task={task_type}. Base URL={base_url}. "
                 f"Error type={type(e).__name__}."
             )
+            # Do not make every finance request wait on a model that just timed
+            # out for the same task. General chat may still use that model.
+            _defer_model(task_type, model_name, 300.0)
             logger.warning("Qwen timeout; trying fallback if available: %s", last_error)
             continue
         except httpx.RequestError as e:
@@ -264,6 +285,10 @@ async def call_qwen(
             # next approved model before falling back to deterministic guidance.
             if _is_terminal_api_status(response.status_code):
                 raise error
+            if response.status_code == 403 and "AllocationQuota" in response.text:
+                # Quota failures will not recover immediately; prefer QFin's
+                # connected-data fallback until this model can be retried.
+                _defer_model(task_type, model_name, 900.0)
             last_error = error
             # Keep the provider's bounded error detail in server logs only. The caller
             # still returns a safe deterministic answer rather than exposing it to users.
