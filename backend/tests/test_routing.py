@@ -31,6 +31,28 @@ class AgentRoutingTests(unittest.TestCase):
         self.assertEqual(route["category"], "Stocks")
         self.assertEqual(route["topic"], "technology")
 
+    def test_company_fallback_adds_fact_grounded_trend_and_risk_signals(self):
+        facts = {
+            "ticker": "TEST",
+            "company_name": "Test Company",
+            "market_data": {"trailing_pe": "30.00x", "forward_pe": "20.00x"},
+            "financial_metrics": {
+                "revenue_growth": "25.00%",
+                "operating_margin": "35.00%",
+                "operating_cashflow": "100.00",
+                "free_cashflow": "80.00",
+                "debt_to_equity": "15.00%",
+            },
+        }
+
+        content = main.build_company_facts_fallback("Analyze TEST", facts, "unused")
+
+        self.assertIn("**Trend and risk signals**", content)
+        self.assertIn("Growth: revenue growth of 25.00% is strong", content)
+        self.assertIn("Cash conversion: free cash flow equals 80.0%", content)
+        self.assertIn("Balance-sheet risk: debt/equity of 15.00% indicates low", content)
+        self.assertIn("Valuation expectation: forward P/E of 20.00x is below trailing P/E", content)
+
     def test_general_questions_do_not_become_tickers(self):
         prompts = [
             "Explain photosynthesis to a 12-year-old.",
