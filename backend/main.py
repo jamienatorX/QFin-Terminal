@@ -1,6 +1,3 @@
-Warning: truncated output (original token count: 51097)
-Total output lines: 4623
-
 from dotenv import load_dotenv
 load_dotenv()
 
