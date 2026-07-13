@@ -341,6 +341,12 @@ class QwenModelRoutingTests(unittest.TestCase):
         self.assertFalse(qwen_client._is_terminal_api_status(403))
         self.assertTrue(qwen_client._is_terminal_api_status(401))
 
+    def test_finance_facts_are_serialized_compactly_for_the_model(self):
+        serialized = main.serialize_agent_facts({"ticker": "AAPL", "metrics": {"margin": "30%"}})
+        self.assertNotIn("\n", serialized)
+        self.assertIn('"ticker":"AAPL"', serialized)
+        self.assertEqual(qwen_client._max_tokens("fast"), 700)
+
 
 class FinancialDataConcurrencyTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
