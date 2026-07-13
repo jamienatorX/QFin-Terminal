@@ -2595,6 +2595,41 @@ def company_analysis_profile(facts: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def company_signal_lines(facts: Dict[str, Any], analysis_profile: Dict[str, Any]) -> List[str]:
+    """Turn available connected metrics into concise, explicitly fact-based signals."""
+    signals: List[str] = []
+    growth = metric_number(facts, "financial_metrics", "revenue_growth")
+    operating_margin = metric_number(facts, "financial_metrics", "operating_margin")
+    debt_to_equity = metric_number(facts, "financial_metrics", "debt_to_equity")
+    operating_cashflow = metric_number(facts, "financial_metrics", "operating_cashflow")
+    free_cashflow = metric_number(facts, "financial_metrics", "free_cashflow")
+    trailing_pe = metric_number(facts, "market_data", "trailing_pe")
+    forward_pe = metric_number(facts, "market_data", "forward_pe")
+
+    if growth is not None:
+        if growth >= 20:
+            signals.append(f"- Growth: revenue growth of {growth:.2f}% is strong, but raises the bar for continued execution.")
+        elif growth < 0:
+            signals.append(f"- Growth risk: revenue growth of {growth:.2f}% indicates contraction that merits closer review.")
+        else:
+            signals.append(f"- Growth: revenue growth is {growth:.2f}%; assess whether margins and cash flow are keeping pace.")
+    if operating_margin is not None and analysis_profile["kind"] == "operating_company":
+        margin_note = "high" if operating_margin >= 25 else "modest" if operating_margin < 10 else "positive"
+        signals.append(f"- Profitability: operating margin of {operating_margin:.2f}% is {margin_note}; compare it with peers and the company's own history.")
+    if operating_cashflow and free_cashflow is not None and operating_cashflow > 0:
+        conversion = free_cashflow / operating_cashflow * 100
+        signals.append(f"- Cash conversion: free cash flow equals {conversion:.1f}% of operating cash flow; capital intensity and working-capital needs remain key watch items.")
+    if debt_to_equity is not None:
+        leverage_note = "elevated" if debt_to_equity >= 100 else "moderate" if debt_to_equity >= 40 else "low"
+        signals.append(f"- Balance-sheet risk: debt/equity of {debt_to_equity:.2f}% indicates {leverage_note} reported leverage.")
+    if trailing_pe and forward_pe:
+        if forward_pe < trailing_pe:
+            signals.append(f"- Valuation expectation: forward P/E of {forward_pe:.2f}x is below trailing P/E of {trailing_pe:.2f}x, implying expected earnings growth in the supplied valuation data.")
+        else:
+            signals.append(f"- Valuation expectation: forward P/E of {forward_pe:.2f}x is at or above trailing P/E of {trailing_pe:.2f}x, so the valuation case depends on sustained earnings delivery.")
+    return signals[:5]
+
+
 def build_company_facts_fallback(query: str, facts: Dict[str, Any], fallback_reason: str) -> str:
     ticker = facts.get("ticker") or "Unknown ticker"
     company_name = clean_text(str(facts.get("company_name") or ticker))
@@ -2634,6 +2669,10 @@ def build_company_facts_fallback(query: str, facts: Dict[str, Any], fallback_rea
                 *([f"- Annual net income periods: {display_periods(annual_net_income)}"] if annual_net_income else []),
             ]
         )
+
+    signal_lines = company_signal_lines(facts, analysis_profile)
+    if signal_lines:
+        lines.extend(["", "**Trend and risk signals**", *signal_lines])
 
     missing_count = len(missing_market) + len(missing_fundamentals)
     if missing_count and analysis_profile["show_coverage"]:
