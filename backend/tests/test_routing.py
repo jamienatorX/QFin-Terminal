@@ -26,6 +26,11 @@ class AgentRoutingTests(unittest.TestCase):
     def test_identity_prompt_is_local_casual_reply(self):
         self.assert_route("Hello, who are you and what can you help me with?", "casual")
 
+    def test_technology_market_news_preserves_sector_intent(self):
+        route = self.assert_route("Give me the latest technology market news", "headlines")
+        self.assertEqual(route["category"], "Stocks")
+        self.assertEqual(route["topic"], "technology")
+
     def test_general_questions_do_not_become_tickers(self):
         prompts = [
             "Explain photosynthesis to a 12-year-old.",
