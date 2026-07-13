@@ -360,6 +360,14 @@ class QwenModelRoutingTests(unittest.TestCase):
         self.assertIn('"ticker":"AAPL"', serialized)
         self.assertEqual(qwen_client._max_tokens("fast"), 700)
 
+    def test_recent_model_failures_are_cooled_down_per_task(self):
+        qwen_client.MODEL_COOLDOWNS.clear()
+        qwen_client._defer_model("fast", "qwen3.6-flash", 300, now=100)
+
+        self.assertFalse(qwen_client._model_is_available("fast", "qwen3.6-flash", now=250))
+        self.assertTrue(qwen_client._model_is_available("general", "qwen3.6-flash", now=250))
+        self.assertTrue(qwen_client._model_is_available("fast", "qwen3.6-flash", now=400))
+
 
 class FinancialDataConcurrencyTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
