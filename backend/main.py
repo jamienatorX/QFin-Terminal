@@ -1688,13 +1688,15 @@ def classify_message(text: str, provided_ticker: Optional[str] = None) -> Dict[s
     if compare:
         return compare
 
+    news_topic = "technology" if re.search(r"\b(technology|tech|semiconductor|chip|software|artificial intelligence|\bai\b)\b", text, flags=re.I) else None
+
     if re.search(r"\b(headlines?|breaking|top stories|latest)\b", text, flags=re.I) and re.search(r"\b(news|market|markets|stocks?|crypto|bonds?|etfs?)\b", text, flags=re.I):
         category = "Stocks"
         for option in ["Crypto", "Stocks", "Bonds", "ETFs", "Other"]:
             if option.lower() in text.lower():
                 category = option
                 break
-        return {"kind": "headlines", "category": category}
+        return {"kind": "headlines", "category": category, "topic": news_topic}
 
     if "news" in text.lower():
         category = "Stocks"
@@ -1702,7 +1704,7 @@ def classify_message(text: str, provided_ticker: Optional[str] = None) -> Dict[s
             if option.lower() in text.lower():
                 category = option
                 break
-        return {"kind": "news", "category": category}
+        return {"kind": "news", "category": category, "topic": news_topic}
 
     direct_tickers = extract_symbol_candidates(text)
     ticker = None
@@ -3302,7 +3304,7 @@ async def generate_agent_reply(query: str, provided_ticker: Optional[str] = None
         return {"route": route, "content": build_data_sources_reply(), "facts": None, "used_live_data": False}
 
     if route["kind"] in {"news", "headlines"}:
-        news = await generate_news(normalize_category(route["category"]))
+        news = await generate_news(normalize_category(route["category"]), route.get("topic"))
         evidence = build_evidence_packet(query, route, news, used_live_data=True)
         prompt_route = {**route, "kind": "news"}
         content = await build_finance_response(query, route, news, prompt_route=prompt_route)
