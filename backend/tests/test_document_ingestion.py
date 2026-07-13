@@ -42,6 +42,35 @@ class DocumentIngestionTests(unittest.TestCase):
         self.assertIn("Revenue", parsed["text"])
         self.assertIn("Cash", parsed["text"])
 
+    def test_statement_rows_are_compared_across_period_columns(self):
+        attachment = parse_document_bytes(
+            "income-statement.csv",
+            "text/csv",
+            (
+                b"Metric,FY26 Q2,FY25 Q2\n"
+                b"Total revenue,81273,69632\n"
+                b"Gross profit,55295,47833\n"
+                b"Operating income,38275,31653\n"
+                b"Net income,38458,24108\n"
+            ),
+        )
+
+        content = main.build_spreadsheet_attachment_fallback(attachment)
+
+        self.assertIn("Financial statement analysis", content)
+        self.assertIn("Total revenue: 81,273.00 in FY26 Q2 vs 69,632.00 in FY25 Q2 (+16.7% YoY)", content)
+        self.assertIn("Operating margin: 47.1% vs 45.5% (+1.6 percentage points)", content)
+        self.assertNotIn("first period", content)
+
+    def test_document_analysis_does_not_flag_file_labels_as_tickers(self):
+        review = main.run_agent_risk_review(
+            {"kind": "document_analysis", "ticker": "MSFT"},
+            None,
+            "The CSV and PDF were parsed successfully.",
+        )
+
+        self.assertEqual(review.warnings, [])
+
     def test_docx_extracts_paragraphs_and_tables(self):
         document = Document()
         document.add_heading("Annual Report 2025", level=1)
