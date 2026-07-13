@@ -350,6 +350,24 @@ class QwenModelRoutingTests(unittest.TestCase):
         self.assertEqual(profile["vision"], "qwen-vl-plus-latest")
         self.assertEqual(profile["news"], "qwen-plus-latest")
 
+    def test_stale_render_model_overrides_are_replaced(self):
+        with patch.dict(
+            qwen_client.os.environ,
+            {
+                "DASHSCOPE_MODEL": "qwen3.7-plus",
+                "DASHSCOPE_MODEL_FAST": "qwen3.7-plus",
+                "DASHSCOPE_MODEL_DEEP": "qwen3.7-max",
+                "DASHSCOPE_MODEL_FLASH": "qwen3.6-flash",
+            },
+            clear=False,
+        ):
+            profile = qwen_client._model_profile()
+
+        self.assertEqual(profile["fast"], "qwen-plus-latest")
+        self.assertEqual(profile["deep"], "qwen3.7-max-2026-05-20")
+        self.assertEqual(profile["flash"], "qwen-flash")
+        self.assertNotIn("qwen3.7-plus", qwen_client._model_chain("general"))
+
     def test_standard_company_analysis_uses_fast_profile(self):
         messages = main.build_finance_prompt(
             "Analyze AAPL",

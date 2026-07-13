@@ -13,6 +13,11 @@ DEFAULT_FAST_MODEL = "qwen-plus-latest"
 DEFAULT_DEEP_MODEL = "qwen3.7-max-2026-05-20"
 DEFAULT_FLASH_MODEL = "qwen-flash"
 DEFAULT_VISION_MODEL = "qwen-vl-plus-latest"
+STALE_MODEL_REPLACEMENTS = {
+    "qwen3.7-plus": DEFAULT_FAST_MODEL,
+    "qwen3.7-max": DEFAULT_DEEP_MODEL,
+    "qwen3.6-flash": DEFAULT_FLASH_MODEL,
+}
 
 
 class QwenClientError(Exception):
@@ -52,6 +57,13 @@ def _max_tokens(task_type: str) -> int:
         return defaults.get(task_type, 1000)
 
 
+def _model_override(value: Optional[str], fallback: str) -> str:
+    model_name = (value or "").strip()
+    if not model_name:
+        return fallback
+    return STALE_MODEL_REPLACEMENTS.get(model_name, model_name)
+
+
 def _model_profile() -> Dict[str, str]:
     """
     QFin model routing profile.
@@ -59,13 +71,16 @@ def _model_profile() -> Dict[str, str]:
     Keep Qwen3.7-Max for deep analyst work, but avoid using it for every
     request so quick summaries stay faster and cheaper.
     """
-    fast_model = os.getenv("DASHSCOPE_MODEL_FAST") or os.getenv("DASHSCOPE_MODEL") or DEFAULT_FAST_MODEL
+    fast_model = _model_override(
+        os.getenv("DASHSCOPE_MODEL_FAST") or os.getenv("DASHSCOPE_MODEL"),
+        DEFAULT_FAST_MODEL,
+    )
     return {
-        "deep": os.getenv("DASHSCOPE_MODEL_DEEP") or DEFAULT_DEEP_MODEL,
+        "deep": _model_override(os.getenv("DASHSCOPE_MODEL_DEEP"), DEFAULT_DEEP_MODEL),
         "fast": fast_model,
-        "flash": os.getenv("DASHSCOPE_MODEL_FLASH") or DEFAULT_FLASH_MODEL,
-        "vision": os.getenv("DASHSCOPE_MODEL_VISION") or DEFAULT_VISION_MODEL,
-        "news": os.getenv("DASHSCOPE_NEWS_MODEL") or fast_model,
+        "flash": _model_override(os.getenv("DASHSCOPE_MODEL_FLASH"), DEFAULT_FLASH_MODEL),
+        "vision": _model_override(os.getenv("DASHSCOPE_MODEL_VISION"), DEFAULT_VISION_MODEL),
+        "news": _model_override(os.getenv("DASHSCOPE_NEWS_MODEL"), fast_model),
     }
 
 
