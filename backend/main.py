@@ -3257,7 +3257,9 @@ async def build_finance_response(
         try:
             return await ask_qwen(build_finance_prompt(query, active_route, facts))
         except QwenClientError as exc:
-            logger.warning("Finance narrative fallback: %s", type(exc).__name__)
+            # Provider details remain server-side, while users receive a grounded
+            # fallback instead of internal API errors.
+            logger.warning("Finance narrative fallback: %s", str(exc)[:1500])
             fallback_reason = "Deterministic finance guidance was used to keep the response grounded and time-bounded."
 
     if route["kind"] == "company" and isinstance(facts, dict):
