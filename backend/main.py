@@ -393,6 +393,10 @@ class AgentChatRequest(BaseModel):
     mode: Optional[str] = "chat"
     messages: Optional[List[ChatMessage]] = None
 
+def model_to_dict(model: BaseModel) -> Dict[str, Any]:
+    """Support Pydantic v2 while keeping the payload shape explicit."""
+    return model.model_dump()
+
 
 class ForumCreateRequest(BaseModel):
     title: str
@@ -3446,7 +3450,7 @@ def remember_agent_session(
             "route": evidence.route,
             "used_live_data": evidence.used_live_data,
             "gathered_at": evidence.gathered_at,
-            "risk_review": review.dict(),
+            "risk_review": model_to_dict(review),
             "content_preview": content[:400],
         },
     )
@@ -3483,8 +3487,8 @@ async def generate_agent_reply(query: str, provided_ticker: Optional[str] = None
             "content": content,
             "facts": news,
             "used_live_data": True,
-            "evidence": evidence.dict(),
-            "risk_review": review.dict(),
+            "evidence": model_to_dict(evidence),
+            "risk_review": model_to_dict(review),
         }
 
     if route["kind"] == "comparison":
@@ -3505,8 +3509,8 @@ async def generate_agent_reply(query: str, provided_ticker: Optional[str] = None
             "content": content,
             "facts": facts,
             "used_live_data": True,
-            "evidence": evidence.dict(),
-            "risk_review": review.dict(),
+            "evidence": model_to_dict(evidence),
+            "risk_review": model_to_dict(review),
         }
 
     if route["kind"] == "company":
@@ -3521,8 +3525,8 @@ async def generate_agent_reply(query: str, provided_ticker: Optional[str] = None
             "content": content,
             "facts": facts,
             "used_live_data": True,
-            "evidence": evidence.dict(),
-            "risk_review": review.dict(),
+            "evidence": model_to_dict(evidence),
+            "risk_review": model_to_dict(review),
         }
 
     if route["kind"] == "finance_concept":
@@ -3536,8 +3540,8 @@ async def generate_agent_reply(query: str, provided_ticker: Optional[str] = None
             "content": content,
             "facts": None,
             "used_live_data": False,
-            "evidence": evidence.dict(),
-            "risk_review": review.dict(),
+            "evidence": model_to_dict(evidence),
+            "risk_review": model_to_dict(review),
         }
 
     if not qwen_is_configured():
@@ -3561,8 +3565,8 @@ async def generate_agent_reply(query: str, provided_ticker: Optional[str] = None
             "content": content,
             "facts": public_facts,
             "used_live_data": True,
-            "evidence": evidence.dict(),
-            "risk_review": review.dict(),
+            "evidence": model_to_dict(evidence),
+            "risk_review": model_to_dict(review),
         }
 
     content = await ask_qwen(build_general_prompt(query))
@@ -3575,8 +3579,8 @@ async def generate_agent_reply(query: str, provided_ticker: Optional[str] = None
         "content": content,
         "facts": None,
         "used_live_data": False,
-        "evidence": evidence.dict(),
-        "risk_review": review.dict(),
+        "evidence": model_to_dict(evidence),
+        "risk_review": model_to_dict(review),
     }
 
 
@@ -3647,8 +3651,8 @@ async def generate_attachment_reply(
         "facts": facts,
         "used_live_data": bool(facts),
         "attachment": attachment_metadata,
-        "evidence": evidence.dict(),
-        "risk_review": review.dict(),
+        "evidence": model_to_dict(evidence),
+        "risk_review": model_to_dict(review),
     }
 
 
