@@ -3695,7 +3695,9 @@ def build_statement_attachment_analysis(
     gross_profit = find_statement_metric(rows, ["gross profit"])
     operating_income = find_statement_metric(rows, ["operating income", "operating profit", "income from operations"])
     net_income = find_statement_metric(rows, ["net income", "net earnings", "profit attributable to owners"])
-    key_rows = [row for row in [revenue, gross_profit, operating_income, net_income] if row]
+    operating_cashflow = find_statement_metric(rows, ["operating cash flow", "cash flow from operations", "net cash from operating activities"])
+    free_cashflow = find_statement_metric(rows, ["free cash flow", "free cashflow"])
+    key_rows = [row for row in [revenue, gross_profit, operating_income, net_income, operating_cashflow, free_cashflow] if row]
     if not key_rows:
         key_rows = rows[:6]
 
@@ -3717,6 +3719,8 @@ def build_statement_attachment_analysis(
             interpretation.append(f"- Revenue {'grew' if revenue_change >= 0 else 'declined'} {abs(revenue_change):.1f}% year over year.")
     if operating_income and net_income:
         interpretation.append("- Compare operating-income and net-income growth to separate core operating performance from below-the-line effects.")
+    if free_cashflow:
+        interpretation.append("- Free-cash-flow movement should be compared with profit growth to assess how much reported earnings are converting into investable cash.")
     if not interpretation:
         interpretation.append("- The file contains comparable statement values, but the statement scope and units should be confirmed before valuation work.")
 
@@ -3734,7 +3738,7 @@ def build_statement_attachment_analysis(
             "",
             "**Bottom line**",
             *interpretation,
-            "- This result is based on the uploaded statement only; cash flow, balance sheet, and valuation need their respective disclosures.",
+            "- Pair these reported trends with balance-sheet leverage and current valuation data before reaching an investment conclusion.",
         ]
     )
 
