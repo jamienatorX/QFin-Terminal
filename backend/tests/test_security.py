@@ -24,6 +24,11 @@ class ApiSecurityTests(unittest.TestCase):
         self.assertEqual(response.headers["referrer-policy"], "strict-origin-when-cross-origin")
         self.assertIn("frame-ancestors 'none'", response.headers["content-security-policy"])
 
+    def test_https_proxy_requests_receive_hsts(self):
+        response = self.client.get("/health", headers={"x-forwarded-proto": "https"})
+
+        self.assertEqual(response.headers["strict-transport-security"], "max-age=31536000; includeSubDomains")
+
     def test_oversized_json_request_is_rejected_before_processing(self):
         response = self.client.post(
             "/agent/chat",
