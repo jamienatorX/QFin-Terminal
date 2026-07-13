@@ -89,7 +89,24 @@ def _is_recent(item: Dict[str, Any]) -> bool:
     return age <= timedelta(hours=36).total_seconds()
 
 
-def _dedupe(items: List[Dict[str, Any]], category: str) -> List[Dict[str, Any]]:
+def _topic_score(item: Dict[str, Any], topic: str) -> int:
+    if not topic:
+        return 0
+    text = " ".join(
+        str(item.get(field) or "")
+        for field in ("title", "summary", "publisher", "link", "source")
+    ).lower()
+    keywords = {
+        "technology": (
+            "technology", "tech", "ai", "artificial intelligence", "semiconductor", "chip", "software",
+            "cloud", "datacenter", "data center", "cybersecurity", "saas", "nvidia", "amd", "intel",
+            "microsoft", "apple", "alphabet", "google", "meta", "tsmc", "broadcom",
+        ),
+    }.get(topic, (topic,))
+    return sum(1 for keyword in keywords if keyword in text)
+
+
+def _dedupe(items: List[Dict[str, Any]], category: str, topic: str = "") -> List[Dict[str, Any]]:
     seen = set()
     output = []
     for item in items:
@@ -101,16 +118,20 @@ def _dedupe(items: List[Dict[str, Any]], category: str) -> List[Dict[str, Any]]:
         score = _category_score(item, category)
         if score <= 0:
             continue
+        topic_score = _topic_score(item, topic)
+        if topic and topic_score <= 0:
+            continue
         if not _is_recent(item):
             continue
         seen.add(key)
         item["_category_score"] = score
+        item["_topic_score"] = topic_score
         output.append(item)
-    output.sort(key=lambda x: (x.get("_category_score", 0), _time_value(x.get("providerPublishTime"))), reverse=True)
+    output.sort(key=lambda x: (x.get("_topic_score", 0), x.get("_category_score", 0), _time_value(x.get("providerPublishTime"))), reverse=True)
     return output[:40]
 
-async def fetch_yahoo(client: httpx.AsyncClient, category: str) -> List[Dict[str, Any]]:
-    q = CATEGORY_QUERIES.get(category, CATEGORY_QUERIES["Stocks"])
+async def fetch_yahoo(client: httpx.AsyncClient, category: str, query: str) -> List[Dict[str, Any]]:
+    q = query or CATEGORY_QUERIES.get(category, CATEGORY_QUERIES["Stocks"])
     try:
         r = await client.get("https://query2.finance.yahoo.com/v1/finance/search", params={"q": q, "quotesCount": 0, "newsCount": 12})
         if r.status_code >= 400:
@@ -119,8 +140,8 @@ async def fetch_yahoo(client: httpx.AsyncClient, category: str) -> List[Dict[str
     except Exception:
         return []
 
-async def fetch_gdelt(client: httpx.AsyncClient, category: str) -> List[Dict[str, Any]]:
-    q = quote_plus(CATEGORY_QUERIES.get(category, CATEGORY_QUERIES["Stocks"]))
+async def fetch_gdelt(client: httpx.AsyncClient, category: str, query: str) -> List[Dict[str, Any]]:
+    q = quote_plus(query or CATEGORY_QUERIES.get(category, CATEGORY_QUERIES["Stocks"]))
     try:
         r = await client.get(f"https://api.gdeltproject.org/api/v2/doc/doc?query={q}&mode=ArtList&format=json&maxrecords=12&sort=HybridRel")
         if r.status_code >= 400:
@@ -149,8 +170,8 @@ async def fetch_rss(client: httpx.AsyncClient, category: str) -> List[Dict[str, 
     return output
 
 
-async def fetch_google_news(client: httpx.AsyncClient, category: str) -> List[Dict[str, Any]]:
-    query = quote_plus(CATEGORY_QUERIES.get(category, CATEGORY_QUERIES["Stocks"]))
+async def fetch_google_news(client: httpx.AsyncClient, category: str, query: str) -> List[Dict[str, Any]]:
+    query = quote_plus(query or CATEGORY_QUERIES.get(category, CATEGORY_QUERIES["Stocks"]))
     url = f"https://news.google.com/rss/search?q={query}&hl=en-US&gl=US&ceid=US:en"
     output = []
     try:
@@ -176,11 +197,11 @@ async def fetch_google_news(client: httpx.AsyncClient, category: str) -> List[Di
         return []
     return output
 
-async def fetch_newsapi(client: httpx.AsyncClient, category: str) -> List[Dict[str, Any]]:
+async def fetch_newsapi(client: httpx.AsyncClient, category: str, query: str) -> List[Dict[str, Any]]:
     key = os.getenv("NEWSAPI_KEY") or os.getenv("NEWS_API_KEY")
     if not key:
         return []
-    q = CATEGORY_QUERIES.get(category, CATEGORY_QUERIES["Stocks"])
+    q = query or CATEGORY_QUERIES.get(category, CATEGORY_QUERIES["Stocks"])
     try:
         r = await client.get("https://newsapi.org/v2/everything", params={"q": q, "language": "en", "sortBy": "publishedAt", "pageSize": 12, "apiKey": key})
         if r.status_code >= 400:
@@ -202,16 +223,19 @@ async def fetch_finnhub(client: httpx.AsyncClient, category: str) -> List[Dict[s
     except Exception:
         return []
 
-async def fetch_all_sources(category: str) -> List[Dict[str, Any]]:
+async def fetch_all_sources(category: str, topic: str = "") -> List[Dict[str, Any]]:
     headers = {"User-Agent": "Mozilla/5.0 QFinTerminal/1.0"}
+    query = {
+        "technology": "technology stocks AI semiconductors software earnings market",
+    }.get(topic, CATEGORY_QUERIES.get(category, CATEGORY_QUERIES["Stocks"]))
     async with httpx.AsyncClient(timeout=6, follow_redirects=True, headers=headers) as client:
         items = []
         tasks = [
-            fetch_yahoo(client, category),
-            fetch_gdelt(client, category),
+            fetch_yahoo(client, category, query),
+            fetch_gdelt(client, category, query),
             fetch_rss(client, category),
-            fetch_google_news(client, category),
-            fetch_newsapi(client, category),
+            fetch_google_news(client, category, query),
+            fetch_newsapi(client, category, query),
             fetch_finnhub(client, category),
         ]
         results = await asyncio.gather(
@@ -221,4 +245,5 @@ async def fetch_all_sources(category: str) -> List[Dict[str, Any]]:
         for result in results:
             if isinstance(result, list):
                 items.extend(result)
-    return _dedupe(items, category)
+    return _dedupe(items, category, topic)
+
