@@ -1381,6 +1381,10 @@ def extract_symbol_candidates(text: str) -> List[str]:
             found.append(symbol)
 
     for token in re.findall(r"\b[A-Za-z0-9]{1,6}(?:[.\-][A-Za-z0-9]{1,4})?\b", text):
+        # OR is L'Oreal's Paris symbol, but it is far more commonly an English
+        # connector in finance prose. Explicit $OR remains supported above.
+        if token.lower() == "or":
+            continue
         symbol = normalize_market_symbol(token, text)
         if is_known_market_symbol(symbol) and should_accept_direct_symbol(symbol, text) and symbol not in found:
             found.append(symbol)
