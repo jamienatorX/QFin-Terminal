@@ -2444,7 +2444,7 @@ def build_finance_prompt(query: str, route: Dict[str, Any], facts: Any) -> List[
             f"User request: {query}\n"
             f"Internal route: exact ticker comparison\n"
             f"Required tickers: {route['tickers']}\n"
-            f"Topic: {route['topic']}\n"
+            f"Topic: {route.get('topic') or 'general comparison'}\n"
             f"{depth_instruction}\n"
             f"Backend facts:\n{fact_block}\n"
             "Use only these exact tickers. Do not substitute any other symbol. "
@@ -3239,18 +3239,12 @@ async def build_finance_response(
     active_route = prompt_route or route
     fallback_reason = "Deterministic finance guidance was used to keep the response grounded and time-bounded."
 
-    # Standard finance routes already have structured facts or curated explainers.
-    # Avoid spending the response budget on a narrative model that may time out before
-    # returning the same fact-backed fallback. Explicit deep requests still use Qwen.
+    # Keep news fast, but let Qwen turn company and comparison facts into a useful
+    # analyst answer whenever it is configured. The structured paths below remain
+    # the bounded fallback if the model cannot respond.
     if route.get("detail", "standard") != "deep":
-        if route["kind"] == "company" and isinstance(facts, dict):
-            return build_company_facts_fallback(query, facts, fallback_reason)
-        if route["kind"] == "comparison" and isinstance(facts, dict):
-            return build_comparison_facts_fallback(query, route, facts, fallback_reason)
         if route["kind"] in {"news", "headlines"} and isinstance(facts, dict):
             return build_headline_digest(facts)
-        if route["kind"] == "finance_concept":
-            return build_finance_concept_fallback(query, fallback_reason)
 
     if not qwen_is_configured():
         fallback_reason = "Deterministic finance guidance was used to keep the response grounded and time-bounded."
