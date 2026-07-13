@@ -2745,12 +2745,12 @@ def build_company_facts_fallback(query: str, facts: Dict[str, Any], fallback_rea
     analysis_profile = company_analysis_profile(facts)
     market_metrics = analysis_profile["market_metrics"]
     fundamental_metrics = analysis_profile["fundamental_metrics"]
-    market_lines, missing_market = available_metric_lines(
+    market_lines, _ = available_metric_lines(
         facts,
         "market_data",
         market_metrics,
     )
-    fundamental_lines, missing_fundamentals = available_metric_lines(
+    fundamental_lines, _ = available_metric_lines(
         facts,
         "financial_metrics",
         fundamental_metrics,
@@ -2781,15 +2781,6 @@ def build_company_facts_fallback(query: str, facts: Dict[str, Any], fallback_rea
     if signal_lines:
         lines.extend(["", "**Trend and risk signals**", *signal_lines])
 
-    missing_count = len(missing_market) + len(missing_fundamentals)
-    if missing_count and analysis_profile["show_coverage"]:
-        lines.extend(
-            [
-                "",
-                "**Coverage note**",
-                f"- {missing_count} secondary metrics were not returned by the connected providers and were omitted rather than guessed.",
-            ]
-        )
 
     lines.extend(
         [
