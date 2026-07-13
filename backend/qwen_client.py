@@ -240,14 +240,14 @@ async def call_qwen(
                 f"Model={model_name}. Task={task_type}. Base URL={base_url}. "
                 f"Error type={type(e).__name__}."
             )
-            logger.warning("Qwen timeout on model %s; trying fallback if available.", model_name)
+            logger.warning("Qwen timeout; trying fallback if available: %s", last_error)
             continue
         except httpx.RequestError as e:
             last_error = QwenClientError(
                 f"Qwen network request failed. Model={model_name}. Task={task_type}. Base URL={base_url}. "
                 f"Error type={type(e).__name__}. Error={repr(e)}"
             )
-            logger.warning("Qwen network error on model %s; trying fallback if available.", model_name)
+            logger.warning("Qwen network error; trying fallback if available: %s", last_error)
             continue
 
         if response.status_code >= 400:
@@ -258,7 +258,9 @@ async def call_qwen(
             if response.status_code in {401, 403}:
                 raise error
             last_error = error
-            logger.warning("Qwen API error on model %s; trying fallback if available.", model_name)
+            # Keep the provider's bounded error detail in server logs only. The caller
+            # still returns a safe deterministic answer rather than exposing it to users.
+            logger.warning("Qwen API error; trying fallback if available: %s", error)
             continue
 
         try:
@@ -271,7 +273,7 @@ async def call_qwen(
                 f"Qwen returned non-JSON response. Model={model_name}. Task={task_type}. "
                 f"Error={repr(e)}. Body={response.text[:1200]}"
             )
-            logger.warning("Qwen returned non-JSON on model %s; trying fallback if available.", model_name)
+            logger.warning("Qwen returned non-JSON; trying fallback if available: %s", last_error)
             continue
 
     if last_error:
