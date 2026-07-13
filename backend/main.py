@@ -2831,6 +2831,41 @@ def build_comparison_facts_fallback(
     ]
     leader_lines = [line for line in leader_lines if line]
 
+    interpretation_lines: List[str] = []
+
+    left_margin = metric_number(left, "financial_metrics", "operating_margin")
+    right_margin = metric_number(right, "financial_metrics", "operating_margin")
+    if left_margin is not None and right_margin is not None:
+        leader = tickers[0] if left_margin > right_margin else tickers[1]
+        spread = abs(left_margin - right_margin)
+        interpretation_lines.append(
+            f"- Profitability: {leader} has the higher operating margin by {spread:.2f} percentage points, which provides a larger operating cushion if revenue slows."
+        )
+
+    left_fcf = metric_number(left, "financial_metrics", "free_cashflow")
+    right_fcf = metric_number(right, "financial_metrics", "free_cashflow")
+    if left_fcf is not None and right_fcf is not None:
+        leader = tickers[0] if left_fcf > right_fcf else tickers[1]
+        interpretation_lines.append(
+            f"- Cash generation: {leader} reports the higher free cash flow in the connected data; compare that advantage with reinvestment needs and the durability of operating margins."
+        )
+
+    left_debt = metric_number(left, "financial_metrics", "debt_to_equity")
+    right_debt = metric_number(right, "financial_metrics", "debt_to_equity")
+    if left_debt is not None and right_debt is not None:
+        leader = tickers[0] if left_debt < right_debt else tickers[1]
+        interpretation_lines.append(
+            f"- Balance sheet: {leader} has the lower reported debt/equity, leaving more flexibility if rates stay high or cash flow weakens."
+        )
+
+    left_pb = metric_number(left, "market_data", "price_to_book")
+    right_pb = metric_number(right, "market_data", "price_to_book")
+    if left_pb is not None and right_pb is not None:
+        lower = tickers[0] if left_pb < right_pb else tickers[1]
+        interpretation_lines.append(
+            f"- Valuation: {lower} has the lower price/book multiple in this snapshot. For asset-light companies, treat book value as one valuation input rather than a stand-alone verdict."
+        )
+
     lines = [
         "**Direct answer**",
         f"Here is a fact-grounded comparison of {tickers[0]} and {tickers[1]} using directly comparable connected data.",
@@ -2839,11 +2874,12 @@ def build_comparison_facts_fallback(
         "| --- | --- | --- |",
         *comparison_rows,
         *(["", "**Measured leaders**", *leader_lines] if leader_lines else []),
+        *(["", "**Interpretation**", *interpretation_lines] if interpretation_lines else []),
         "",
         "**Bottom line**",
         (
-            "The measured-leader summary identifies the stronger supplied growth, profitability, valuation, and leverage signals. "
-            "Use those signals together rather than treating any single ratio as a complete investment verdict."
+            "The supplied metrics favor the measured leaders above, but the investment choice depends on whether you prioritize stronger margins and lower leverage, higher cash generation, or the valuation multiple you consider most decision-useful. "
+            "Use the trade-offs together rather than treating any one ratio as a complete investment verdict."
             if leader_lines
             else "Use this table as the reliable side-by-side baseline. Metrics missing for both companies were omitted rather than guessed."
         ),
