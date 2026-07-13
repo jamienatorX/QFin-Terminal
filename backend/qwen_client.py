@@ -9,6 +9,11 @@ import httpx
 logger = logging.getLogger("qfin.qwen")
 MODEL_COOLDOWNS: Dict[str, float] = {}
 
+DEFAULT_FAST_MODEL = "qwen-plus-latest"
+DEFAULT_DEEP_MODEL = "qwen3.7-max-2026-05-20"
+DEFAULT_FLASH_MODEL = "qwen-flash"
+DEFAULT_VISION_MODEL = "qwen-vl-plus-latest"
+
 
 class QwenClientError(Exception):
     pass
@@ -54,12 +59,12 @@ def _model_profile() -> Dict[str, str]:
     Keep Qwen3.7-Max for deep analyst work, but avoid using it for every
     request so quick summaries stay faster and cheaper.
     """
-    fast_model = os.getenv("DASHSCOPE_MODEL_FAST") or os.getenv("DASHSCOPE_MODEL") or "qwen3.7-plus"
+    fast_model = os.getenv("DASHSCOPE_MODEL_FAST") or os.getenv("DASHSCOPE_MODEL") or DEFAULT_FAST_MODEL
     return {
-        "deep": os.getenv("DASHSCOPE_MODEL_DEEP") or "qwen3.7-max",
+        "deep": os.getenv("DASHSCOPE_MODEL_DEEP") or DEFAULT_DEEP_MODEL,
         "fast": fast_model,
-        "flash": os.getenv("DASHSCOPE_MODEL_FLASH") or "qwen3.6-flash",
-        "vision": os.getenv("DASHSCOPE_MODEL_VISION") or fast_model,
+        "flash": os.getenv("DASHSCOPE_MODEL_FLASH") or DEFAULT_FLASH_MODEL,
+        "vision": os.getenv("DASHSCOPE_MODEL_VISION") or DEFAULT_VISION_MODEL,
         "news": os.getenv("DASHSCOPE_NEWS_MODEL") or fast_model,
     }
 

@@ -327,7 +327,28 @@ class QwenModelRoutingTests(unittest.TestCase):
     def test_general_questions_use_flash_profile_first(self):
         messages = main.build_general_prompt("Explain photosynthesis simply.")
         self.assertEqual(qwen_client._detect_task_type(messages), "general")
-        self.assertEqual(qwen_client._model_chain("general")[0], "qwen3.6-flash")
+        self.assertEqual(qwen_client._model_chain("general")[0], "qwen-flash")
+
+    def test_default_model_profile_uses_active_qwen_models(self):
+        with patch.dict(
+            qwen_client.os.environ,
+            {
+                "DASHSCOPE_MODEL": "",
+                "DASHSCOPE_MODEL_FAST": "",
+                "DASHSCOPE_MODEL_DEEP": "",
+                "DASHSCOPE_MODEL_FLASH": "",
+                "DASHSCOPE_MODEL_VISION": "",
+                "DASHSCOPE_NEWS_MODEL": "",
+            },
+            clear=False,
+        ):
+            profile = qwen_client._model_profile()
+
+        self.assertEqual(profile["fast"], "qwen-plus-latest")
+        self.assertEqual(profile["deep"], "qwen3.7-max-2026-05-20")
+        self.assertEqual(profile["flash"], "qwen-flash")
+        self.assertEqual(profile["vision"], "qwen-vl-plus-latest")
+        self.assertEqual(profile["news"], "qwen-plus-latest")
 
     def test_standard_company_analysis_uses_fast_profile(self):
         messages = main.build_finance_prompt(
