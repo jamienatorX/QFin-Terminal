@@ -66,6 +66,16 @@ class AgentRoutingTests(unittest.TestCase):
         self.assertIn("LEFT reports the higher free cash flow", content)
         self.assertIn("RIGHT has the lower reported debt/equity", content)
 
+    def test_plain_english_or_does_not_create_a_false_ticker_scope_warning(self):
+        review = main.run_agent_risk_review(
+            {"kind": "comparison", "tickers": ["AAPL", "MSFT"]},
+            {"AAPL": {"data_status": "available"}, "MSFT": {"data_status": "available"}},
+            "Choose whether you prioritize stronger margins or higher cash generation.",
+        )
+
+        self.assertEqual(review.warnings, [])
+        self.assertIn("OR.PA", main.extract_symbol_candidates("Compare $OR with AAPL"))
+
     def test_general_questions_do_not_become_tickers(self):
         prompts = [
             "Explain photosynthesis to a 12-year-old.",
