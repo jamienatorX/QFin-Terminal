@@ -52,6 +52,7 @@ class AgentRoutingTests(unittest.TestCase):
         self.assertIn("Cash conversion: free cash flow equals 80.0%", content)
         self.assertIn("Balance-sheet risk: debt/equity of 15.00% indicates low", content)
         self.assertIn("Valuation expectation: forward P/E of 20.00x is below trailing P/E", content)
+        self.assertNotIn("Coverage note", content)
 
     def test_comparison_fallback_explains_profitability_cash_and_leverage_tradeoffs(self):
         facts = {
