@@ -43,6 +43,25 @@ RATE_LIMIT_BUCKETS: Dict[str, List[float]] = {}
 RATE_LIMIT_WINDOW_SECONDS = 60.0
 MAX_JSON_REQUEST_BYTES = 1_000_000
 
+def configured_cors_origins() -> List[str]:
+    configured = os.getenv("ALLOWED_ORIGINS", "")
+    if configured.strip():
+        return [origin.strip() for origin in configured.split(",") if origin.strip()]
+    return ["http://localhost:5173", "http://127.0.0.1:5173"]
+
+
+app = FastAPI(title="QFin Terminal API", version="qfin-agent-2.8")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=configured_cors_origins(),
+    allow_origin_regex=r"https://q-fin-terminal(?:-[a-z0-9-]+)?\.vercel\.app",
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+
 
 def request_client_key(request: Request) -> str:
     # Render forwards the original client IP in the first X-Forwarded-For value.
@@ -126,25 +145,7 @@ async def unhandled_exception_handler(request: Request, exc: Exception):
     logger.exception("Unhandled API error on %s", request.url.path)
     return JSONResponse({"detail": "An unexpected server error occurred."}, status_code=500)
 
-
-def configured_cors_origins() -> List[str]:
-    configured = os.getenv("ALLOWED_ORIGINS", "")
-    if configured.strip():
-        return [origin.strip() for origin in configured.split(",") if origin.strip()]
-    return ["http://localhost:5173", "http://127.0.0.1:5173"]
-
-
-app = FastAPI(title="QFin Terminal API", version="qfin-agent-2.8")
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=configured_cors_origins(),
-    allow_origin_regex=r"https://q-fin-terminal(?:-[a-z0-9-]+)?\.vercel\.app",
-    allow_credentials=False,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-SYSTEM_PROMPT = """
+SYSTEM_PROMPT = """
 You are QFin, the AI analyst inside QFin Terminal.
 
 Core behavior:
