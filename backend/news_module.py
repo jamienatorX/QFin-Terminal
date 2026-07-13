@@ -9,6 +9,16 @@ from news_sources import CATEGORY_QUERIES, fetch_all_sources
 from qwen_client import QwenClientError, call_qwen, qwen_is_configured
 
 VALID_CATEGORIES = {"Crypto", "Stocks", "Bonds", "ETFs", "Other"}
+TOPIC_QUERIES = {
+    "technology": "technology stocks AI semiconductors software earnings market",
+}
+TOPIC_KEYWORDS = {
+    "technology": [
+        "technology", "tech", "ai", "artificial intelligence", "semiconductor", "chip", "software",
+        "cloud", "datacenter", "data center", "cybersecurity", "saas", "nvidia", "amd", "intel",
+        "microsoft", "apple", "alphabet", "google", "meta", "tsmc", "broadcom",
+    ],
+}
 
 NEWS_SYSTEM_PROMPT = """
 You are QFin News, the market news engine for QFin Terminal. Respond only with valid JSON.
@@ -28,6 +38,15 @@ def normalize_category(category: str) -> str:
     mapping = {"crypto": "Crypto", "stocks": "Stocks", "stock": "Stocks", "bonds": "Bonds", "bond": "Bonds", "etfs": "ETFs", "etf": "ETFs", "other": "Other"}
     return mapping.get(raw, "Stocks")
 
+
+def normalize_topic(topic: Optional[str]) -> Optional[str]:
+    normalized = (topic or "").strip().lower()
+    return normalized if normalized in TOPIC_QUERIES else None
+
+
+def search_query(category: str, topic: Optional[str] = None) -> str:
+    return TOPIC_QUERIES.get(normalize_topic(topic) or "", CATEGORY_QUERIES.get(category, CATEGORY_QUERIES["Stocks"]))
+
 def clean_json(raw: str) -> str:
     cleaned = raw.strip()
     cleaned = re.sub(r"^```json\s*", "", cleaned, flags=re.I)
@@ -43,8 +62,8 @@ def build_source(item: Dict[str, Any]) -> Dict[str, str]:
         source["url"] = str(link)
     return source
 
-async def fetch_news_candidates(category: str) -> List[Dict[str, Any]]:
-    return await fetch_all_sources(category)
+async def fetch_news_candidates(category: str, topic: Optional[str] = None) -> List[Dict[str, Any]]:
+    return await fetch_all_sources(category, topic)
 
 def fallback_news(category: str, candidates: Optional[List[Dict[str, Any]]] = None, parse_failure: bool = False) -> Dict[str, Any]:
     now = datetime.now(timezone.utc).isoformat()
@@ -109,10 +128,11 @@ def validate_news(parsed: Dict[str, Any], category: str) -> Dict[str, Any]:
         parsed["news"].append(fallback_news(category)["news"][len(parsed["news"])])
     return parsed
 
-async def generate_news(category: str) -> Dict[str, Any]:
+async def generate_news(category: str, topic: Optional[str] = None) -> Dict[str, Any]:
     category = normalize_category(category)
+    topic = normalize_topic(topic)
     try:
-        candidates = await asyncio.wait_for(fetch_news_candidates(category), timeout=7)
+        candidates = await asyncio.wait_for(fetch_news_candidates(category, topic), timeout=7)
     except Exception:
         candidates = []
     if not qwen_is_configured():
@@ -120,7 +140,7 @@ async def generate_news(category: str) -> Dict[str, Any]:
     model = os.getenv("DASHSCOPE_NEWS_MODEL", "qwen-plus")
     if "thinking" in model.lower():
         model = "qwen-plus"
-    user = {"category": category, "generated_at": datetime.now(timezone.utc).isoformat(), "candidate_articles": candidates[:25], "instruction": "Generate the top 5 news items. Return only valid JSON matching the schema."}
+    user = {"category": category, "topic": topic, "generated_at": datetime.now(timezone.utc).isoformat(), "candidate_articles": candidates[:25], "instruction": "Generate the top 5 news items. Return only valid JSON matching the schema. Keep every item relevant to the requested topic when one is supplied."}
     try:
         response = await asyncio.wait_for(
             call_qwen(
@@ -138,3 +158,4 @@ async def generate_news(category: str) -> Dict[str, Any]:
         if candidates:
             return news_from_candidates(category, candidates, warning="qwen_parse_failure")
         return fallback_news(category, candidates, parse_failure=True)
+
