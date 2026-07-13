@@ -3239,12 +3239,13 @@ async def build_finance_response(
     active_route = prompt_route or route
     fallback_reason = "Deterministic finance guidance was used to keep the response grounded and time-bounded."
 
-    # Keep news fast, but let Qwen turn company and comparison facts into a useful
-    # analyst answer whenever it is configured. The structured paths below remain
-    # the bounded fallback if the model cannot respond.
+    # Keep news and well-covered finance definitions instant. Company analysis
+    # and comparisons still use Qwen to turn verified facts into an analyst answer.
     if route.get("detail", "standard") != "deep":
         if route["kind"] in {"news", "headlines"} and isinstance(facts, dict):
             return build_headline_digest(facts)
+        if route["kind"] == "finance_concept":
+            return build_finance_concept_fallback(query, fallback_reason)
 
     if not qwen_is_configured():
         fallback_reason = "Deterministic finance guidance was used to keep the response grounded and time-bounded."
