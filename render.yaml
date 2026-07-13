@@ -17,7 +17,7 @@ services:
       - key: DASHSCOPE_MODEL_FLASH
         value: qwen3.6-flash
       - key: DASHSCOPE_MODEL_VISION
-        value: qwen3.7-plus
+        value: qwen3-vl-plus
       - key: DASHSCOPE_NEWS_MODEL
         value: qwen3.7-plus
       - key: DASHSCOPE_TIMEOUT_SECONDS
