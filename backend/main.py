@@ -1371,6 +1371,10 @@ def extract_symbol_candidates(text: str) -> List[str]:
     lowered = text.lower()
 
     for alias, ticker in ALIASES.items():
+        # Do not let a short natural-language connector resolve as a ticker.
+        # Explicit $OR references are handled by the direct-symbol path below.
+        if alias == "or":
+            continue
         if re.search(rf"\b{re.escape(alias)}\b", lowered):
             if ticker not in found:
                 found.append(ticker)
