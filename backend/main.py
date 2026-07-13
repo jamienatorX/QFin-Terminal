@@ -3663,6 +3663,21 @@ def attachment_metric_key(value: Any) -> str:
     return re.sub(r"[^a-z0-9]", "", normalize_user_text(str(value or "")))
 
 
+def statement_period_key(label: Any) -> Optional[tuple[int, int]]:
+    """Return a sortable year/quarter key when a statement header identifies a period."""
+    value = normalize_user_text(str(label or ""))
+    year_match = re.search(r"(?:fy|fiscal\s*year\s*)?(20\d{2})", value)
+    if year_match:
+        year = int(year_match.group(1))
+    else:
+        fiscal_year_match = re.search(r"\bfy\s*(\d{2})\b", value)
+        if not fiscal_year_match:
+            return None
+        year = 2000 + int(fiscal_year_match.group(1))
+    quarter_match = re.search(r"\bq([1-4])\b", value)
+    return year, int(quarter_match.group(1)) if quarter_match else 4
+
+
 def statement_metric_row(metric: str, current: Any, prior: Any) -> Optional[Dict[str, Any]]:
     current_value = as_float(current)
     prior_value = as_float(prior)
@@ -3758,7 +3773,13 @@ def build_spreadsheet_attachment_fallback(attachment: Dict[str, Any]) -> str:
             if column != metric_column and any(as_float(record.get(column)) is not None for record in records)
         ]
         if metric_column and len(numeric_columns) >= 2:
-            current_label, prior_label = numeric_columns[:2]
+            first_label, second_label = numeric_columns[:2]
+            first_period = statement_period_key(first_label)
+            second_period = statement_period_key(second_label)
+            if first_period and second_period and first_period < second_period:
+                prior_label, current_label = first_label, second_label
+            else:
+                current_label, prior_label = first_label, second_label
             statement_rows = [
                 statement_metric_row(record.get(metric_column), record.get(current_label), record.get(prior_label))
                 for record in records
