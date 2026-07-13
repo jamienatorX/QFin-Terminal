@@ -3130,7 +3130,9 @@ def run_agent_risk_review(route: Dict[str, Any], facts: Any, content: str) -> Ag
             if payload.get("data_status") != "available":
                 missing_data.append(f"Financial data for {ticker} is incomplete or unavailable.")
 
-    if allowed_tickers:
+    # Attachment labels such as CSV and PDF can look ticker-like. Restrict this check
+    # to explicit market routes, where the requested ticker scope is meaningful.
+    if allowed_tickers and route.get("kind") in {"company", "comparison"}:
         mentioned = [symbol for symbol in extract_symbol_candidates(content) if symbol not in allowed_tickers]
         clean_mentions = [
             symbol for symbol in mentioned
@@ -3388,6 +3390,85 @@ def attachment_metric_label(value: str) -> str:
     return value.replace("_", " ").strip().title()
 
 
+def attachment_metric_key(value: Any) -> str:
+    return re.sub(r"[^a-z0-9]", "", normalize_user_text(str(value or "")))
+
+
+def statement_metric_row(metric: str, current: Any, prior: Any) -> Optional[Dict[str, Any]]:
+    current_value = as_float(current)
+    prior_value = as_float(prior)
+    if not metric or current_value is None or prior_value is None:
+        return None
+    return {"metric": clean_text(metric), "current": current_value, "prior": prior_value}
+
+
+def find_statement_metric(rows: List[Dict[str, Any]], candidates: List[str]) -> Optional[Dict[str, Any]]:
+    normalized_candidates = {attachment_metric_key(candidate) for candidate in candidates}
+    return next((row for row in rows if attachment_metric_key(row.get("metric")) in normalized_candidates), None)
+
+
+def format_statement_change(row: Dict[str, Any], current_label: str, prior_label: str) -> str:
+    current = row["current"]
+    prior = row["prior"]
+    change_pct = ((current - prior) / abs(prior) * 100) if prior else None
+    change_text = f" ({change_pct:+.1f}% YoY)" if change_pct is not None else ""
+    return f"- {row['metric']}: {current:,.2f} in {current_label} vs {prior:,.2f} in {prior_label}{change_text}."
+
+
+def build_statement_attachment_analysis(
+    attachment: Dict[str, Any],
+    rows: List[Dict[str, Any]],
+    current_label: str,
+    prior_label: str,
+) -> str:
+    revenue = find_statement_metric(rows, ["total revenue", "revenue", "net sales", "sales"])
+    gross_profit = find_statement_metric(rows, ["gross profit"])
+    operating_income = find_statement_metric(rows, ["operating income", "operating profit", "income from operations"])
+    net_income = find_statement_metric(rows, ["net income", "net earnings", "profit attributable to owners"])
+    key_rows = [row for row in [revenue, gross_profit, operating_income, net_income] if row]
+    if not key_rows:
+        key_rows = rows[:6]
+
+    margin_lines: List[str] = []
+    if revenue and revenue["current"] and revenue["prior"]:
+        for label, row in (("Gross margin", gross_profit), ("Operating margin", operating_income), ("Net margin", net_income)):
+            if not row:
+                continue
+            current_margin = row["current"] / revenue["current"] * 100
+            prior_margin = row["prior"] / revenue["prior"] * 100
+            margin_lines.append(
+                f"- {label}: {current_margin:.1f}% vs {prior_margin:.1f}% ({current_margin - prior_margin:+.1f} percentage points)."
+            )
+
+    interpretation: List[str] = []
+    if revenue:
+        revenue_change = ((revenue["current"] - revenue["prior"]) / abs(revenue["prior"]) * 100) if revenue["prior"] else None
+        if revenue_change is not None:
+            interpretation.append(f"- Revenue {'grew' if revenue_change >= 0 else 'declined'} {abs(revenue_change):.1f}% year over year.")
+    if operating_income and net_income:
+        interpretation.append("- Compare operating-income and net-income growth to separate core operating performance from below-the-line effects.")
+    if not interpretation:
+        interpretation.append("- The file contains comparable statement values, but the statement scope and units should be confirmed before valuation work.")
+
+    return "\n".join(
+        [
+            "**Financial statement analysis**",
+            f"- File: {attachment['filename']}",
+            f"- Compared periods: {current_label} versus {prior_label}",
+            "",
+            "**Key changes**",
+            *[format_statement_change(row, current_label, prior_label) for row in key_rows],
+            "",
+            "**Profitability**",
+            *(margin_lines or ["- Margin analysis requires both revenue and profit lines for each period."]),
+            "",
+            "**Bottom line**",
+            *interpretation,
+            "- This result is based on the uploaded statement only; cash flow, balance sheet, and valuation need their respective disclosures.",
+        ]
+    )
+
+
 def build_spreadsheet_attachment_fallback(attachment: Dict[str, Any]) -> str:
     trend_lines: List[str] = []
     for table in attachment.get("table_data") or []:
@@ -3395,6 +3476,24 @@ def build_spreadsheet_attachment_fallback(attachment: Dict[str, Any]) -> str:
         if not records:
             continue
         columns = table.get("columns") or []
+        metric_column = next(
+            (column for column in columns if attachment_metric_key(column) in {"metric", "lineitem", "description", "account", "item"}),
+            None,
+        )
+        numeric_columns = [
+            column for column in columns
+            if column != metric_column and any(as_float(record.get(column)) is not None for record in records)
+        ]
+        if metric_column and len(numeric_columns) >= 2:
+            current_label, prior_label = numeric_columns[:2]
+            statement_rows = [
+                statement_metric_row(record.get(metric_column), record.get(current_label), record.get(prior_label))
+                for record in records
+            ]
+            statement_rows = [row for row in statement_rows if row]
+            if statement_rows:
+                return build_statement_attachment_analysis(attachment, statement_rows, str(current_label), str(prior_label))
+
         period_column = next(
             (column for column in columns if normalize_user_text(column) in {"period", "year", "date", "fiscal year"}),
             None,
@@ -3443,6 +3542,22 @@ def build_attachment_fallback(attachment: Dict[str, Any]) -> str:
         return build_spreadsheet_attachment_fallback(attachment)
 
     text = str(attachment.get("text") or "")
+    statement_rows: List[Dict[str, Any]] = []
+    current_label = "current period"
+    prior_label = "prior period"
+    for raw_line in text.splitlines():
+        parts = [clean_text(part) for part in raw_line.split("|")]
+        if len(parts) < 3:
+            continue
+        if attachment_metric_key(parts[0]) in {"metric", "metricusdmillions", "lineitem", "description"}:
+            current_label, prior_label = parts[1], parts[2]
+            continue
+        row = statement_metric_row(parts[0], parts[1], parts[2])
+        if row:
+            statement_rows.append(row)
+    if len(statement_rows) >= 2:
+        return build_statement_attachment_analysis(attachment, statement_rows, current_label, prior_label)
+
     key_lines = []
     financial_terms = (
         "revenue", "sales", "profit", "income", "margin", "cash flow", "cash", "debt",
@@ -3472,7 +3587,6 @@ def build_attachment_fallback(attachment: Dict[str, Any]) -> str:
             *key_lines,
         ]
     )
-
 
 def default_forum_threads() -> List[Dict[str, Any]]:
     return [
