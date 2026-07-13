@@ -236,6 +236,19 @@ class AgentRoutingTests(unittest.TestCase):
 
 
 class FinanceEnrichmentTests(unittest.IsolatedAsyncioTestCase):
+    async def test_standard_finance_concept_stays_on_the_instant_grounded_path(self):
+        with (
+            patch("main.qwen_is_configured", return_value=True),
+            patch("main.ask_qwen", new=AsyncMock()) as ask_qwen,
+        ):
+            answer = await main.build_finance_response(
+                "Explain WACC",
+                {"kind": "finance_concept", "detail": "standard"},
+                {},
+            )
+
+        ask_qwen.assert_not_awaited()
+        self.assertIn("WACC", answer)
     async def test_standard_comparison_skips_optional_narrative_model(self):
         facts = {
             "AAA": {"market_data": {"forward_pe": "20.00x"}, "financial_metrics": {}},
