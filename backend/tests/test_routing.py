@@ -74,6 +74,8 @@ class AgentRoutingTests(unittest.TestCase):
         )
 
         self.assertEqual(review.warnings, [])
+        with patch.dict(main.ALIASES, {"or": "OR.PA"}, clear=True):
+            self.assertNotIn("OR.PA", main.extract_symbol_candidates("Cash flow or operating margin"))
         self.assertIn("OR.PA", main.extract_symbol_candidates("Compare $OR with AAPL"))
 
     def test_general_questions_do_not_become_tickers(self):
