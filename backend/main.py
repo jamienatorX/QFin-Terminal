@@ -2429,7 +2429,9 @@ def serialize_agent_facts(facts: Any) -> str:
     if facts is None:
         return "No backend facts were required for this request."
     try:
-        return json.dumps(facts, ensure_ascii=True, indent=2, default=str)
+        # Models do not benefit from indentation; compact JSON leaves more of the
+        # response budget for analysis rather than repeated whitespace tokens.
+        return json.dumps(facts, ensure_ascii=True, separators=(",", ":"), default=str)
     except Exception:
         return str(facts)
 
@@ -2453,7 +2455,7 @@ def build_finance_prompt(query: str, route: Dict[str, Any], facts: Any) -> List[
             f"Backend facts:\n{fact_block}\n"
             "Use only these exact tickers. Do not substitute any other symbol. "
             "Prefer warehouse-backed statements and valuation when available, and use live fields only for current market context or explicit gaps. "
-            "Write a side-by-side finance comparison and clearly state what data is missing if any metric is unavailable. "
+            "Write a side-by-side finance comparison in no more than 550 words. Omit non-comparable metrics rather than guessing or listing unavailable values. "
             "Do not mention the internal route or backend mechanics in the final answer."
         )
     elif route_kind == "company":
@@ -2464,7 +2466,7 @@ def build_finance_prompt(query: str, route: Dict[str, Any], facts: Any) -> List[
             f"{depth_instruction}\n"
             f"Backend facts:\n{fact_block}\n"
             "Use only this backend data. Prefer warehouse-backed statements and valuation when available, and use live fields only for current market context or explicit gaps. "
-            "If the user asked about the latest quarter, focus on the latest quarter context first, then the broader fundamentals. "
+            "If the user asked about the latest quarter, focus on the latest quarter context first, then the broader fundamentals. Keep a standard-depth answer to no more than 550 words and omit non-comparable metrics rather than guessing or listing unavailable values. "
             "Do not mention the internal route or backend mechanics in the final answer."
         )
     elif route_kind == "news":
