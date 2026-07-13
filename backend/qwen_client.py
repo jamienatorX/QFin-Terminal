@@ -166,6 +166,11 @@ def _dedupe_models(models: List[str]) -> List[str]:
     return clean
 
 
+def _is_terminal_api_status(status_code: int) -> bool:
+    """Only an invalid credential cannot be recovered by switching models."""
+    return status_code == 401
+
+
 def _model_chain(task_type: str, explicit_model: Optional[str] = None) -> List[str]:
     if explicit_model:
         return [explicit_model]
@@ -255,7 +260,9 @@ async def call_qwen(
                 f"Qwen API error {response.status_code}. Model={model_name}. Task={task_type}. "
                 f"Response={response.text[:1200]}"
             )
-            if response.status_code in {401, 403}:
+            # A 403 can mean a model-specific quota or entitlement issue. Try the
+            # next approved model before falling back to deterministic guidance.
+            if _is_terminal_api_status(response.status_code):
                 raise error
             last_error = error
             # Keep the provider's bounded error detail in server logs only. The caller
