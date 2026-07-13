@@ -2339,7 +2339,103 @@ def serialize_agent_facts(facts: Any) -> str:
         return str(facts)
 
 
-def build_fina…1097 tokens truncated…turn None
+def build_finance_prompt(query: str, route: Dict[str, Any], facts: Any) -> List[Dict[str, str]]:
+    route_kind = route["kind"]
+    detail = route.get("detail") or "standard"
+    depth_instruction = (
+        "Analysis depth: deep. Give a comprehensive analyst-grade answer with all material sections."
+        if detail == "deep"
+        else "Analysis depth: standard. Be concise but complete, prioritizing the most decision-useful facts."
+    )
+    fact_block = serialize_agent_facts(facts)
+    if route_kind == "comparison":
+        user_content = (
+            f"User request: {query}\n"
+            f"Internal route: exact ticker comparison\n"
+            f"Required tickers: {route['tickers']}\n"
+            f"Topic: {route['topic']}\n"
+            f"{depth_instruction}\n"
+            f"Backend facts:\n{fact_block}\n"
+            "Use only these exact tickers. Do not substitute any other symbol. "
+            "Prefer warehouse-backed statements and valuation when available, and use live fields only for current market context or explicit gaps. "
+            "Write a side-by-side finance comparison and clearly state what data is missing if any metric is unavailable. "
+            "Do not mention the internal route or backend mechanics in the final answer."
+        )
+    elif route_kind == "company":
+        user_content = (
+            f"User request: {query}\n"
+            f"Internal route: single company analysis\n"
+            f"Resolved ticker: {route['ticker']}\n"
+            f"{depth_instruction}\n"
+            f"Backend facts:\n{fact_block}\n"
+            "Use only this backend data. Prefer warehouse-backed statements and valuation when available, and use live fields only for current market context or explicit gaps. "
+            "If the user asked about the latest quarter, focus on the latest quarter context first, then the broader fundamentals. "
+            "Do not mention the internal route or backend mechanics in the final answer."
+        )
+    elif route_kind == "news":
+        user_content = (
+            f"User request: {query}\n"
+            f"Internal route: market news summary\n"
+            f"Category: {route['category']}\n"
+            f"Backend facts:\n{fact_block}\n"
+            "Summarize the five news items, explain what matters most, and mention market sentiment. "
+            "Do not mention the internal route or backend mechanics in the final answer."
+        )
+    else:
+        user_content = (
+            f"User request: {query}\n"
+            "Internal route: finance concept\n"
+            "Answer as a finance expert. Use formulas, interpretation, and caveats where useful."
+        )
+
+    return [
+        {"role": "system", "content": f"{SYSTEM_PROMPT}\n\n{FINANCE_DETAIL_PROMPT}\n\n{AGENT_SOURCE_NOTE}\n\n{agent_runtime_context()}"},
+        {"role": "user", "content": user_content},
+    ]
+
+
+def build_headline_digest(news: Dict[str, Any], limit: int = 5) -> str:
+    lines = ["Here are the latest market headlines I found:"]
+    for item in news.get("news", [])[:limit]:
+        headline = clean_text(str(item.get("headline") or "Market update"))
+        source = item.get("source") or {}
+        source_name = clean_text(str(source.get("name") or "Aggregated market commentary"))
+        teaser = clean_text(str(item.get("teaser") or ""))
+        lines.append(f"- {headline} ({source_name})")
+        if teaser:
+            lines.append(f"  {teaser}")
+    return "\n".join(lines)
+
+
+def metric_from_payload(payload: Dict[str, Any], section: str, key: str) -> Optional[str]:
+    value = (payload.get(section) or {}).get(key)
+    if value in (None, "", [], {}):
+        return None
+    return clean_text(str(value))
+
+
+def available_metric_lines(
+    payload: Dict[str, Any],
+    section: str,
+    metrics: List[tuple[str, str]],
+) -> tuple[List[str], List[str]]:
+    lines: List[str] = []
+    missing: List[str] = []
+    for label, key in metrics:
+        value = metric_from_payload(payload, section, key)
+        if value is None:
+            missing.append(label)
+        else:
+            lines.append(f"- {label}: {value}")
+    return lines, missing
+
+
+def metric_number(payload: Dict[str, Any], section: str, key: str) -> Optional[float]:
+    value = metric_from_payload(payload, section, key)
+    if value is None:
+        return None
+    match = re.search(r"-?[0-9]+(?:,[0-9]{3})*(?:\.[0-9]+)?", value)
+    return as_float(match.group(0).replace(",", "")) if match else None
     match = re.search(r"-?[0-9]+(?:,[0-9]{3})*(?:\.[0-9]+)?", value)
     return as_float(match.group(0).replace(",", "")) if match else None
 
