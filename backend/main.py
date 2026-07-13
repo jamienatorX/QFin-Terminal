@@ -12,6 +12,9 @@ import os
 import random
 import re
 import asyncio
+import secrets
+import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Literal, Optional
@@ -19,7 +22,7 @@ from typing import Any, Dict, List, Literal, Optional
 import httpx
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from api_registry import fetch_public_api_facts, list_public_api_registry
@@ -37,6 +40,95 @@ from qwen_client import QwenClientError, call_qwen, qwen_is_configured
 from document_ingestion import DocumentParseError, MAX_UPLOAD_BYTES, parse_document_bytes
 
 logger = logging.getLogger("qfin")
+
+RATE_LIMIT_LOCK = threading.Lock()
+RATE_LIMIT_BUCKETS: Dict[str, List[float]] = {}
+RATE_LIMIT_WINDOW_SECONDS = 60.0
+MAX_JSON_REQUEST_BYTES = 1_000_000
+
+
+def request_client_key(request: Request) -> str:
+    # Render forwards the original client IP in the first X-Forwarded-For value.
+    forwarded = request.headers.get("x-forwarded-for", "").split(",")[0].strip()
+    return forwarded or (request.client.host if request.client else "unknown")
+
+
+def rate_limit_for_path(path: str) -> Optional[int]:
+    if path in {"/agent/chat", "/chat", "/agent/chat/stream", "/chat/stream"}:
+        return 30
+    if path in {"/agent/chat/upload", "/upload", "/chat/upload"}:
+        return 8
+    if path.startswith("/annual-report/"):
+        return 6
+    if path.startswith("/builder/"):
+        return 12
+    if path.startswith("/community/forum") and path != "/community/forum":
+        return 30
+    if path == "/community/forum" or path == "/community/models":
+        return 20
+    return None
+
+
+def exceeds_rate_limit(request: Request, limit: int) -> bool:
+    now = time.monotonic()
+    bucket_key = f"{request_client_key(request)}:{request.url.path}"
+    with RATE_LIMIT_LOCK:
+        timestamps = [value for value in RATE_LIMIT_BUCKETS.get(bucket_key, []) if now - value < RATE_LIMIT_WINDOW_SECONDS]
+        if len(timestamps) >= limit:
+            RATE_LIMIT_BUCKETS[bucket_key] = timestamps
+            return True
+        timestamps.append(now)
+        RATE_LIMIT_BUCKETS[bucket_key] = timestamps
+    return False
+
+
+def require_admin(request: Request) -> None:
+    expected = os.getenv("ADMIN_API_KEY", "")
+    if not expected:
+        raise HTTPException(status_code=503, detail="Administrative access is not configured.")
+    authorization = request.headers.get("authorization", "")
+    bearer = authorization.removeprefix("Bearer ").strip() if authorization.startswith("Bearer ") else ""
+    supplied = request.headers.get("x-qfin-admin-key", "") or bearer
+    if not supplied or not secrets.compare_digest(supplied, expected):
+        raise HTTPException(status_code=401, detail="Administrative authorization is required.")
+
+
+@app.middleware("http")
+async def security_middleware(request: Request, call_next):
+    content_length = request.headers.get("content-length")
+    if content_length:
+        try:
+            limit = MAX_UPLOAD_BYTES if request.url.path in {"/agent/chat/upload", "/upload", "/chat/upload"} else MAX_JSON_REQUEST_BYTES
+            if int(content_length) > limit:
+                return JSONResponse({"detail": "Request body is too large."}, status_code=413)
+        except ValueError:
+            return JSONResponse({"detail": "Invalid Content-Length header."}, status_code=400)
+
+    if request.method in {"POST", "PUT", "PATCH", "DELETE"}:
+        limit = rate_limit_for_path(request.url.path)
+        if limit and exceeds_rate_limit(request, limit):
+            return JSONResponse(
+                {"detail": "Too many requests. Please retry shortly."},
+                status_code=429,
+                headers={"Retry-After": str(int(RATE_LIMIT_WINDOW_SECONDS))},
+            )
+
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    response.headers["Content-Security-Policy"] = "default-src 'none'; frame-ancestors 'none'; base-uri 'none'"
+    response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+    if os.getenv("APP_ENV", "").lower() == "production":
+        response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+    return response
+
+
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception):
+    logger.exception("Unhandled API error on %s", request.url.path)
+    return JSONResponse({"detail": "An unexpected server error occurred."}, status_code=500)
+
 
 def configured_cors_origins() -> List[str]:
     configured = os.getenv("ALLOWED_ORIGINS", "")
@@ -4538,12 +4630,14 @@ def agent_api_registry():
 
 
 @app.get("/agent/sessions/recent")
-def agent_recent_sessions():
+def agent_recent_sessions(request: Request):
+    require_admin(request)
     return {"sessions": AGENT_SESSION_LOGS[:10], "count": len(AGENT_SESSION_LOGS)}
 
 
 @app.post("/warehouse/ingest/{symbol}")
-async def warehouse_ingest_symbol(symbol: str) -> Dict[str, Any]:
+async def warehouse_ingest_symbol(symbol: str, request: Request) -> Dict[str, Any]:
+    require_admin(request)
     resolved = resolve_single_ticker(symbol, allow_search=False) or resolve_single_ticker(symbol) or norm_symbol(symbol)
     return await ingest_fmp_to_warehouse(resolved)
 
@@ -4622,7 +4716,8 @@ def resolve_symbol_master_route(query: str, symbol: Optional[str] = None):
 
 
 @app.post("/symbols/seed")
-def seed_symbol_master_route():
+def seed_symbol_master_route(request: Request):
+    require_admin(request)
     ensure_supabase_symbol_master_seeded()
     return {
         "status": "ok",
