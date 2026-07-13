@@ -9,14 +9,16 @@ import httpx
 logger = logging.getLogger("qfin.qwen")
 MODEL_COOLDOWNS: Dict[str, float] = {}
 
-DEFAULT_FAST_MODEL = "qwen-plus-latest"
+DEFAULT_FAST_MODEL = "qwen-plus"
 DEFAULT_DEEP_MODEL = "qwen3.7-max-2026-05-20"
-DEFAULT_FLASH_MODEL = "qwen-flash"
+DEFAULT_FLASH_MODEL = "qwen-turbo"
 DEFAULT_VISION_MODEL = "qwen-vl-plus-latest"
 STALE_MODEL_REPLACEMENTS = {
     "qwen3.7-plus": DEFAULT_FAST_MODEL,
     "qwen3.7-max": DEFAULT_DEEP_MODEL,
     "qwen3.6-flash": DEFAULT_FLASH_MODEL,
+    "qwen-plus-latest": DEFAULT_FAST_MODEL,
+    "qwen-flash": DEFAULT_FLASH_MODEL,
 }
 
 
