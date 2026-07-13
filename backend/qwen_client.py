@@ -38,7 +38,7 @@ def _total_timeout_seconds(task_type: str = "fast") -> float:
 
 
 def _max_tokens(task_type: str) -> int:
-    defaults = {"deep": 2200, "vision": 1600, "news": 1200, "fast": 1000, "general": 700}
+    defaults = {"deep": 2200, "vision": 1600, "news": 1200, "fast": 700, "general": 700}
     env_name = f"DASHSCOPE_MAX_TOKENS_{task_type.upper()}"
     try:
         return max(256, int(os.getenv(env_name, str(defaults.get(task_type, 1000)))))
