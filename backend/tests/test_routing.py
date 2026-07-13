@@ -337,6 +337,10 @@ class QwenModelRoutingTests(unittest.TestCase):
         self.assertLessEqual(qwen_client._total_timeout_seconds("deep"), 35)
         self.assertGreater(qwen_client._total_timeout_seconds("deep"), qwen_client._total_timeout_seconds("fast"))
 
+    def test_model_quota_error_can_fail_over_but_bad_credentials_cannot(self):
+        self.assertFalse(qwen_client._is_terminal_api_status(403))
+        self.assertTrue(qwen_client._is_terminal_api_status(401))
+
 
 class FinancialDataConcurrencyTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
