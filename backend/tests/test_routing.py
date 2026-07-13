@@ -53,6 +53,19 @@ class AgentRoutingTests(unittest.TestCase):
         self.assertIn("Balance-sheet risk: debt/equity of 15.00% indicates low", content)
         self.assertIn("Valuation expectation: forward P/E of 20.00x is below trailing P/E", content)
 
+    def test_comparison_fallback_explains_profitability_cash_and_leverage_tradeoffs(self):
+        facts = {
+            "LEFT": {"financial_metrics": {"operating_margin": "20.00%", "free_cashflow": "120", "debt_to_equity": "70.00%"}, "market_data": {"price_to_book": "10.00x"}},
+            "RIGHT": {"financial_metrics": {"operating_margin": "35.00%", "free_cashflow": "90", "debt_to_equity": "20.00%"}, "market_data": {"price_to_book": "6.00x"}},
+        }
+
+        content = main.build_comparison_facts_fallback("Compare LEFT and RIGHT", {"tickers": ["LEFT", "RIGHT"]}, facts, "unused")
+
+        self.assertIn("**Interpretation**", content)
+        self.assertIn("RIGHT has the higher operating margin", content)
+        self.assertIn("LEFT reports the higher free cash flow", content)
+        self.assertIn("RIGHT has the lower reported debt/equity", content)
+
     def test_general_questions_do_not_become_tickers(self):
         prompts = [
             "Explain photosynthesis to a 12-year-old.",
