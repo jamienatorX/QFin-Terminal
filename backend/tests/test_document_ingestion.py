@@ -137,7 +137,7 @@ class AttachmentPromptTests(unittest.IsolatedAsyncioTestCase):
             b"period,revenue,net_income\n2024,1000,100\n2025,1200,140\n",
         )
         with (
-            patch("main.ask_qwen", new=AsyncMock(side_effect=main.QwenClientError("timeout"))),
+            patch("main.ask_qwen", new=AsyncMock(side_effect=main.QwenClientError("timeout"))) as ask,
             patch("main.remember_agent_session"),
             patch("main.yahoo_symbol_search", return_value={"symbol": "TSCM"}),
         ):
@@ -146,6 +146,7 @@ class AttachmentPromptTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["route"]["kind"], "document_analysis")
         self.assertIn("Revenue increased", result["content"])
         self.assertIn("+20.0%", result["content"])
+        self.assertIn("Analysis depth: standard", ask.await_args.args[0][1]["content"])
 
     async def test_image_attachment_builds_multimodal_message(self):
         attachment = parse_document_bytes("chart.png", "image/png", b"\x89PNG\r\n\x1a\nimage")
@@ -159,6 +160,7 @@ class AttachmentPromptTests(unittest.IsolatedAsyncioTestCase):
         messages = ask.await_args.args[0]
         user_content = messages[1]["content"]
         self.assertIsInstance(user_content, list)
+        self.assertIn("Analysis depth: deep", user_content[0]["text"])
         self.assertEqual(user_content[1]["type"], "image_url")
         self.assertTrue(user_content[1]["image_url"]["url"].startswith("data:image/png;base64,"))
 
