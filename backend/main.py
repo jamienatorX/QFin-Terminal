@@ -135,7 +135,10 @@ async def security_middleware(request: Request, call_next):
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
     response.headers["Content-Security-Policy"] = "default-src 'none'; frame-ancestors 'none'; base-uri 'none'"
     response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
-    if os.getenv("APP_ENV", "").lower() == "production":
+    # Render terminates TLS before forwarding to Uvicorn, so use its forwarded
+    # protocol signal as well as the explicit production environment setting.
+    forwarded_proto = request.headers.get("x-forwarded-proto", "").split(",")[0].strip().lower()
+    if os.getenv("APP_ENV", "").lower() == "production" or forwarded_proto == "https":
         response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
     return response
 
