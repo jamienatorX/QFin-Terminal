@@ -66,6 +66,24 @@ class DocumentIngestionTests(unittest.TestCase):
         self.assertNotIn("cash flow, balance sheet, and valuation need", content)
         self.assertNotIn("first period", content)
 
+    def test_statement_rows_use_the_latest_column_when_periods_are_ascending(self):
+        attachment = parse_document_bytes(
+            "income-statement.csv",
+            "text/csv",
+            (
+                b"Metric,2024,2025\n"
+                b"Revenue,1000000,1250000\n"
+                b"Operating Income,180000,250000\n"
+                b"Net Income,120000,175000\n"
+                b"Free Cash Flow,100000,155000\n"
+            ),
+        )
+
+        content = main.build_spreadsheet_attachment_fallback(attachment)
+
+        self.assertIn("Revenue: 1,250,000.00 in 2025 vs 1,000,000.00 in 2024 (+25.0% YoY)", content)
+        self.assertIn("Revenue grew 25.0% year over year.", content)
+
     def test_document_analysis_does_not_flag_file_labels_as_tickers(self):
         review = main.run_agent_risk_review(
             {"kind": "document_analysis", "ticker": "MSFT"},
