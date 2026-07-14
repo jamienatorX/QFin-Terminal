@@ -327,7 +327,7 @@ class QwenModelRoutingTests(unittest.TestCase):
     def test_general_questions_use_flash_profile_first(self):
         messages = main.build_general_prompt("Explain photosynthesis simply.")
         self.assertEqual(qwen_client._detect_task_type(messages), "general")
-        self.assertEqual(qwen_client._model_chain("general")[0], "qwen-turbo")
+        self.assertEqual(qwen_client._model_chain("general")[0], "glm-5.1")
 
     def test_default_model_profile_uses_active_qwen_models(self):
         with patch.dict(
@@ -344,11 +344,11 @@ class QwenModelRoutingTests(unittest.TestCase):
         ):
             profile = qwen_client._model_profile()
 
-        self.assertEqual(profile["fast"], "qwen-plus")
-        self.assertEqual(profile["deep"], "qwen3.7-max-2026-05-20")
-        self.assertEqual(profile["flash"], "qwen-turbo")
+        self.assertEqual(profile["fast"], "glm-5.2")
+        self.assertEqual(profile["deep"], "glm-5.2")
+        self.assertEqual(profile["flash"], "glm-5.1")
         self.assertEqual(profile["vision"], "qwen-vl-plus-latest")
-        self.assertEqual(profile["news"], "qwen-plus")
+        self.assertEqual(profile["news"], "glm-5.2")
 
     def test_stale_render_model_overrides_are_replaced(self):
         with patch.dict(
@@ -363,9 +363,9 @@ class QwenModelRoutingTests(unittest.TestCase):
         ):
             profile = qwen_client._model_profile()
 
-        self.assertEqual(profile["fast"], "qwen-plus")
-        self.assertEqual(profile["deep"], "qwen3.7-max-2026-05-20")
-        self.assertEqual(profile["flash"], "qwen-turbo")
+        self.assertEqual(profile["fast"], "glm-5.2")
+        self.assertEqual(profile["deep"], "glm-5.2")
+        self.assertEqual(profile["flash"], "glm-5.1")
         self.assertNotIn("qwen3.7-plus", qwen_client._model_chain("general"))
 
     def test_standard_company_analysis_uses_fast_profile(self):
