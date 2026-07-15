@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import ReactDOM from 'react-dom/client';
 import './styles.css';
 
-type View = 'home' | 'community';
+type View = 'home' | 'community' | 'reports';
 type CommunityTab = 'news' | 'forum' | 'models' | 'builder';
 
 type ChatMessage = {
@@ -107,9 +107,24 @@ type BuilderTemplate = {
   code: string;
 };
 
+type ShelfItemKind = 'conversation' | 'watchlist' | 'model' | 'model_run';
+
+type PersonalShelfItem = {
+  id: string;
+  kind: ShelfItemKind;
+  title: string;
+  subtitle: string;
+  body: string;
+  topic?: string;
+  created_at: string;
+  tags?: string[];
+  stats?: Record<string, string>;
+};
+
 const API_BASE_URL =
   import.meta.env.VITE_API_BASE_URL || 'https://qfin-terminal.onrender.com';
 const AGENT_REQUEST_TIMEOUT_MS = Number(import.meta.env.VITE_AGENT_TIMEOUT_MS || 120000);
+const PERSONAL_SHELF_KEY = 'qfin.reports-watchlist.v1';
 
 const FAILURE_MESSAGE =
   'QFin could not complete that reply just now. The backend may still be waking up or the current route failed. Please retry in a moment.';
@@ -243,6 +258,29 @@ function defaultTickerForTemplate(template: BuilderTemplate) {
 
 function makeId() {
   return Math.random().toString(36).slice(2) + Date.now().toString(36);
+}
+
+function readPersonalShelf(): PersonalShelfItem[] {
+  try {
+    const raw = window.localStorage.getItem(PERSONAL_SHELF_KEY);
+    const parsed = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function writePersonalShelf(items: PersonalShelfItem[]) {
+  window.localStorage.setItem(PERSONAL_SHELF_KEY, JSON.stringify(items.slice(0, 80)));
+}
+
+function shelfKindLabel(kind: ShelfItemKind) {
+  if (kind === 'model_run') return 'Private run';
+  return kind.replace('_', ' ');
+}
+
+function latestAssistantAnswer(messages: ChatMessage[]) {
+  return [...messages].reverse().find((message) => message.role === 'assistant' && !message.error);
 }
 
 function fetchWithTimeout(url: string, options: RequestInit = {}, timeoutMs?: number | null) {
@@ -1018,6 +1056,8 @@ function App() {
   const [backendStatus, setBackendStatus] = useState('Checking QFin backend...');
   const [backendOnline, setBackendOnline] = useState(false);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [shelfItems, setShelfItems] = useState<PersonalShelfItem[]>(() => readPersonalShelf());
+  const [watchTopic, setWatchTopic] = useState('');
 
   const [newsCategory, setNewsCategory] =
     useState<(typeof NEWS_CATEGORIES)[number]>('Crypto');
@@ -1094,6 +1134,73 @@ function App() {
   useEffect(() => {
     checkBackend();
   }, []);
+
+  useEffect(() => {
+    writePersonalShelf(shelfItems);
+  }, [shelfItems]);
+
+  function addShelfItem(item: PersonalShelfItem) {
+    setShelfItems((current) => [item, ...current.filter((existing) => existing.id !== item.id)].slice(0, 80));
+  }
+
+  function saveConversationToShelf() {
+    if (!messages.length) return;
+    const firstUserMessage = messages.find((message) => message.role === 'user');
+    const answer = latestAssistantAnswer(messages);
+    const topic =
+      window.prompt('Save this conversation under what topic?', firstUserMessage?.content.slice(0, 80) || 'Research note') ||
+      '';
+    if (!topic.trim()) return;
+
+    addShelfItem({
+      id: makeId(),
+      kind: 'conversation',
+      title: topic.trim(),
+      subtitle: 'Saved QFin conversation',
+      topic: topic.trim(),
+      body: answer?.content || messages.map((message) => `${message.role}: ${message.content}`).join('\n\n'),
+      created_at: new Date().toISOString(),
+      tags: ['chat', 'research']
+    });
+    setView('reports');
+  }
+
+  function addWatchlistTopic() {
+    const topic = watchTopic.trim();
+    if (!topic) return;
+    addShelfItem({
+      id: makeId(),
+      kind: 'watchlist',
+      title: topic,
+      subtitle: 'Watchlist topic',
+      topic,
+      body: `Keep an eye on ${topic}. This can be a stock, sector, macro theme, crypto asset, bond market, model idea, or any topic you want to follow.`,
+      created_at: new Date().toISOString(),
+      tags: ['watchlist']
+    });
+    setWatchTopic('');
+  }
+
+  function removeShelfItem(itemId: string) {
+    setShelfItems((current) => current.filter((item) => item.id !== itemId));
+  }
+
+  function saveModelToShelf(model: CommunityModel, kind: Extract<ShelfItemKind, 'model' | 'model_run'>, body: string) {
+    addShelfItem({
+      id: makeId(),
+      kind,
+      title: model.name,
+      subtitle:
+        kind === 'model_run'
+          ? `Private run for ${model.ticker || model.profile?.benchmark || 'custom topic'}`
+          : 'Private builder model',
+      topic: model.ticker || model.profile?.benchmark || model.name,
+      body,
+      created_at: new Date().toISOString(),
+      tags: model.tags,
+      stats: model.stats
+    });
+  }
 
   async function sendMessage(input = prompt) {
     const cleanInput = input.trim();
@@ -1275,8 +1382,22 @@ function App() {
     if (mode === 'private') {
       const result = data.result;
       setBuilderResult(result);
+      saveModelToShelf(
+        {
+          ...builderPreviewModel,
+          ...data.model,
+          stats: result.stats,
+          profile: result.profile,
+          series: result.series,
+          highlights: result.highlights,
+          status: result.status,
+          ticker: result.ticker || builderTicker
+        },
+        'model_run',
+        `${result.summary}\n\nAnnual return: ${result.stats.annual_return}\nSharpe: ${result.stats.sharpe}\nMax drawdown: ${result.stats.max_drawdown}\nTurnover: ${result.stats.turnover}\nWin rate: ${result.stats.win_rate}\n\n${(result.notes || []).join('\n')}`
+      );
       setBuilderOutput(
-        `${result.summary}\n\nSaved privately as ${data.model?.name || builderName}.\nAnnual return: ${result.stats.annual_return}\nSharpe: ${result.stats.sharpe}\nMax drawdown: ${result.stats.max_drawdown}\nTurnover: ${result.stats.turnover}\nWin rate: ${result.stats.win_rate}`
+        `${result.summary}\n\nSaved to Reports & Watchlist as ${data.model?.name || builderName}.\nAnnual return: ${result.stats.annual_return}\nSharpe: ${result.stats.sharpe}\nMax drawdown: ${result.stats.max_drawdown}\nTurnover: ${result.stats.turnover}\nWin rate: ${result.stats.win_rate}`
       );
       return;
     }
@@ -1333,8 +1454,16 @@ function App() {
     );
     const data = await response.json();
     setBuilderResult(null);
+    saveModelToShelf(
+      {
+        ...builderPreviewModel,
+        ...data.model
+      },
+      'model',
+      `${data.model?.summary || builderSummary || activeTemplate.summary}\n\nPrivate draft saved from Builder Studio. Use Run privately when you want QFin to attach a backtest-style result to this report item.`
+    );
     setBuilderOutput(
-      `Saved privately.\n\nModel: ${data.model?.name || builderName}\nAuthor: ${data.model?.author || builderAuthor}\nCreated: ${data.model?.created_at || 'just now'}`
+      `Saved to Reports & Watchlist.\n\nModel: ${data.model?.name || builderName}\nAuthor: ${data.model?.author || builderAuthor}\nCreated: ${data.model?.created_at || 'just now'}`
     );
   }
 
@@ -1391,6 +1520,15 @@ function App() {
             <IconUsers />
             Community
           </button>
+
+          <button
+            type="button"
+            className={view === 'reports' ? 'active' : ''}
+            onClick={() => setView('reports')}
+          >
+            <IconFolder />
+            Reports
+          </button>
         </nav>
 
         <p className="sidebarNote">
@@ -1426,7 +1564,7 @@ function App() {
               <button
                 type="button"
                 className="watchlistButton"
-                onClick={() => alert('Reports & Watchlist is coming soon.')}
+                onClick={() => setView('reports')}
               >
                 <IconFolder />
                 Reports & Watchlist
@@ -1444,6 +1582,9 @@ function App() {
             <section className="chatSurface" aria-label="QFin chat">
               {!!messages.length && (
                 <div className="chatActions">
+                  <button type="button" onClick={saveConversationToShelf}>
+                    Save conversation
+                  </button>
                   <button type="button" onClick={() => setMessages([])}>
                     New chat
                   </button>
@@ -1532,6 +1673,116 @@ function App() {
               </p>
             </section>
           </>
+        )}
+
+        {view === 'reports' && (
+          <section className="reportsPage">
+            <header className="reportsHero">
+              <div>
+                <p>Private Workspace</p>
+                <h1>Reports & Watchlist</h1>
+                <span>
+                  Save any company, sector, crypto idea, macro question, AI conversation, or private trading model you want to revisit.
+                </span>
+              </div>
+              <button type="button" className="watchlistButton" onClick={() => setView('home')}>
+                Ask QFin
+              </button>
+            </header>
+
+            <article className="watchlistComposerCard">
+              <div>
+                <span>Track anything</span>
+                <h2>Add a watchlist topic</h2>
+                <p>
+                  This does not have to be a ticker. Try "Alibaba", "AI chips", "Indonesia banks",
+                  "10-year Treasury yields", "BTC liquidity", or "Monte Carlo strategy ideas".
+                </p>
+              </div>
+              <div className="watchlistComposerRow">
+                <input
+                  value={watchTopic}
+                  onChange={(event) => setWatchTopic(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter') {
+                      event.preventDefault();
+                      addWatchlistTopic();
+                    }
+                  }}
+                  placeholder="Stock, sector, strategy, macro theme, anything..."
+                />
+                <button type="button" className="darkButton" onClick={addWatchlistTopic}>
+                  <IconPlusBox />
+                  Add
+                </button>
+              </div>
+            </article>
+
+            <section className="shelfSummaryGrid">
+              <article>
+                <strong>{shelfItems.filter((item) => item.kind === 'conversation').length}</strong>
+                <span>Saved conversations</span>
+              </article>
+              <article>
+                <strong>{shelfItems.filter((item) => item.kind === 'watchlist').length}</strong>
+                <span>Watchlist topics</span>
+              </article>
+              <article>
+                <strong>{shelfItems.filter((item) => item.kind === 'model' || item.kind === 'model_run').length}</strong>
+                <span>Private models</span>
+              </article>
+            </section>
+
+            {!shelfItems.length ? (
+              <article className="emptyState reportsEmpty">
+                <h2>Your private shelf is empty</h2>
+                <p>
+                  Save a QFin conversation, add a watchlist topic, or use Save privately / Run privately
+                  in Builder Studio to start building your research library.
+                </p>
+                <button type="button" onClick={() => setView('community')}>
+                  Open Community Builder
+                </button>
+              </article>
+            ) : (
+              <section className="shelfGrid">
+                {shelfItems.map((item) => (
+                  <article key={item.id} className={`shelfCard shelfCard-${item.kind}`}>
+                    <div className="shelfCardHeader">
+                      <span>{shelfKindLabel(item.kind)}</span>
+                      <button type="button" onClick={() => removeShelfItem(item.id)}>
+                        Remove
+                      </button>
+                    </div>
+                    <h2>{item.title}</h2>
+                    <p className="shelfSubtitle">{item.subtitle}</p>
+                    <p>{item.body}</p>
+                    {item.stats && (
+                      <div className="shelfStats">
+                        {Object.entries(item.stats).slice(0, 5).map(([key, value]) => (
+                          <div key={key}>
+                            <span>{formatMetricLabel(key)}</span>
+                            <strong>{value}</strong>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    <div className="tagRow">
+                      {(item.tags || [item.topic || 'research']).slice(0, 4).map((tag) => (
+                        <span key={tag} className="tagPill">
+                          {tag}
+                        </span>
+                      ))}
+                    </div>
+                    <div className="threadMeta">
+                      <span>{relativeTime(item.created_at)}</span>
+                      {item.topic && <span>{item.topic}</span>}
+                    </div>
+                  </article>
+                ))}
+              </section>
+            )}
+          </section>
         )}
 
         {view === 'community' && (

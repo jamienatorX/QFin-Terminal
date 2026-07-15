@@ -462,6 +462,232 @@ svg {
   box-shadow: 0 4px 12px rgba(17, 24, 39, 0.08);
 }
 
+.reportsPage {
+  width: 100%;
+  max-width: none;
+  margin: 0;
+  padding: 52px clamp(28px, 4vw, 72px) 72px;
+}
+
+.reportsHero,
+.watchlistComposerCard,
+.shelfCard {
+  border: 1px solid #dddaf0;
+  border-radius: 24px;
+  background: var(--surface);
+  box-shadow: 0 16px 32px rgba(89, 64, 196, 0.08);
+}
+
+.reportsHero {
+  min-height: 230px;
+  padding: 34px;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 24px;
+  background:
+    radial-gradient(circle at 88% 20%, rgba(126, 98, 255, 0.16), transparent 32%),
+    linear-gradient(180deg, #ffffff 0%, #f6f3ff 100%);
+}
+
+.reportsHero p,
+.watchlistComposerCard span,
+.shelfCardHeader span {
+  margin: 0;
+  color: var(--purple);
+  text-transform: uppercase;
+  font-size: 13px;
+  font-weight: 850;
+  letter-spacing: 0.04em;
+}
+
+.reportsHero h1 {
+  margin: 10px 0 0;
+  color: var(--ink);
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: 58px;
+  font-weight: 500;
+  line-height: 1.04;
+}
+
+.reportsHero span {
+  display: block;
+  max-width: 840px;
+  margin-top: 16px;
+  color: var(--muted);
+  font-size: 21px;
+  line-height: 1.42;
+}
+
+.watchlistComposerCard {
+  margin-top: 24px;
+  padding: 24px;
+  display: grid;
+  grid-template-columns: minmax(280px, 0.8fr) minmax(320px, 1fr);
+  gap: 24px;
+  align-items: end;
+}
+
+.watchlistComposerCard h2 {
+  margin: 8px 0 0;
+  font-size: 26px;
+}
+
+.watchlistComposerCard p,
+.shelfSubtitle {
+  margin: 10px 0 0;
+  color: var(--muted);
+  font-size: 16px;
+  line-height: 1.5;
+}
+
+.watchlistComposerRow {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+}
+
+.watchlistComposerRow input {
+  width: 100%;
+  min-height: 56px;
+  border: 1px solid #d9d2fb;
+  border-radius: 16px;
+  padding: 0 18px;
+  background: #ffffff;
+  color: var(--ink);
+  font-size: 17px;
+  box-shadow: inset 0 1px 0 rgba(126, 98, 255, 0.06);
+}
+
+.shelfSummaryGrid,
+.shelfGrid {
+  display: grid;
+  gap: 18px;
+}
+
+.shelfSummaryGrid {
+  margin-top: 24px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.shelfSummaryGrid article {
+  min-height: 116px;
+  padding: 22px;
+  border: 1px solid #e5e1f3;
+  border-radius: 20px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(247, 244, 255, 0.96)),
+    var(--surface);
+}
+
+.shelfSummaryGrid strong {
+  display: block;
+  color: var(--ink);
+  font-size: 36px;
+  line-height: 1;
+}
+
+.shelfSummaryGrid span {
+  display: block;
+  margin-top: 10px;
+  color: var(--muted);
+  font-weight: 750;
+}
+
+.shelfGrid {
+  margin-top: 24px;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+}
+
+.shelfCard {
+  padding: 22px;
+  overflow: hidden;
+  position: relative;
+}
+
+.shelfCard::before {
+  content: '';
+  position: absolute;
+  inset: 0 0 auto;
+  height: 5px;
+  background: linear-gradient(90deg, #7e62ff, #66d6c2);
+}
+
+.shelfCard-model::before,
+.shelfCard-model_run::before {
+  background: linear-gradient(90deg, #66d6c2, #e3b95b);
+}
+
+.shelfCard-watchlist::before {
+  background: linear-gradient(90deg, #101525, #7e62ff);
+}
+
+.shelfCardHeader {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+}
+
+.shelfCardHeader button {
+  min-height: 34px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 0 12px;
+  background: #ffffff;
+  color: var(--muted);
+  font-weight: 750;
+}
+
+.shelfCard h2 {
+  margin: 16px 0 0;
+  color: var(--ink);
+  font-size: 25px;
+  line-height: 1.18;
+}
+
+.shelfCard > p:not(.shelfSubtitle) {
+  margin: 14px 0 0;
+  color: var(--ink-soft);
+  font-size: 15px;
+  line-height: 1.58;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.shelfStats {
+  margin-top: 16px;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.shelfStats div {
+  padding: 12px;
+  border: 1px solid #e5e1f3;
+  border-radius: 12px;
+  background: #fbfaff;
+}
+
+.shelfStats span {
+  display: block;
+  color: var(--muted-soft);
+  font-size: 11px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.shelfStats strong {
+  display: block;
+  margin-top: 6px;
+  color: var(--ink);
+  font-size: 18px;
+}
+
+.reportsEmpty {
+  margin-top: 24px;
+}
+
 .homeHero {
   position: relative;
   min-height: 312px;
@@ -2012,7 +2238,8 @@ svg {
   .newsGrid,
   .modelDeckGrid,
   .builderStudioShell,
-  .builderStudioSplit {
+  .builderStudioSplit,
+  .watchlistComposerCard {
     grid-template-columns: 1fr;
   }
 
@@ -2046,7 +2273,7 @@ svg {
   }
 
   .sideNav {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-columns: repeat(3, minmax(0, 1fr));
     padding: 12px;
   }
 
@@ -2085,13 +2312,38 @@ svg {
   .promptArea,
   .chatSurface,
   .analysisPanel,
-  .communityPage {
+  .communityPage,
+  .reportsPage {
     padding-left: 16px;
     padding-right: 16px;
   }
 
-  .communityPage {
+  .communityPage,
+  .reportsPage {
     padding-top: 28px;
+  }
+
+  .reportsHero,
+  .watchlistComposerCard {
+    padding: 20px;
+  }
+
+  .reportsHero {
+    min-height: auto;
+    flex-direction: column;
+  }
+
+  .reportsHero h1 {
+    font-size: 42px;
+  }
+
+  .reportsHero span {
+    font-size: 18px;
+  }
+
+  .watchlistComposerRow,
+  .shelfSummaryGrid {
+    grid-template-columns: 1fr;
   }
 
   .pageHeader h1 {
