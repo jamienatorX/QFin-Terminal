@@ -12,14 +12,23 @@ MODEL_COOLDOWNS: Dict[str, float] = {}
 DEFAULT_FAST_MODEL = "qwen3.7-plus-2026-05-26"
 DEFAULT_DEEP_MODEL = "qwen3.7-max-2026-05-20"
 DEFAULT_FLASH_MODEL = "glm-5.1"
-DEFAULT_VISION_MODEL = "qwen-vl-plus-latest"
+DEFAULT_VISION_MODEL = "qwen3-vl-plus-2025-12-19"
 DEFAULT_TEXT_FALLBACK_MODELS = [
-    "qwen3.7-max-2026-05-17",
-    "deepseek-v4-pro",
+    "deepseek-v4-flash",
+    "qwen3.6-plus-2026-04-02",
+    "qwen3.5-plus-2026-04-20",
     "glm-5.2",
     "glm-5.1",
 ]
-DEFAULT_VISION_FALLBACK_MODELS = ["qwen3-vl-plus", "glm-5.2"]
+DEFAULT_DEEP_FALLBACK_MODELS = [
+    "qwen3.7-max-2026-06-08",
+    "qwen3.7-max-2026-05-17",
+    "deepseek-v4-pro",
+    "qwen3.6-plus-2026-04-02",
+    "glm-5.2",
+    "glm-5.1",
+]
+DEFAULT_VISION_FALLBACK_MODELS = ["qwen3-vl-plus", "qwen-vl-ocr-2025-11-20"]
 STALE_MODEL_REPLACEMENTS = {
     "qwen3.7-plus": DEFAULT_FAST_MODEL,
     "qwen3.7-max": DEFAULT_DEEP_MODEL,
@@ -120,6 +129,8 @@ def _configured_fallback_models(task_type: str) -> List[str]:
         ]
     if task_type == "vision":
         return list(DEFAULT_VISION_FALLBACK_MODELS)
+    if task_type == "deep":
+        return list(DEFAULT_DEEP_FALLBACK_MODELS)
     return list(DEFAULT_TEXT_FALLBACK_MODELS)
 
 

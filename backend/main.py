@@ -3067,9 +3067,24 @@ def remove_default_methodology(content: str, preserve_methodology: bool = False)
     ).strip()
 
 
+def remove_generic_verdict_boilerplate(content: str) -> str:
+    patterns = (
+        r"Use the valuation, growth, profitability, cash-flow, and leverage measures together; no single metric is a complete investment verdict\.\s*",
+        r"A stronger investment call would require comparing these figures against multi-year growth, segment margins, free-cash-flow durability, and peers\.\s*",
+        r"No single metric is a complete investment verdict\.\s*",
+    )
+    cleaned = content
+    for pattern in patterns:
+        cleaned = re.sub(pattern, "", cleaned, flags=re.I)
+    cleaned = re.sub(r"(?mi)^\s*(?:##|\*\*)\s*Verdict\*?\*?\s*$\n(?=\s*(?:##|\Z))", "", cleaned)
+    return cleaned.strip()
+
+
 def normalize_finance_answer(content: str, route_kind: str, preserve_methodology: bool = False) -> str:
     """Repair common model formatting drift without changing financial claims."""
-    normalized = remove_default_methodology(clean_text(content), preserve_methodology)
+    normalized = remove_generic_verdict_boilerplate(
+        remove_default_methodology(clean_text(content), preserve_methodology)
+    )
     normalized = re.sub(
         r"\A\s*(?:(?:#{1,6}\s+)?Q(?=\s*(?::|-|\n|$))|\*\*Q\*\*)\s*[:\-]?\s*",
         "",
@@ -3654,7 +3669,9 @@ def run_agent_risk_review(route: Dict[str, Any], facts: Any, content: str) -> Ag
 
 
 def finalize_agent_content(content: str, review: AgentRiskReview, preserve_methodology: bool = False) -> str:
-    content = remove_default_methodology(content, preserve_methodology)
+    content = remove_generic_verdict_boilerplate(
+        remove_default_methodology(content, preserve_methodology)
+    )
     # Risk-review warnings are diagnostic signals for server-side session logs.
     # Only genuine data gaps should be shown to users as answer caveats.
     notes = list(review.missing_data)

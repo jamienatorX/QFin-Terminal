@@ -420,7 +420,7 @@ class QwenModelRoutingTests(unittest.TestCase):
         self.assertEqual(profile["fast"], "qwen3.7-plus-2026-05-26")
         self.assertEqual(profile["deep"], "qwen3.7-max-2026-05-20")
         self.assertEqual(profile["flash"], "glm-5.1")
-        self.assertEqual(profile["vision"], "qwen-vl-plus-latest")
+        self.assertEqual(profile["vision"], "qwen3-vl-plus-2025-12-19")
         self.assertEqual(profile["news"], "qwen3.7-plus-2026-05-26")
 
     def test_stale_render_model_overrides_are_replaced(self):
@@ -447,13 +447,38 @@ class QwenModelRoutingTests(unittest.TestCase):
                 qwen_client._model_chain("deep"),
                 [
                     "qwen3.7-max-2026-05-20",
+                    "qwen3.7-max-2026-06-08",
                     "qwen3.7-max-2026-05-17",
                     "deepseek-v4-pro",
+                    "qwen3.6-plus-2026-04-02",
                     "glm-5.2",
                     "glm-5.1",
                     "qwen3.7-plus-2026-05-26",
                 ],
             )
+
+    def test_vision_chain_uses_grounded_models_and_excludes_hallucination_prone_variants(self):
+        with patch.dict(qwen_client.os.environ, {}, clear=True):
+            chain = qwen_client._model_chain("vision")
+
+        self.assertEqual(
+            chain,
+            ["qwen3-vl-plus-2025-12-19", "qwen3-vl-plus", "qwen-vl-ocr-2025-11-20"],
+        )
+        self.assertNotIn("qwen3-vl-flash-2026-01-22", chain)
+        self.assertNotIn("qwen3-vl-30b-a3b-instruct", chain)
+
+    def test_generic_verdict_boilerplate_is_removed_from_model_output(self):
+        content = (
+            "## Investment view\nUseful analysis.\n\n"
+            "## Verdict\nInsufficient data to form an investment conclusion. "
+            "No single metric is a complete investment verdict."
+        )
+
+        normalized = main.normalize_finance_answer(content, "company")
+
+        self.assertIn("Insufficient data to form an investment conclusion.", normalized)
+        self.assertNotIn("no single metric", normalized.lower())
 
     def test_standard_company_analysis_uses_fast_profile(self):
         messages = main.build_finance_prompt(
