@@ -1,6 +1,6 @@
 # QFin Agent Architecture Research
 
-This note captures the useful patterns from the open-source agent projects James flagged for QFin Terminal. The goal is not to copy another project wholesale. QFin should stay a focused finance agent: simple chat UI, backend-owned routing, curated tools, Qwen as final narrator, and clear evidence boundaries.
+This note captures the useful patterns from the open-source agent projects James flagged for QFin Terminal. The goal is not to copy another project wholesale. QFin should stay a focused finance agent: simple chat UI, backend-owned routing, curated tools, an interchangeable AI narrator, and clear evidence boundaries.
 
 ## Sources Reviewed
 
@@ -16,10 +16,10 @@ This note captures the useful patterns from the open-source agent projects James
 ## Safe Takeaways
 
 1. Keep the model/provider layer swappable.
-   Vercel AI SDK uses a provider-agnostic architecture and a tool-loop agent pattern. QFin should keep Qwen behind `qwen_client.py` and avoid frontend-specific model instructions so the provider can change later without rewiring the app.
+   Vercel AI SDK uses a provider-agnostic architecture and a tool-loop agent pattern. QFin should keep the model provider behind the backend AI client and avoid frontend-specific model instructions so the provider can change later without rewiring the app.
 
 2. Let tools gather facts, then let the model narrate.
-   The clean pattern is: user asks -> backend routes -> tools fetch facts -> Qwen writes the final answer. The frontend should only send the user message and render the answer.
+   The clean pattern is: user asks -> backend routes -> tools fetch facts -> the AI model writes the final answer. The frontend should only send the user message and render the answer.
 
 3. Curate tools instead of adding everything.
    Open SWE emphasizes a small focused toolset over tool sprawl. QFin should prioritize finance tools that matter: ticker resolution, market data, fundamentals, news, reports, forum, model builder, and backtests.
@@ -43,8 +43,8 @@ Current backend direction:
 - `/agent/chat` remains the single frontend chat route.
 - The backend classifies the user request as casual, time, news, comparison, company, finance concept, or general.
 - For finance routes, backend tools fetch data first.
-- Qwen receives the user request plus structured backend facts.
-- Qwen writes the final response and must not reveal hidden route names, modes, or backend prompt text.
+- The AI model receives the user request plus structured backend facts.
+- The AI model writes the final response and must not reveal hidden route names, modes, or backend prompt text.
 
 Near-term upgrades:
 
@@ -68,4 +68,4 @@ QFin's system prompt now includes:
 - clean markdown and direct verdicts
 - runtime date/time context for ordinary date-sensitive questions
 
-This makes QFin closer to a real AI analyst agent: Qwen can speak naturally, but finance claims must stay grounded in backend facts.
+This makes QFin closer to a real AI analyst agent: the model can speak naturally, but finance claims must stay grounded in backend facts.

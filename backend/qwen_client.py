@@ -6,13 +6,13 @@ from typing import Any, Dict, List, Optional
 import httpx
 
 
-logger = logging.getLogger("qfin.qwen")
+logger = logging.getLogger("qfin.ai_provider")
 MODEL_COOLDOWNS: Dict[str, float] = {}
 
 DEFAULT_FAST_MODEL = "glm-5.2"
 DEFAULT_DEEP_MODEL = "glm-5.2"
 DEFAULT_FLASH_MODEL = "glm-5.1"
-DEFAULT_VISION_MODEL = "qwen-vl-plus-latest"
+DEFAULT_VISION_MODEL = "glm-5.2"
 STALE_MODEL_REPLACEMENTS = {
     "qwen3.7-plus": DEFAULT_FAST_MODEL,
     "qwen3.7-max": DEFAULT_DEEP_MODEL,
@@ -30,14 +30,14 @@ class QwenClientError(Exception):
 
 
 def qwen_is_configured() -> bool:
-    return bool(os.getenv("DASHSCOPE_API_KEY"))
+    return bool(os.getenv("AI_PROVIDER_API_KEY") or os.getenv("DASHSCOPE_API_KEY"))
 
 
 def _timeout_seconds(task_type: str = "fast") -> float:
     defaults = {"general": 12.0, "fast": 10.0, "news": 15.0, "vision": 30.0, "deep": 20.0}
-    task_env = os.getenv(f"DASHSCOPE_TIMEOUT_SECONDS_{task_type.upper()}")
+    task_env = os.getenv(f"AI_PROVIDER_TIMEOUT_SECONDS_{task_type.upper()}") or os.getenv(f"DASHSCOPE_TIMEOUT_SECONDS_{task_type.upper()}")
     try:
-        configured = float(task_env or os.getenv("DASHSCOPE_TIMEOUT_SECONDS", "45"))
+        configured = float(task_env or os.getenv("AI_PROVIDER_TIMEOUT_SECONDS") or os.getenv("DASHSCOPE_TIMEOUT_SECONDS", "45"))
         return max(5.0, min(configured, defaults.get(task_type, 20.0)))
     except Exception:
         return defaults.get(task_type, 20.0)
@@ -45,9 +45,9 @@ def _timeout_seconds(task_type: str = "fast") -> float:
 
 def _total_timeout_seconds(task_type: str = "fast") -> float:
     defaults = {"general": 18.0, "fast": 15.0, "news": 25.0, "vision": 50.0, "deep": 35.0}
-    task_env = os.getenv(f"DASHSCOPE_TOTAL_TIMEOUT_SECONDS_{task_type.upper()}")
+    task_env = os.getenv(f"AI_PROVIDER_TOTAL_TIMEOUT_SECONDS_{task_type.upper()}") or os.getenv(f"DASHSCOPE_TOTAL_TIMEOUT_SECONDS_{task_type.upper()}")
     try:
-        configured = float(task_env or os.getenv("DASHSCOPE_TOTAL_TIMEOUT_SECONDS", "75"))
+        configured = float(task_env or os.getenv("AI_PROVIDER_TOTAL_TIMEOUT_SECONDS") or os.getenv("DASHSCOPE_TOTAL_TIMEOUT_SECONDS", "75"))
         return max(10.0, min(configured, defaults.get(task_type, 35.0)))
     except Exception:
         return defaults.get(task_type, 35.0)
@@ -55,9 +55,10 @@ def _total_timeout_seconds(task_type: str = "fast") -> float:
 
 def _max_tokens(task_type: str) -> int:
     defaults = {"deep": 2200, "vision": 1600, "news": 1200, "fast": 700, "general": 700}
-    env_name = f"DASHSCOPE_MAX_TOKENS_{task_type.upper()}"
+    env_name = f"AI_PROVIDER_MAX_TOKENS_{task_type.upper()}"
+    legacy_env_name = f"DASHSCOPE_MAX_TOKENS_{task_type.upper()}"
     try:
-        return max(256, int(os.getenv(env_name, str(defaults.get(task_type, 1000)))))
+        return max(256, int(os.getenv(env_name) or os.getenv(legacy_env_name, str(defaults.get(task_type, 1000)))))
     except Exception:
         return defaults.get(task_type, 1000)
 
@@ -73,19 +74,22 @@ def _model_profile() -> Dict[str, str]:
     """
     QFin model routing profile.
 
-    Keep Qwen3.7-Max for deep analyst work, but avoid using it for every
-    request so quick summaries stay faster and cheaper.
+    Keep deeper analysis on GLM 5.2, but avoid using the strongest route for
+    every request so quick summaries stay faster and cheaper.
     """
     fast_model = _model_override(
-        os.getenv("DASHSCOPE_MODEL_FAST") or os.getenv("DASHSCOPE_MODEL"),
+        os.getenv("AI_PROVIDER_MODEL_FAST")
+        or os.getenv("AI_PROVIDER_MODEL")
+        or os.getenv("DASHSCOPE_MODEL_FAST")
+        or os.getenv("DASHSCOPE_MODEL"),
         DEFAULT_FAST_MODEL,
     )
     return {
-        "deep": _model_override(os.getenv("DASHSCOPE_MODEL_DEEP"), DEFAULT_DEEP_MODEL),
+        "deep": _model_override(os.getenv("AI_PROVIDER_MODEL_DEEP") or os.getenv("DASHSCOPE_MODEL_DEEP"), DEFAULT_DEEP_MODEL),
         "fast": fast_model,
-        "flash": _model_override(os.getenv("DASHSCOPE_MODEL_FLASH"), DEFAULT_FLASH_MODEL),
-        "vision": _model_override(os.getenv("DASHSCOPE_MODEL_VISION"), DEFAULT_VISION_MODEL),
-        "news": _model_override(os.getenv("DASHSCOPE_NEWS_MODEL"), fast_model),
+        "flash": _model_override(os.getenv("AI_PROVIDER_MODEL_FLASH") or os.getenv("DASHSCOPE_MODEL_FLASH"), DEFAULT_FLASH_MODEL),
+        "vision": _model_override(os.getenv("AI_PROVIDER_MODEL_VISION") or os.getenv("DASHSCOPE_MODEL_VISION"), DEFAULT_VISION_MODEL),
+        "news": _model_override(os.getenv("AI_PROVIDER_NEWS_MODEL") or os.getenv("DASHSCOPE_NEWS_MODEL"), fast_model),
     }
 
 
@@ -233,13 +237,16 @@ async def call_qwen(
     response_format: Optional[Dict[str, str]] = None,
     temperature: float = 0.2,
 ) -> Dict[str, Any]:
-    api_key = os.getenv("DASHSCOPE_API_KEY")
+    api_key = os.getenv("AI_PROVIDER_API_KEY") or os.getenv("DASHSCOPE_API_KEY")
     if not api_key:
-        raise QwenClientError("DASHSCOPE_API_KEY is not configured.")
+        raise QwenClientError("AI provider API key is not configured.")
 
     base_url = os.getenv(
-        "DASHSCOPE_BASE_URL",
-        "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
+        "AI_PROVIDER_BASE_URL",
+        os.getenv(
+            "DASHSCOPE_BASE_URL",
+            "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+        ),
     ).rstrip("/")
 
     task_type = _detect_task_type(messages)
@@ -284,26 +291,26 @@ async def call_qwen(
                 )
         except httpx.TimeoutException as e:
             last_error = QwenClientError(
-                f"Qwen request timed out after {timeout_seconds:.0f}s. "
+                f"AI provider request timed out after {timeout_seconds:.0f}s. "
                 f"Model={model_name}. Task={task_type}. Base URL={base_url}. "
                 f"Error type={type(e).__name__}."
             )
             # Do not make every finance request wait on a model that just timed
             # out for the same task. General chat may still use that model.
             _defer_model(task_type, model_name, 300.0)
-            logger.warning("Qwen timeout; trying fallback if available: %s", last_error)
+            logger.warning("AI provider timeout; trying fallback if available: %s", last_error)
             continue
         except httpx.RequestError as e:
             last_error = QwenClientError(
-                f"Qwen network request failed. Model={model_name}. Task={task_type}. Base URL={base_url}. "
+                f"AI provider network request failed. Model={model_name}. Task={task_type}. Base URL={base_url}. "
                 f"Error type={type(e).__name__}. Error={repr(e)}"
             )
-            logger.warning("Qwen network error; trying fallback if available: %s", last_error)
+            logger.warning("AI provider network error; trying fallback if available: %s", last_error)
             continue
 
         if response.status_code >= 400:
             error = QwenClientError(
-                f"Qwen API error {response.status_code}. Model={model_name}. Task={task_type}. "
+                f"AI provider API error {response.status_code}. Model={model_name}. Task={task_type}. "
                 f"Response={response.text[:1200]}"
             )
             # A 403 can mean a model-specific quota or entitlement issue. Try the
@@ -317,7 +324,7 @@ async def call_qwen(
             last_error = error
             # Keep the provider's bounded error detail in server logs only. The caller
             # still returns a safe deterministic answer rather than exposing it to users.
-            logger.warning("Qwen API error; trying fallback if available: %s", error)
+            logger.warning("AI provider API error; trying fallback if available: %s", error)
             continue
 
         try:
@@ -327,16 +334,16 @@ async def call_qwen(
             return data
         except Exception as e:
             last_error = QwenClientError(
-                f"Qwen returned non-JSON response. Model={model_name}. Task={task_type}. "
+                f"AI provider returned non-JSON response. Model={model_name}. Task={task_type}. "
                 f"Error={repr(e)}. Body={response.text[:1200]}"
             )
-            logger.warning("Qwen returned non-JSON; trying fallback if available: %s", last_error)
+            logger.warning("AI provider returned non-JSON; trying fallback if available: %s", last_error)
             continue
 
     if last_error:
         raise last_error
 
     raise QwenClientError(
-        f"Qwen could not complete the request within the {total_timeout_seconds:.0f}s total response budget."
+        f"AI provider could not complete the request within the {total_timeout_seconds:.0f}s total response budget."
     )
 

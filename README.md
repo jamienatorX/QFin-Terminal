@@ -1,13 +1,13 @@
 # QFin Terminal
 
-QFin Terminal is a Qwen-powered financial analyst dashboard for the Global AI Hackathon Series with Qwen Cloud.
+QFin Terminal is an AI finance learning platform built with Codex for OpenAI Build Week. It helps users understand companies, markets, reports, and trading models through chat, file analysis, community discussion, and an interactive model builder.
 
 The app has four main layers:
 
 ```text
 Frontend: React / Vite website deployed on Vercel
 Backend: FastAPI service deployed on Render
-AI: Qwen Cloud / DashScope API with intelligent model routing
+AI: GLM 5.2 / GLM 5.1 through a provider-compatible backend route
 Database: Supabase Postgres behind the backend
 ```
 
@@ -35,19 +35,21 @@ QFin-Terminal
 - Community forum threads, votes, and builder models persist through Supabase when configured
 - Backend opens locally at `http://127.0.0.1:8000`
 - `/`, `/health`, `/docs`, `/agent/chat/stream`, `/community/news/{category}`, `/community/forum`, and `/community/models` work
-- Qwen and Supabase are called only from the backend
+- The AI provider and Supabase are called only from the backend
+- Reports & Watchlist lets users save conversations, topics, private models, and private model runs
+- Builder models can be saved privately, run privately, or published to the public model gallery
 
-## Qwen model routing
+## AI model routing
 
 QFin does not use the strongest model for every request. The backend routes requests by task so the app stays faster and cheaper:
 
 ```text
-Deep financial report / analyst agent  -> Qwen3.7-Max
-Quick summary / cheaper backup         -> Qwen3.7-Plus or Qwen3.6-Flash
-Analyze image/chart/video directly     -> Qwen3.7-Plus
+Deep financial report / analyst agent  -> GLM 5.2
+Quick summary / cheaper backup         -> GLM 5.1
+News and general chat                   -> GLM 5.2 with GLM 5.1 fallback
 ```
 
-If Qwen3.7-Max times out or returns a temporary API error, the backend automatically tries the faster backup models. Authentication errors still stop immediately because they mean the API key or base URL is wrong.
+If the primary model times out or returns a temporary API error, the backend automatically tries faster backup models. Authentication errors still stop immediately because they mean the API key or base URL is wrong.
 
 ## Local backend setup
 
@@ -77,14 +79,15 @@ backend/.env
 Add:
 
 ```env
-DASHSCOPE_API_KEY=your_qwen_dashscope_api_key
-DASHSCOPE_BASE_URL=https://dashscope-intl.aliyuncs.com/compatible-mode/v1
-DASHSCOPE_MODEL_DEEP=qwen3.7-max
-DASHSCOPE_MODEL_FAST=qwen3.7-plus
-DASHSCOPE_MODEL_FLASH=qwen3.6-flash
-DASHSCOPE_MODEL_VISION=qwen3.7-plus
-DASHSCOPE_NEWS_MODEL=qwen3.7-plus
-DASHSCOPE_TIMEOUT_SECONDS=120
+AI_PROVIDER_API_KEY=your_provider_api_key
+AI_PROVIDER_BASE_URL=https://dashscope-intl.aliyuncs.com/compatible-mode/v1
+AI_PROVIDER_MODEL_DEEP=glm-5.2
+AI_PROVIDER_MODEL_FAST=glm-5.2
+AI_PROVIDER_MODEL_FLASH=glm-5.1
+AI_PROVIDER_MODEL_VISION=glm-5.2
+AI_PROVIDER_NEWS_MODEL=glm-5.2
+AI_PROVIDER_TIMEOUT_SECONDS=45
+AI_PROVIDER_TOTAL_TIMEOUT_SECONDS=75
 SUPABASE_URL=your_supabase_project_url
 SUPABASE_SERVICE_ROLE_KEY=your_supabase_secret_or_service_role_key
 FINNHUB_API_KEY=your_finnhub_api_key
@@ -171,14 +174,15 @@ Start Command: uvicorn main:app --host 0.0.0.0 --port $PORT
 Set these environment variables in Render:
 
 ```env
-DASHSCOPE_API_KEY=your_qwen_dashscope_api_key
-DASHSCOPE_BASE_URL=https://dashscope-intl.aliyuncs.com/compatible-mode/v1
-DASHSCOPE_MODEL_DEEP=qwen3.7-max
-DASHSCOPE_MODEL_FAST=qwen3.7-plus
-DASHSCOPE_MODEL_FLASH=qwen3.6-flash
-DASHSCOPE_MODEL_VISION=qwen3.7-plus
-DASHSCOPE_NEWS_MODEL=qwen3.7-plus
-DASHSCOPE_TIMEOUT_SECONDS=120
+AI_PROVIDER_API_KEY=your_provider_api_key
+AI_PROVIDER_BASE_URL=https://dashscope-intl.aliyuncs.com/compatible-mode/v1
+AI_PROVIDER_MODEL_DEEP=glm-5.2
+AI_PROVIDER_MODEL_FAST=glm-5.2
+AI_PROVIDER_MODEL_FLASH=glm-5.1
+AI_PROVIDER_MODEL_VISION=glm-5.2
+AI_PROVIDER_NEWS_MODEL=glm-5.2
+AI_PROVIDER_TIMEOUT_SECONDS=45
+AI_PROVIDER_TOTAL_TIMEOUT_SECONDS=75
 SUPABASE_URL=your_supabase_project_url
 SUPABASE_SERVICE_ROLE_KEY=your_supabase_secret_or_service_role_key
 FINNHUB_API_KEY=your_finnhub_api_key
@@ -198,7 +202,7 @@ Expected response:
 {
   "status": "ok",
   "service": "qfin-terminal-api",
-  "qwen_configured": true,
+  "ai_configured": true,
   "supabase_configured": true
 }
 ```
@@ -208,7 +212,7 @@ Expected response:
 Never expose these in frontend code or GitHub:
 
 ```text
-DASHSCOPE_API_KEY
+AI_PROVIDER_API_KEY
 SUPABASE_SERVICE_ROLE_KEY
 .env
 .env.local

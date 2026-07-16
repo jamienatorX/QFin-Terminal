@@ -185,7 +185,7 @@ Finance answer contract:
 """.strip()
 
 AGENT_SOURCE_NOTE = """
-QFin uses a curated-tool agent pattern: backend routes gather facts first, then Qwen writes the final user-facing narrative.
+QFin uses a curated-tool agent pattern: backend routes gather facts first, then the AI model writes the final user-facing narrative.
 The model should sound natural, but it must respect the supplied tool outputs and uncertainty boundaries.
 """.strip()
 
@@ -213,6 +213,8 @@ CASUAL_REPLIES = {
 ALIASES = {
     "tesla": "TSLA",
     "alibaba": "BABA",
+    "bumi resources": "BUMI.JK",
+    "bumi": "BUMI.JK",
     "apple": "AAPL",
     "microsoft": "MSFT",
     "nvidia": "NVDA",
@@ -268,7 +270,7 @@ US_SYMBOLS = {
 MARKET_SYMBOLS = {
     ".JK": {
     "AALI", "ACES", "ADRO", "AKRA", "AMMN", "ANTM", "ARTO", "ASII", "BBCA",
-    "BBNI", "BBRI", "BBTN", "BMRI", "BRIS", "BRPT", "BUKA", "CPIN", "EMTK",
+    "BBNI", "BBRI", "BBTN", "BMRI", "BRIS", "BRPT", "BUKA", "BUMI", "CPIN", "EMTK",
     "ESSA", "EXCL", "GGRM", "GOTO", "HRUM", "ICBP", "INCO", "INDF", "INKP",
     "INTP", "ITMG", "JPFA", "KLBF", "MDKA", "MEDC", "MIKA", "PGAS", "PTBA",
     "SIDO", "SMGR", "TLKM", "TOWR", "UNTR", "UNVR", "WIKA",
@@ -1154,6 +1156,7 @@ def default_symbol_master_records() -> List[Dict[str, Any]]:
         ("BBRI", "BBRI.JK", "Bank Rakyat Indonesia Tbk", "IDX", "Indonesia", "Indonesia", "IDR", ["bri", "bank rakyat indonesia"], 90),
         ("BMRI", "BMRI.JK", "Bank Mandiri Tbk", "IDX", "Indonesia", "Indonesia", "IDR", ["mandiri", "bank mandiri"], 90),
         ("TLKM", "TLKM.JK", "Telkom Indonesia Tbk", "IDX", "Indonesia", "Indonesia", "IDR", ["telkom indonesia", "telkom"], 85),
+        ("BUMI", "BUMI.JK", "Bumi Resources Tbk", "IDX", "Indonesia", "Indonesia", "IDR", ["bumi", "bumi resources", "pt bumi resources tbk", "coal indonesia"], 95),
         ("MDKA", "MDKA.JK", "Merdeka Copper Gold Tbk", "IDX", "Indonesia", "Indonesia", "IDR", ["merdeka copper gold", "merdeka copper", "merdeka gold"], 95),
         ("MBMA", "MBMA.JK", "Merdeka Battery Materials Tbk", "IDX", "Indonesia", "Indonesia", "IDR", ["merdeka battery", "merdeka battery materials"], 80),
         ("D05", "D05.SI", "DBS Group Holdings Ltd", "SGX", "Singapore", "Singapore", "SGD", ["dbs", "dbs group"], 95),
@@ -2478,7 +2481,9 @@ def build_finance_prompt(query: str, route: Dict[str, Any], facts: Any) -> List[
             f"{depth_instruction}\n"
             f"Backend facts:\n{fact_block}\n"
             "Use only this backend data. Prefer warehouse-backed statements and valuation when available, and use live fields only for current market context or explicit gaps. "
-            "If the user asked about the latest quarter, focus on the latest quarter context first, then the broader fundamentals. Keep a standard-depth answer to no more than 550 words and omit non-comparable metrics rather than guessing or listing unavailable values. "
+            "Write in the same polished QFin analyst style used for strong model answers: start with a one-sentence investment thesis, then use clear sections for business context, financial health, valuation/market signal, key risks, and verdict. "
+            "If the user asked about the latest quarter, focus on the latest quarter context first, then the broader fundamentals. Keep a standard-depth answer to no more than 650 words and omit non-comparable metrics rather than guessing or listing unavailable values. "
+            "If connected fundamentals are thin, say that upfront and explain what would be needed for a fuller answer instead of presenting a tiny price-only snapshot as complete analysis. "
             "Do not mention the internal route or backend mechanics in the final answer."
         )
     elif route_kind == "news":
@@ -2780,6 +2785,16 @@ def build_company_facts_fallback(query: str, facts: Dict[str, Any], fallback_rea
     signal_lines = company_signal_lines(facts, analysis_profile)
     if signal_lines:
         lines.extend(["", "**Trend and risk signals**", *signal_lines])
+
+    if not fundamental_lines and not annual_revenue and not annual_net_income:
+        lines.extend(
+            [
+                "",
+                "**Coverage gap**",
+                "- Connected fundamentals are not deep enough for a full company analysis yet.",
+                "- For a stronger answer, QFin needs statement history, margins, cash flow, leverage, and valuation multiples for the primary listing.",
+            ]
+        )
 
 
     lines.extend(
@@ -3285,7 +3300,7 @@ async def build_finance_response(
     fallback_reason = "Deterministic finance guidance was used to keep the response grounded and time-bounded."
 
     # Keep news and well-covered finance definitions instant. Company analysis
-    # and comparisons still use Qwen to turn verified facts into an analyst answer.
+    # and comparisons still use the AI model to turn verified facts into an analyst answer.
     if route.get("detail", "standard") != "deep":
         if route["kind"] in {"news", "headlines"} and isinstance(facts, dict):
             return build_headline_digest(facts)
@@ -3546,7 +3561,7 @@ async def generate_agent_reply(query: str, provided_ticker: Optional[str] = None
     if not qwen_is_configured():
         return {
             "route": route,
-            "content": "The backend is connected, but Qwen is unavailable right now. Add the DashScope key in Render to enable full chat responses.",
+            "content": "The backend is connected, but the AI provider is unavailable right now. Add the provider API key in Render to enable full chat responses.",
             "facts": None,
             "used_live_data": False,
         }
@@ -4678,6 +4693,7 @@ def health():
         "status": "ok",
         "service": "qfin-terminal-api",
         "version": "qfin-agent-2.8",
+        "ai_configured": qwen_is_configured(),
         "qwen_configured": qwen_is_configured(),
         "supabase_configured": supabase_is_configured(),
         "fmp_configured": fmp_is_configured(),

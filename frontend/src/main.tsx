@@ -1532,7 +1532,7 @@ function App() {
         </nav>
 
         <p className="sidebarNote">
-          Qwen-powered financial intelligence. Not investment advice.
+          AI-powered financial intelligence. Not investment advice.
         </p>
       </aside>
 
@@ -1575,7 +1575,7 @@ function App() {
               <div className="chartBand" aria-hidden="true" />
               <div className="heroCopy">
                 <h1>Ask QFin. Explore Community.</h1>
-                <p>Qwen handles the language. QFin routes the finance work and brings back the data.</p>
+                <p>GLM handles the language. QFin routes the finance work and brings back the data.</p>
               </div>
             </section>
 
@@ -1640,7 +1640,7 @@ function App() {
                       sendMessage();
                     }
                   }}
-                  placeholder="Ask QFin anything. For finance questions, it will route the data work and let Qwen write the final answer."
+                  placeholder="Ask QFin anything. For finance questions, it will route the data work and let the AI analyst write the final answer."
                 />
 
                 <div className="composerFooter">
@@ -1669,7 +1669,7 @@ function App() {
               </form>
 
               <p className="supportText">
-                Basic chat routes to Qwen. Finance questions route through QFin tools and come back as a final narrated answer.
+                Basic chat routes to GLM. Finance questions route through QFin tools and come back as a final narrated answer.
               </p>
             </section>
           </>

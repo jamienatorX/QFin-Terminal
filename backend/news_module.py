@@ -137,9 +137,9 @@ async def generate_news(category: str, topic: Optional[str] = None) -> Dict[str,
         candidates = []
     if not qwen_is_configured():
         return news_from_candidates(category, candidates)
-    model = os.getenv("DASHSCOPE_NEWS_MODEL", "qwen-plus")
+    model = os.getenv("AI_PROVIDER_NEWS_MODEL") or os.getenv("DASHSCOPE_NEWS_MODEL", "glm-5.2")
     if "thinking" in model.lower():
-        model = "qwen-plus"
+        model = "glm-5.2"
     user = {"category": category, "topic": topic, "generated_at": datetime.now(timezone.utc).isoformat(), "candidate_articles": candidates[:25], "instruction": "Generate the top 5 news items. Return only valid JSON matching the schema. Keep every item relevant to the requested topic when one is supplied."}
     try:
         response = await asyncio.wait_for(
@@ -156,6 +156,6 @@ async def generate_news(category: str, topic: Optional[str] = None) -> Dict[str,
         return validate_news(parsed, category)
     except (QwenClientError, KeyError, IndexError, json.JSONDecodeError, ValueError, asyncio.TimeoutError):
         if candidates:
-            return news_from_candidates(category, candidates, warning="qwen_parse_failure")
+            return news_from_candidates(category, candidates, warning="ai_parse_failure")
         return fallback_news(category, candidates, parse_failure=True)
 

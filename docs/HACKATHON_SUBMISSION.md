@@ -1,25 +1,28 @@
-# QFin Terminal Hackathon Submission
+# QFin Terminal OpenAI Build Week Submission
+
+## Category
+
+Education
 
 ## Elevator Pitch
 
-QFin Terminal is an AI finance command center that turns annual reports, spreadsheets, charts, and market questions into clear beginner-friendly insights using Qwen Cloud-compatible AI.
+QFin Terminal is an AI finance learning terminal that turns annual reports, spreadsheets, market news, community ideas, and trading models into clear beginner-friendly explanations.
 
 ## Built With
 
-- Qwen Cloud
-- DashScope
-- Qwen VL
-- GLM
+- Codex
+- GPT-5.6
+- GLM 5.2
+- GLM 5.1
 - React
 - TypeScript
 - Vite
 - Python
 - FastAPI
+- Render
+- Vercel
 - Supabase
 - PostgreSQL
-- Alibaba Cloud
-- Render
-- GitHub
 - Financial Data APIs
 - PDF Analysis
 - Excel Analysis
@@ -28,49 +31,51 @@ QFin Terminal is an AI finance command center that turns annual reports, spreads
 - Document AI
 - AI Chatbot
 - Community Forum
+- Reports & Watchlist
+- Model Builder
 - Stock Research
-- Tailwind CSS
+- Tailwind-style CSS
 - REST API
 
-## Recommended Track
+## Short Submission Answer
 
-Track 4: Autopilot Agent
-
-QFin fits this track because it automates a real financial research workflow: a user can ask a question, upload financial material, receive AI-assisted analysis, compare market data, and publish or discuss ideas with the community.
+I am building QFin Terminal for the Education category. QFin is an AI finance learning platform built with Codex and GPT-5.6 that helps users understand companies, annual reports, spreadsheets, market news, and trading models through chat, file analysis, community discussion, reports/watchlists, and an interactive model builder.
 
 ## About The Project
 
 ### Inspiration
 
-I have always wanted to learn finance from scratch, but most finance platforms on the internet feel too complex for beginners. They often assume users already understand financial statements, valuation, ratios, markets, and investing language.
+I have always wanted to learn finance from scratch, but many finance platforms feel too complex for beginners. They often assume users already understand financial statements, valuation, ratios, markets, and investing language.
 
-That inspired me to build QFin Terminal: an AI chatbot made specifically for finance, combined with a community forum where users can ask questions, upload financial documents, share ideas, and learn together.
+That inspired me to build QFin Terminal: an AI finance learning workspace where users can ask questions, upload documents, browse market news by category, discuss finance ideas, and learn from community trading models.
 
 ### What it does
 
 QFin Terminal is an AI-powered finance workspace. Users can chat with a finance-focused assistant, ask questions about companies, compare stocks, and upload files such as PDFs, Excel files, CSV files, documents, and images for analysis.
 
-The chatbot can summarize annual reports, explain financial statements, identify risks, compare companies, and turn complicated finance data into beginner-friendly explanations. QFin also includes a community area where users can post finance discussions, comment on threads, share model ideas, and publish builder models into a shared gallery.
+The chatbot can summarize annual reports, explain financial statements, identify risks, compare companies, and turn complicated finance data into beginner-friendly explanations.
 
-QFin also includes a news section with multiple finance categories, so users can learn through the market topics they already care about, such as crypto, stocks, bonds, ETFs, and other asset classes. Instead of forcing every user through the same finance path, QFin lets each person explore the market from their own interest area.
+QFin also includes a news section with multiple finance categories, so users can learn through the market topics they already care about, such as crypto, stocks, bonds, ETFs, and other asset classes. Instead of forcing everyone through the same finance path, QFin lets each person explore markets from their own interest area.
 
-The models section lets users learn from trading and research models shared by other users. A beginner can browse model cards, study how other people think about market strategy, and reuse or adapt those ideas. The builder section then lets users create their own finance model directly inside the website and deploy it immediately into the QFin experience. For example, a user can build a Monte Carlo trading model that simulates many possible price paths, estimates return ranges, and helps explain why risk and probability matter more than one single prediction.
+The community section lets users post finance discussions, comment on threads, and learn with other users. The model gallery lets users study trading and research models shared by the community. The builder section lets users create their own finance model directly inside the website and run it privately or publish it to the shared gallery.
 
-The goal is to make financial research feel less intimidating, more interactive, and more useful for people who are still learning.
+For example, a user can build a Monte Carlo trading model that simulates many possible price paths, estimates return ranges, and teaches why risk and probability matter more than one single prediction.
+
+Reports & Watchlist gives users a private shelf where they can save AI conversations, watchlist topics, private models, and private model runs. It does not have to be only stocks: users can save sectors, crypto ideas, macro themes, bond topics, strategy notes, or anything they want to revisit.
 
 ### How we built it
 
-QFin Terminal is built as a full-stack web application. The frontend is built with React, TypeScript, and Vite. The backend is built with Python and FastAPI. Supabase and PostgreSQL power persistent community features, saved models, reports, and discussion data.
+QFin Terminal is a full-stack web application. The frontend is built with React, TypeScript, and Vite, deployed on Vercel. The backend is built with Python and FastAPI, deployed on Render. Supabase and PostgreSQL power persistent community features, saved models, reports, watchlists, and discussion data.
 
-The AI layer connects to Qwen Cloud-compatible APIs through DashScope. The backend routes different tasks to different models: quick questions can use faster text models, deeper finance analysis can use stronger reasoning models, and uploaded screenshots or chart images can use a vision model.
+The AI layer uses a provider-compatible backend client with GLM 5.2 for deeper analysis and GLM 5.1 for faster fallback responses. QFin keeps private keys on the backend and uses route-specific logic so different tasks can be handled differently: chat, finance analysis, news, document upload analysis, community models, and builder runs.
 
-For the Alibaba Cloud version, the FastAPI backend can be deployed to Alibaba Cloud so the project demonstrates Alibaba Cloud infrastructure in addition to Qwen Cloud model usage. The backend keeps all private keys server-side, while the frontend only talks to the public API endpoint.
+Codex with GPT-5.6 accelerated the project by helping design the architecture, implement backend routes, improve file upload handling, add forum comments, build the Reports & Watchlist feature, harden security, fix deployment failures, test model routing, and iterate on the submission/video materials.
 
 ### What we learned
 
-We learned that a useful AI finance product needs more than a chat box. It needs file ingestion, reliable model routing, market data, community persistence, security hardening, and a user experience that makes finance feel approachable.
+We learned that a useful AI finance product needs more than a chat box. It needs file ingestion, reliable model routing, market data, community persistence, saved research, security hardening, and a user experience that makes finance feel approachable.
 
-We also learned how important fallback design is. Model quotas, cloud configuration, and file formats can all fail in different ways, so QFin is designed to route requests, parse files safely, and keep the user focused on the finance question instead of the infrastructure.
+We also learned how important fallback design is. Model quotas, cloud configuration, and file formats can fail in different ways, so QFin is designed to route requests, parse files safely, and keep the user focused on learning finance instead of debugging infrastructure.
 
 ### What's next for QFin Terminal
 
@@ -85,54 +90,39 @@ Long term, QFin Terminal can become a complete AI finance copilot for learning, 
 ```mermaid
 flowchart LR
     user["User / Student Investor"]
-    browser["QFin Web App<br/>React + TypeScript + Vite"]
-    api["QFin API Backend<br/>FastAPI on Alibaba Cloud"]
-    router["AI Task Router<br/>finance, upload, vision, news, models"]
-    qwen["Qwen Cloud / DashScope<br/>LLM + Vision Models"]
+    browser["QFin Web App<br/>React + TypeScript + Vite on Vercel"]
+    api["QFin API Backend<br/>FastAPI on Render"]
+    router["AI Task Router<br/>chat, upload, news, models, reports"]
+    ai["AI Provider<br/>GLM 5.2 + GLM 5.1"]
     parser["Document Ingestion<br/>PDF, Excel, CSV, DOCX, Images"]
     market["Financial Data APIs<br/>prices, statements, news"]
     news["News Categories<br/>crypto, stocks, bonds, ETFs, other"]
     models["Model Gallery + Builder<br/>shared models, private saves, publish flow"]
+    shelf["Reports & Watchlist<br/>saved chats, topics, private runs"]
     db["Supabase Postgres<br/>threads, comments, reports, models"]
-    storage["Private Server Env<br/>API keys never exposed to browser"]
+    secrets["Render Env Vars<br/>private keys stay server-side"]
 
     user --> browser
     browser --> api
     api --> router
     api --> parser
-    router --> qwen
+    router --> ai
     api --> market
     api --> news
     api --> models
+    api --> shelf
     api --> db
-    api --> storage
+    api --> secrets
     parser --> router
-    qwen --> api
+    ai --> api
     market --> api
     news --> browser
     models --> db
+    shelf --> browser
     db --> api
     api --> browser
     browser --> user
 ```
-
-## Alibaba Cloud Backend Migration Plan
-
-The current backend is a Python FastAPI service and can be moved from Render to Alibaba Cloud with minimal application changes.
-
-Recommended first deployment path:
-
-1. Deploy the FastAPI backend to Alibaba Cloud ECS or a container-based Alibaba Cloud service.
-2. Set the backend environment variables in Alibaba Cloud, including `DASHSCOPE_API_KEY`, `DASHSCOPE_BASE_URL`, model names, Supabase keys, and market data keys.
-3. Point the frontend environment variable `VITE_API_BASE_URL` to the Alibaba Cloud backend URL.
-4. Confirm `/health` returns `qwen_configured: true` and `supabase_configured: true`.
-5. Use the Alibaba-hosted backend URL as proof of Alibaba Cloud deployment in the hackathon submission.
-
-Proof file candidates for judges:
-
-- `backend/qwen_client.py`, which shows Qwen Cloud / DashScope model calls.
-- `backend/main.py`, which exposes the FastAPI backend and AI/file/community routes.
-- A future Alibaba deployment file such as `alibaba-cloud.md`, `Dockerfile`, or deployment screenshot once the cloud service is live.
 
 ## Creative Pitch Video Script With Recording Plan
 
@@ -159,18 +149,18 @@ What to record:
 
 Voiceover:
 
-> QFin Terminal is an AI finance command center. You can ask it about a company, upload financial documents, compare stocks, or turn complicated market data into plain English. It is not trying to replace learning finance. It is trying to make learning finance possible.
+> QFin Terminal is an AI finance learning command center. You can ask it about a company, upload financial documents, compare stocks, follow market news, save research, or build a trading model. It is not trying to replace learning finance. It is trying to make learning finance possible.
 
 ### Scene 3: Ask A Finance Question
 
 What to record:
 
-- Type a simple prompt, for example: "Explain Apple's financial health like I am new to finance."
+- Type: "Explain Apple's financial health like I am new to finance."
 - Show the AI response appearing.
 
 Voiceover:
 
-> Instead of searching through ten tabs, users can start with one simple question. QFin reads the request, routes it through the backend, calls Qwen Cloud-compatible models, and brings back a focused finance explanation.
+> Instead of searching through ten tabs, users can start with one simple question. QFin reads the request, routes it through the backend, gathers finance context, and brings back a clear explanation.
 
 ### Scene 4: Upload A Document
 
@@ -182,31 +172,31 @@ What to record:
 
 Voiceover:
 
-> The most important finance information is often trapped inside files: annual reports, spreadsheets, CSV exports, and screenshots. QFin can bring those files into the conversation, so users can ask questions directly against the material they are studying.
+> The most important finance information is often trapped inside files: annual reports, spreadsheets, CSV exports, and screenshots. QFin brings those files into the conversation, so users can ask questions directly against the material they are studying.
 
 ### Scene 5: News Learning Paths
 
 What to record:
 
 - Open the Community tab.
-- Click through the news categories, for example Crypto, Stocks, Bonds, ETFs, and Other.
-- Show that each category has its own market learning feed.
+- Click through Crypto, Stocks, Bonds, ETFs, and Other.
+- Show each category’s market learning feed.
 
 Voiceover:
 
-> Not everyone enters finance from the same door. Some people start with crypto, some with stocks, some with bonds, and some just want to understand ETFs. QFin has a news section with multiple categories, so users can learn through the market stories they already care about. The app becomes less like a textbook and more like a guided map of the market.
+> Not everyone enters finance from the same door. Some people start with crypto, some with stocks, some with bonds, and some just want to understand ETFs. QFin has category-based news so users can learn through the market stories they already care about.
 
 ### Scene 6: Community Threads
 
 What to record:
 
 - Show forum threads and comments.
-- If possible, create a short thread like "What ratio should beginners learn first?"
-- Show another user comment or the comment area.
+- Create or open a thread like "What ratio should beginners learn first?"
+- Show the comment box.
 
 Voiceover:
 
-> Finance is easier when people learn together. QFin includes community threads where users can post ideas, ask beginner questions, discuss market news, and comment on each other's posts. It turns finance research from a lonely tab-hopping session into a shared learning loop.
+> Finance is easier when people learn together. QFin includes community threads where users can post ideas, ask beginner questions, discuss market news, and comment on each other's posts.
 
 ### Scene 7: Model Gallery
 
@@ -218,33 +208,45 @@ What to record:
 
 Voiceover:
 
-> QFin also has a model gallery. This is where users can learn from trading models and research models created by other people. A beginner can study how another user thinks about a strategy, what data they use, what risk controls matter, and how the model might be adapted for their own learning.
+> QFin also has a model gallery. This is where users can learn from trading models and research models created by other people. A beginner can study how another user thinks about a strategy, what data they use, what risk controls matter, and how the model might be adapted.
 
 ### Scene 8: Builder Studio
 
 What to record:
 
 - Open the Builder section.
-- Show a model title like "Monte Carlo Simulator - GBM Paths."
-- Show fields for ticker, notes, code, and publish/save actions.
-- If possible, run or preview the model card.
+- Show "Monte Carlo Simulator - GBM Paths."
+- Show ticker, notes, code, Save privately, Publish, and Run privately.
+- Run or preview the model card.
 
 Voiceover:
 
-> The builder is where QFin becomes more than a reading tool. Users can type and deploy their own model directly inside the website. For example, a Monte Carlo trading model can simulate thousands of possible price paths, estimate the range of potential outcomes, and show why finance is not about guessing one perfect future. It is about understanding probability, risk, and decision-making under uncertainty.
+> The builder is where QFin becomes more than a reading tool. Users can type and deploy their own model directly inside the website. A Monte Carlo trading model can simulate thousands of possible price paths and show why finance is not about guessing one perfect future. It is about understanding probability, risk, and decision-making under uncertainty.
 
-### Scene 9: Architecture
+### Scene 9: Reports & Watchlist
+
+What to record:
+
+- Click Reports & Watchlist.
+- Add a topic that is not a stock, like "AI chips" or "10-year Treasury yields."
+- Show saved conversations or private model runs.
+
+Voiceover:
+
+> QFin also gives users a private research shelf. They can save conversations, watchlist topics, private model drafts, and private model runs. The watchlist does not have to be only stocks. It can be any company, sector, macro theme, crypto idea, or trading strategy the user wants to follow.
+
+### Scene 10: Codex + Architecture
 
 What to record:
 
 - Show the architecture diagram from this document or create a simple slide from it.
-- Highlight frontend, backend, Qwen Cloud, Alibaba Cloud, Supabase, financial APIs, news categories, and model builder.
+- Highlight Codex, React/Vercel, FastAPI/Render, GLM, Supabase, financial APIs, news, model builder, and reports.
 
 Voiceover:
 
-> Under the hood, QFin uses a React frontend, a FastAPI backend, Qwen Cloud-compatible AI models through DashScope, Supabase Postgres for persistence, and financial data APIs for market context. The backend powers chat, file analysis, news categories, community threads, model publishing, and the builder workflow while keeping private keys safely server-side.
+> QFin was built with Codex and GPT-5.6. Codex helped build the backend routes, fix deployment issues, improve file uploads, add comments, create Reports & Watchlist, harden the API, and iterate on the product design. Under the hood, QFin uses a React frontend on Vercel, a FastAPI backend on Render, Supabase Postgres, financial data APIs, and GLM models for AI responses.
 
-### Scene 10: Future Vision
+### Scene 11: Future Vision
 
 What to record:
 
@@ -255,7 +257,7 @@ Voiceover:
 
 > Next, QFin will move from explaining markets to helping users act smarter inside them. We want to add best-price execution across connected exchanges, plus real-time trading signals for global markets. The long-term vision is simple: one AI terminal where people can learn, research, discuss, and make better financial decisions.
 
-### Scene 11: Closing Line
+### Scene 12: Closing Line
 
 What to record:
 
@@ -275,18 +277,18 @@ What to record:
 - 10 seconds file upload analysis.
 - 10 seconds news categories.
 - 10 seconds model gallery or builder.
-- 10 seconds architecture or future vision.
+- 10 seconds Reports & Watchlist or architecture.
 
 Voiceover:
 
-> QFin Terminal is an AI finance command center for people who want to learn investing without getting buried in complexity.
+> QFin Terminal is an AI finance learning command center for people who want to understand investing without getting buried in complexity.
 >
-> Users can ask finance questions, upload annual reports, spreadsheets, CSV files, documents, or screenshots, and get beginner-friendly explanations powered by Qwen Cloud-compatible AI.
+> Users can ask finance questions, upload annual reports, spreadsheets, CSV files, documents, or screenshots, and get beginner-friendly explanations.
 >
 > QFin also includes category-based market news, so users can learn from the topics they actually care about, whether that is crypto, stocks, bonds, ETFs, or other asset classes.
 >
-> The model gallery lets users learn from trading models shared by the community, while the builder lets users create and deploy their own models directly on the website. A Monte Carlo model, for example, can simulate many possible market paths and help users understand probability and risk.
+> The model gallery lets users learn from trading models shared by the community, while the builder lets users create and deploy their own models directly on the website.
 >
-> The app is built with React, TypeScript, FastAPI, Supabase, Alibaba Cloud-ready backend deployment, and DashScope model routing for text and vision analysis.
+> Reports & Watchlist lets users save conversations, topics, private model drafts, and private model runs.
 >
-> QFin turns finance from a wall of numbers into a conversation: ask, upload, understand, and learn faster.
+> Built with Codex and GPT-5.6, QFin uses React, TypeScript, FastAPI, Render, Vercel, Supabase, financial data APIs, and GLM models to turn finance from a wall of numbers into a conversation.

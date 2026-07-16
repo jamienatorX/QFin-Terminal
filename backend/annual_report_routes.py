@@ -226,7 +226,7 @@ def candidate_from_url(
     }
 
 
-def normalize_report_candidate(candidate: Dict[str, Any], default_year: int, provider: str = "qwen_search") -> Optional[Dict[str, Any]]:
+def normalize_report_candidate(candidate: Dict[str, Any], default_year: int, provider: str = "ai_search") -> Optional[Dict[str, Any]]:
     if not isinstance(candidate, dict):
         return None
     url = clean_candidate_url(str(candidate.get("url") or ""))
@@ -488,7 +488,7 @@ def annual_report_supabase_row(symbol: str, company_name: str, candidate: Dict[s
         "confidence": candidate.get("confidence"),
         "status": "validated" if candidate.get("is_valid") else "candidate",
         "reason": candidate.get("reason"),
-        "provider": candidate.get("provider") or "qwen_search",
+        "provider": candidate.get("provider") or "ai_search",
         "candidate_rank": rank,
         "http_status": candidate.get("http_status"),
         "mime_type": candidate.get("mime_type"),
@@ -572,9 +572,9 @@ async def search_annual_report_source(symbol: str, payload: AnnualReportSearchRe
             if parsed:
                 qwen_payload.update(parsed)
         except Exception as exc:
-            qwen_error = f"Qwen search planning failed: {type(exc).__name__}"
+            qwen_error = f"AI search planning failed: {type(exc).__name__}"
     else:
-        qwen_error = "Qwen is not configured. Returning deterministic source discovery and search queries only."
+        qwen_error = "AI provider is not configured. Returning deterministic source discovery and search queries only."
 
     search_queries = [str(item) for item in (qwen_payload.get("search_queries") or []) if clean_text(str(item))]
     if not search_queries:
@@ -590,7 +590,7 @@ async def search_annual_report_source(symbol: str, payload: AnnualReportSearchRe
 
     qwen_candidates: List[Dict[str, Any]] = []
     for item in qwen_payload.get("candidates") or []:
-        normalized = normalize_report_candidate(item, report_year, provider="qwen_search")
+        normalized = normalize_report_candidate(item, report_year, provider="ai_search")
         if normalized:
             qwen_candidates.append(normalized)
 
@@ -646,10 +646,10 @@ async def search_annual_report_source(symbol: str, payload: AnnualReportSearchRe
         "candidates": validated,
         "search_queries": search_queries,
         "recommended_query": qwen_payload.get("recommended_query"),
-        "qwen_status": qwen_payload.get("status"),
-        "qwen_error": qwen_error,
+        "ai_status": qwen_payload.get("status"),
+        "ai_error": qwen_error,
         "storage": storage,
-        "note": "This endpoint searches official investor-relations pages, ranks candidates with Qwen when available, validates URLs, and saves source metadata. It does not crawl whole sites or extract financial tables.",
+        "note": "This endpoint searches official investor-relations pages, ranks candidates with the AI provider when available, validates URLs, and saves source metadata. It does not crawl whole sites or extract financial tables.",
     }
 
 
@@ -878,12 +878,12 @@ def build_bank_kpi_row(
         "period_type": "annual",
         "period_end_date": period_end_date,
         "currency": clean_text(str(extraction.get("currency") or "IDR"))[:10],
-        "source": "annual_report_qwen",
+        "source": "annual_report_ai",
         "source_confidence": confidence,
         "provider_payload": provider_payload,
         "retrieved_at": utc_now(),
         "updated_at": utc_now(),
-        "note": "Bank KPIs extracted from annual report source by Qwen and saved for warehouse use.",
+        "note": "Bank KPIs extracted from annual report source by the AI provider and saved for warehouse use.",
         **cleaned,
     }
     row["return_on_assets"] = cleaned.get("roa")
@@ -1042,13 +1042,13 @@ async def extract_annual_report_kpis(symbol: str, payload: AnnualReportExtractRe
 
     if not qwen_is_configured():
         return {
-            "status": "qwen_not_configured",
+            "status": "ai_not_configured",
             "symbol": resolved,
             "company_name": company_name,
             "report_year": report_year,
             "source": source,
             "load_result": {key: value for key, value in loaded.items() if key != "text"},
-            "message": "DASHSCOPE_API_KEY is required for annual-report KPI extraction.",
+            "message": "AI_PROVIDER_API_KEY is required for annual-report KPI extraction.",
         }
 
     qwen_text = await ask_qwen(annual_report_extract_prompt(resolved, company_name, report_year, source, report_text))
@@ -1061,7 +1061,7 @@ async def extract_annual_report_kpis(symbol: str, payload: AnnualReportExtractRe
             "report_year": report_year,
             "source": source,
             "load_result": {key: value for key, value in loaded.items() if key != "text"},
-            "message": "Qwen did not return parseable extraction JSON.",
+            "message": "The AI provider did not return parseable extraction JSON.",
         }
 
     row = build_bank_kpi_row(resolved, provider_symbol, company_name, report_year, source, extraction)
@@ -1090,7 +1090,7 @@ async def extract_annual_report_kpis(symbol: str, payload: AnnualReportExtractRe
         "evidence": extraction.get("evidence") or [],
         "warnings": extraction.get("warnings") or [],
         "storage": storage,
-        "note": "Extracted bank KPIs are saved to qfin_bank_kpis with source='annual_report_qwen' so normal company analysis can reuse them.",
+        "note": "Extracted bank KPIs are saved to qfin_bank_kpis with source='annual_report_ai' so normal company analysis can reuse them.",
     }
 
 

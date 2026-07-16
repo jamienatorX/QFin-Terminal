@@ -8,7 +8,7 @@ The safer architecture is:
 2. Add a curated registry of useful APIs by domain.
 3. Automatically call only stable, no-key APIs for general questions.
 4. Keep API-key services explicit and environment-variable gated.
-5. Let Qwen narrate results after tools return facts.
+5. Let the AI model narrate results after tools return facts.
 
 ## Active No-Key Tools
 
@@ -28,7 +28,7 @@ The safer architecture is:
 
 ## Runtime Behavior
 
-For general non-finance questions, `/agent/chat` now tries lightweight public-data enrichment first. If a public API returns facts, Qwen receives those facts and writes a normal answer. If no public facts are found, Qwen answers normally using its model knowledge and runtime date context.
+For general non-finance questions, `/agent/chat` now tries lightweight public-data enrichment first. If a public API returns facts, the AI model receives those facts and writes a normal answer. If no public facts are found, the model answers normally using its model knowledge and runtime date context.
 
 For finance questions, QFin still uses the finance-specific route first. That keeps company analysis, comparisons, news, and model-builder behavior disciplined and avoids random API noise.
 

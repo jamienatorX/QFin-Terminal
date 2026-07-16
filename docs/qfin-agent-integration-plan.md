@@ -202,7 +202,7 @@ User Request
 ### Phase 1
 
 1. Introduce typed `EvidencePacket` and `AgentResult` models.
-2. Add a router layer in the backend before the current Qwen call.
+2. Add a router layer in the backend before the current AI model call.
 3. Add live headlines as a first-class tool.
 4. Add a risk-check pass before final response generation.
 5. Persist analysis sessions and evidence summaries in Supabase.

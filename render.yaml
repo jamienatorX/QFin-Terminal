@@ -10,23 +10,23 @@ services:
         value: production
       - key: ADMIN_API_KEY
         sync: false
-      - key: DASHSCOPE_API_KEY
+      - key: AI_PROVIDER_API_KEY
         sync: false
-      - key: DASHSCOPE_BASE_URL
+      - key: AI_PROVIDER_BASE_URL
         value: https://dashscope-intl.aliyuncs.com/compatible-mode/v1
-      - key: DASHSCOPE_MODEL_DEEP
-        value: qwen3.7-max
-      - key: DASHSCOPE_MODEL_FAST
-        value: qwen3.7-plus
-      - key: DASHSCOPE_MODEL_FLASH
-        value: qwen3.6-flash
-      - key: DASHSCOPE_MODEL_VISION
-        value: qwen3-vl-plus
-      - key: DASHSCOPE_NEWS_MODEL
-        value: qwen3.7-plus
-      - key: DASHSCOPE_TIMEOUT_SECONDS
+      - key: AI_PROVIDER_MODEL_DEEP
+        value: glm-5.2
+      - key: AI_PROVIDER_MODEL_FAST
+        value: glm-5.2
+      - key: AI_PROVIDER_MODEL_FLASH
+        value: glm-5.1
+      - key: AI_PROVIDER_MODEL_VISION
+        value: glm-5.2
+      - key: AI_PROVIDER_NEWS_MODEL
+        value: glm-5.2
+      - key: AI_PROVIDER_TIMEOUT_SECONDS
         value: "45"
-      - key: DASHSCOPE_TOTAL_TIMEOUT_SECONDS
+      - key: AI_PROVIDER_TOTAL_TIMEOUT_SECONDS
         value: "75"
       - key: FINANCIAL_DATA_TIMEOUT_SECONDS
         value: "18"

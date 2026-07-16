@@ -329,7 +329,7 @@ class QwenModelRoutingTests(unittest.TestCase):
         self.assertEqual(qwen_client._detect_task_type(messages), "general")
         self.assertEqual(qwen_client._model_chain("general")[0], "glm-5.1")
 
-    def test_default_model_profile_uses_active_qwen_models(self):
+    def test_default_model_profile_uses_active_glm_models(self):
         with patch.dict(
             qwen_client.os.environ,
             {
@@ -347,7 +347,7 @@ class QwenModelRoutingTests(unittest.TestCase):
         self.assertEqual(profile["fast"], "glm-5.2")
         self.assertEqual(profile["deep"], "glm-5.2")
         self.assertEqual(profile["flash"], "glm-5.1")
-        self.assertEqual(profile["vision"], "qwen-vl-plus-latest")
+        self.assertEqual(profile["vision"], "glm-5.2")
         self.assertEqual(profile["news"], "glm-5.2")
 
     def test_stale_render_model_overrides_are_replaced(self):

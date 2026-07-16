@@ -22,7 +22,7 @@ Design mood:
 - Professional
 - High-contrast
 - Data-heavy but clean
-- Qwen/Alibaba future-finance feeling
+- AI finance-terminal feeling
 - Neon blue highlights, not too many colors
 - Card-based layout with rounded corners
 - Avoid childish icons or colorful gradients
@@ -154,7 +154,7 @@ Variants:
 
 Example labels:
 - QFin Online
-- Qwen Connected
+- AI Connected
 - News Engine Active
 - Data Delayed
 - Supabase Connected

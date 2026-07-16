@@ -64,7 +64,7 @@ async def fetch_fmp_bundle(symbol: str, limit: int = 5) -> Dict[str, Any]:
     """
     Fetch provider data quickly. Annual-report discovery is intentionally not
     performed here because /market-data must stay fast. Annual reports should be
-    resolved by a separate Qwen-assisted workflow and then written back to the
+    resolved by a separate AI-assisted workflow and then written back to the
     warehouse/manual override layer.
     """
     requested_symbol = _clean_symbol(symbol)
@@ -117,13 +117,13 @@ async def fetch_fmp_bundle(symbol: str, limit: int = 5) -> Dict[str, Any]:
     profile = _first_list_row(endpoint_payloads.get("profile"))
     if profile:
         endpoint_payloads["annual_report"] = {
-            "status": "deferred_to_qwen_search",
+            "status": "deferred_to_ai_search",
             "symbol": requested_symbol,
             "company_name": profile.get("companyName") or profile.get("name") or requested_symbol,
             "checked_at": utc_now(),
-            "note": "Annual report discovery is handled by a separate Qwen-assisted workflow, not the fast market-data request.",
+            "note": "Annual report discovery is handled by a separate AI-assisted workflow, not the fast market-data request.",
         }
-        warnings.append("annual_report: deferred_to_qwen_search")
+        warnings.append("annual_report: deferred_to_ai_search")
 
     status = "success" if resolved_any else "provider_gap"
     return {
@@ -379,7 +379,7 @@ def calculate_bank_kpi_row(symbol: str, bundle: Dict[str, Any]) -> Optional[Dict
         },
         "source": "fmp",
         "source_confidence": SOURCE_CONFIDENCE,
-        "note": "FMP coverage for bank-specific KPIs is partial. Annual-report discovery is deferred to a separate Qwen-assisted workflow.",
+        "note": "FMP coverage for bank-specific KPIs is partial. Annual-report discovery is deferred to a separate AI-assisted workflow.",
         "retrieved_at": bundle.get("retrieved_at") or utc_now(),
         "updated_at": utc_now(),
     }
