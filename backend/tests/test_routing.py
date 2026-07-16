@@ -47,7 +47,7 @@ class AgentRoutingTests(unittest.TestCase):
 
         content = main.build_company_facts_fallback("Analyze TEST", facts, "unused")
 
-        self.assertIn("**Trend and risk signals**", content)
+        self.assertIn("**Key risks and watch items**", content)
         self.assertIn("Growth: revenue growth of 25.00% is strong", content)
         self.assertIn("Cash conversion: free cash flow equals 80.0%", content)
         self.assertIn("Balance-sheet risk: debt/equity of 15.00% indicates low", content)
@@ -161,8 +161,8 @@ class AgentRoutingTests(unittest.TestCase):
             },
             "Model fallback used.",
         )
-        self.assertIn("Last price: 200.0", answer)
-        self.assertIn("Gross margin: 46.00%", answer)
+        self.assertIn("| Last price | 200.0 |", answer)
+        self.assertIn("| Gross margin | 46.00% |", answer)
         self.assertNotIn("Unavailable in supplied backend data", answer)
 
     def test_standard_fallbacks_hide_methodology_and_source_boilerplate(self):
@@ -262,20 +262,22 @@ class AgentRoutingTests(unittest.TestCase):
 
 
 class FinanceEnrichmentTests(unittest.IsolatedAsyncioTestCase):
-    async def test_standard_finance_concept_stays_on_the_instant_grounded_path(self):
+    async def test_standard_finance_concept_uses_model_first(self):
         with (
             patch("main.qwen_is_configured", return_value=True),
             patch("main.ask_qwen", new=AsyncMock()) as ask_qwen,
         ):
+            ask_qwen.return_value = "## In plain English\n\nWACC is the blended required return."
             answer = await main.build_finance_response(
                 "Explain WACC",
                 {"kind": "finance_concept", "detail": "standard"},
                 {},
             )
 
-        ask_qwen.assert_not_awaited()
+        ask_qwen.assert_awaited_once()
         self.assertIn("WACC", answer)
-    async def test_standard_comparison_skips_optional_narrative_model(self):
+
+    async def test_standard_comparison_uses_model_first(self):
         facts = {
             "AAA": {"market_data": {"forward_pe": "20.00x"}, "financial_metrics": {}},
             "BBB": {"market_data": {"forward_pe": "15.00x"}, "financial_metrics": {}},
@@ -284,13 +286,67 @@ class FinanceEnrichmentTests(unittest.IsolatedAsyncioTestCase):
             patch("main.qwen_is_configured", return_value=True),
             patch("main.ask_qwen", new=AsyncMock()) as ask_qwen,
         ):
+            ask_qwen.return_value = "## Bottom line\n\nBBB has the lower supplied forward P/E."
             answer = await main.build_finance_response(
                 "Compare AAA and BBB",
                 {"kind": "comparison", "tickers": ["AAA", "BBB"], "detail": "standard"},
                 facts,
             )
-        ask_qwen.assert_not_awaited()
-        self.assertIn("Forward P/E", answer)
+        ask_qwen.assert_awaited_once()
+        self.assertIn("BBB", answer)
+
+    def test_finance_answer_normalizer_repairs_glm_heading_drift(self):
+        answer = main.normalize_finance_answer(
+            "**Q**\n**Direct answer** Alibaba has improving cash generation.\n\n**Key risks**\nCompetition remains intense.",
+            "company",
+        )
+        self.assertTrue(answer.startswith("## Investment view"), answer)
+        self.assertIn("## Key risks", answer)
+        self.assertNotIn("**Q**", answer)
+        self.assertNotIn("**Direct answer**", answer)
+
+    def test_finance_answer_normalizer_preserves_words_starting_with_labels(self):
+        quarterly = main.normalize_finance_answer("Quarterly earnings improved.", "company")
+        answering = main.normalize_finance_answer("Answering your question requires two steps.", "finance_concept")
+        investor_qa = main.normalize_finance_answer("## Q&A for investors\n\nWhat changed this quarter?", "company")
+        self.assertTrue(quarterly.endswith("Quarterly earnings improved."))
+        self.assertTrue(answering.endswith("Answering your question requires two steps."))
+        self.assertIn("## Q&A for investors", investor_qa)
+
+    def test_finance_answer_normalizer_handles_markdown_labels_and_methodology(self):
+        answer = main.normalize_finance_answer(
+            "## Q\n\n## Direct answer\nAlibaba is profitable.\n\n## Methodology\nInternal routing details.\n\n## Verdict\nWatch cash flow.",
+            "company",
+        )
+        self.assertTrue(answer.startswith("## Investment view"), answer)
+        self.assertNotIn("Methodology", answer)
+        self.assertIn("## Verdict", answer)
+
+    def test_explicit_methodology_request_preserves_methodology_section(self):
+        content = "## Investment view\n\nAlibaba is profitable.\n\n## Methodology\nUsed supplied financial facts."
+        answer = main.normalize_finance_answer(content, "company", preserve_methodology=True)
+        self.assertIn("## Methodology", answer)
+        self.assertTrue(main.user_requests_methodology("Analyze Alibaba and explain your methodology"))
+
+    async def test_incomplete_provider_response_uses_client_error(self):
+        with patch("main.call_qwen", new=AsyncMock(return_value={"choices": []})):
+            with self.assertRaises(main.QwenClientError):
+                await main.ask_qwen([{"role": "user", "content": "Analyze AAPL"}])
+
+    async def test_comparison_outage_fallback_has_one_bottom_line(self):
+        facts = {
+            "AAA": {"market_data": {"forward_pe": "20.00x"}, "financial_metrics": {}},
+            "BBB": {"market_data": {"forward_pe": "15.00x"}, "financial_metrics": {}},
+        }
+        with patch("main.qwen_is_configured", return_value=False):
+            answer = await main.build_finance_response(
+                "Compare AAA and BBB",
+                {"kind": "comparison", "tickers": ["AAA", "BBB"], "detail": "standard"},
+                facts,
+            )
+        self.assertEqual(answer.count("## Bottom line"), 1)
+        self.assertIn("## Side-by-side", answer)
+        self.assertIn("## Verdict", answer)
 
     async def test_usable_warehouse_is_still_enriched_with_live_market_data(self):
         warehouse = {
@@ -396,11 +452,32 @@ class QwenModelRoutingTests(unittest.TestCase):
         self.assertEqual(qwen_client._detect_task_type(messages), "deep")
 
     def test_standard_tasks_have_shorter_budgets_than_deep_analysis(self):
-        self.assertLessEqual(qwen_client._timeout_seconds("general"), 15)
-        self.assertLessEqual(qwen_client._timeout_seconds("fast"), 10)
-        self.assertLessEqual(qwen_client._total_timeout_seconds("fast"), 15)
-        self.assertLessEqual(qwen_client._total_timeout_seconds("deep"), 35)
-        self.assertGreater(qwen_client._total_timeout_seconds("deep"), qwen_client._total_timeout_seconds("fast"))
+        with patch.dict(qwen_client.os.environ, {}, clear=True):
+            self.assertEqual(qwen_client._timeout_seconds("general"), 30)
+            self.assertEqual(qwen_client._timeout_seconds("fast"), 60)
+            self.assertEqual(qwen_client._total_timeout_seconds("fast"), 120)
+            self.assertEqual(qwen_client._total_timeout_seconds("deep"), 180)
+            self.assertGreater(qwen_client._total_timeout_seconds("deep"), qwen_client._total_timeout_seconds("fast"))
+
+    def test_news_route_uses_news_profile_before_standard_depth(self):
+        messages = main.build_finance_prompt(
+            "What happened in stock markets?",
+            {"kind": "news", "category": "Stocks", "detail": "standard"},
+            {"news": []},
+        )
+        self.assertEqual(qwen_client._detect_task_type(messages), "news")
+
+    def test_timeout_environment_can_expand_within_safe_ceiling(self):
+        with patch.dict(
+            qwen_client.os.environ,
+            {
+                "AI_PROVIDER_TIMEOUT_SECONDS_DEEP": "175",
+                "AI_PROVIDER_TOTAL_TIMEOUT_SECONDS_DEEP": "280",
+            },
+            clear=False,
+        ):
+            self.assertEqual(qwen_client._timeout_seconds("deep"), 175)
+            self.assertEqual(qwen_client._total_timeout_seconds("deep"), 280)
 
     def test_model_quota_error_can_fail_over_but_bad_credentials_cannot(self):
         self.assertFalse(qwen_client._is_terminal_api_status(403))
@@ -410,7 +487,8 @@ class QwenModelRoutingTests(unittest.TestCase):
         serialized = main.serialize_agent_facts({"ticker": "AAPL", "metrics": {"margin": "30%"}})
         self.assertNotIn("\n", serialized)
         self.assertIn('"ticker":"AAPL"', serialized)
-        self.assertEqual(qwen_client._max_tokens("fast"), 700)
+        self.assertEqual(qwen_client._max_tokens("fast"), 6000)
+        self.assertEqual(qwen_client._max_tokens("deep"), 12000)
 
     def test_recent_model_failures_are_cooled_down_per_task(self):
         qwen_client.MODEL_COOLDOWNS.clear()

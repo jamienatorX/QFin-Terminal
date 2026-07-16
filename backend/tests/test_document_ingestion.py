@@ -168,7 +168,8 @@ class AttachmentPromptTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["route"]["kind"], "document_analysis")
         self.assertIn("Revenue increased", result["content"])
         self.assertIn("+20.0%", result["content"])
-        self.assertIn("Analysis depth: standard", ask.await_args.args[0][1]["content"])
+        self.assertIn("Analysis depth: deep", ask.await_args.args[0][1]["content"])
+        self.assertIn("## Executive summary", result["content"])
 
     async def test_image_attachment_builds_multimodal_message(self):
         attachment = parse_document_bytes("chart.png", "image/png", b"\x89PNG\r\n\x1a\nimage")
@@ -178,7 +179,7 @@ class AttachmentPromptTests(unittest.IsolatedAsyncioTestCase):
         ):
             result = await main.generate_attachment_reply("Analyze this chart", attachment)
 
-        self.assertEqual(result["content"], "The chart shows improving margins.")
+        self.assertEqual(result["content"], "## Executive summary\n\nThe chart shows improving margins.")
         messages = ask.await_args.args[0]
         user_content = messages[1]["content"]
         self.assertIsInstance(user_content, list)

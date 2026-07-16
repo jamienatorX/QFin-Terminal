@@ -24,10 +24,30 @@ services:
         value: glm-5.2
       - key: AI_PROVIDER_NEWS_MODEL
         value: glm-5.2
-      - key: AI_PROVIDER_TIMEOUT_SECONDS
-        value: "45"
-      - key: AI_PROVIDER_TOTAL_TIMEOUT_SECONDS
+      - key: AI_PROVIDER_MAX_TOKENS_FAST
+        value: "6000"
+      - key: AI_PROVIDER_MAX_TOKENS_DEEP
+        value: "12000"
+      - key: AI_PROVIDER_MAX_TOKENS_NEWS
+        value: "5000"
+      - key: AI_PROVIDER_MAX_TOKENS_VISION
+        value: "10000"
+      - key: AI_PROVIDER_TIMEOUT_SECONDS_FAST
+        value: "60"
+      - key: AI_PROVIDER_TIMEOUT_SECONDS_DEEP
+        value: "150"
+      - key: AI_PROVIDER_TIMEOUT_SECONDS_NEWS
         value: "75"
+      - key: AI_PROVIDER_TIMEOUT_SECONDS_VISION
+        value: "150"
+      - key: AI_PROVIDER_TOTAL_TIMEOUT_SECONDS_FAST
+        value: "120"
+      - key: AI_PROVIDER_TOTAL_TIMEOUT_SECONDS_DEEP
+        value: "180"
+      - key: AI_PROVIDER_TOTAL_TIMEOUT_SECONDS_NEWS
+        value: "150"
+      - key: AI_PROVIDER_TOTAL_TIMEOUT_SECONDS_VISION
+        value: "180"
       - key: FINANCIAL_DATA_TIMEOUT_SECONDS
         value: "18"
       - key: ALLOWED_ORIGINS

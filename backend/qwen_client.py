@@ -34,27 +34,37 @@ def qwen_is_configured() -> bool:
 
 
 def _timeout_seconds(task_type: str = "fast") -> float:
-    defaults = {"general": 12.0, "fast": 10.0, "news": 15.0, "vision": 30.0, "deep": 20.0}
+    defaults = {"general": 30.0, "fast": 60.0, "news": 75.0, "vision": 150.0, "deep": 150.0}
     task_env = os.getenv(f"AI_PROVIDER_TIMEOUT_SECONDS_{task_type.upper()}") or os.getenv(f"DASHSCOPE_TIMEOUT_SECONDS_{task_type.upper()}")
     try:
-        configured = float(task_env or os.getenv("AI_PROVIDER_TIMEOUT_SECONDS") or os.getenv("DASHSCOPE_TIMEOUT_SECONDS", "45"))
-        return max(5.0, min(configured, defaults.get(task_type, 20.0)))
+        configured = float(
+            task_env
+            or os.getenv("AI_PROVIDER_TIMEOUT_SECONDS")
+            or os.getenv("DASHSCOPE_TIMEOUT_SECONDS")
+            or defaults.get(task_type, 60.0)
+        )
+        return max(5.0, min(configured, 180.0))
     except Exception:
         return defaults.get(task_type, 20.0)
 
 
 def _total_timeout_seconds(task_type: str = "fast") -> float:
-    defaults = {"general": 18.0, "fast": 15.0, "news": 25.0, "vision": 50.0, "deep": 35.0}
+    defaults = {"general": 60.0, "fast": 120.0, "news": 150.0, "vision": 180.0, "deep": 180.0}
     task_env = os.getenv(f"AI_PROVIDER_TOTAL_TIMEOUT_SECONDS_{task_type.upper()}") or os.getenv(f"DASHSCOPE_TOTAL_TIMEOUT_SECONDS_{task_type.upper()}")
     try:
-        configured = float(task_env or os.getenv("AI_PROVIDER_TOTAL_TIMEOUT_SECONDS") or os.getenv("DASHSCOPE_TOTAL_TIMEOUT_SECONDS", "75"))
-        return max(10.0, min(configured, defaults.get(task_type, 35.0)))
+        configured = float(
+            task_env
+            or os.getenv("AI_PROVIDER_TOTAL_TIMEOUT_SECONDS")
+            or os.getenv("DASHSCOPE_TOTAL_TIMEOUT_SECONDS")
+            or defaults.get(task_type, 120.0)
+        )
+        return max(10.0, min(configured, 300.0))
     except Exception:
         return defaults.get(task_type, 35.0)
 
 
 def _max_tokens(task_type: str) -> int:
-    defaults = {"deep": 2200, "vision": 1600, "news": 1200, "fast": 700, "general": 700}
+    defaults = {"deep": 12000, "vision": 10000, "news": 5000, "fast": 6000, "general": 2500}
     env_name = f"AI_PROVIDER_MAX_TOKENS_{task_type.upper()}"
     legacy_env_name = f"DASHSCOPE_MAX_TOKENS_{task_type.upper()}"
     try:
@@ -132,6 +142,11 @@ def _detect_task_type(messages: List[Dict[str, Any]]) -> str:
     if any(signal in text for signal in vision_signals):
         return "vision"
 
+    # Route metadata must win over generic depth text so news receives its own
+    # model, token, and timeout profile.
+    if "internal route: market news summary" in text or "summarize the five news items" in text:
+        return "news"
+
     # Route metadata is authoritative. Backend facts can contain phrases such
     # as "financial report" that must not promote a standard request to deep.
     if "analysis depth: standard" in text:
@@ -152,12 +167,7 @@ def _detect_task_type(messages: List[Dict[str, Any]]) -> str:
     if any(signal in text for signal in deep_signals):
         return "deep"
 
-    news_signals = [
-        "internal route: market news summary",
-        "summarize the five news items",
-        "headline",
-        "market sentiment",
-    ]
+    news_signals = ["headline", "market sentiment"]
     if any(signal in text for signal in news_signals):
         return "news"
 
