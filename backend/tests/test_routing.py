@@ -53,6 +53,23 @@ class AgentRoutingTests(unittest.TestCase):
         self.assertIn("Balance-sheet risk: debt/equity of 15.00% indicates low", content)
         self.assertIn("Valuation expectation: forward P/E of 20.00x is below trailing P/E", content)
         self.assertNotIn("Coverage note", content)
+        self.assertNotIn("no single metric is a complete investment verdict", content)
+        self.assertNotIn("A stronger investment call would require", content)
+
+    def test_internal_ticker_scope_warning_is_not_shown_in_answer(self):
+        content = "**Investment view**\nAlibaba has improving operating momentum."
+        review = main.AgentRiskReview(
+            status="review",
+            warnings=["Model answer mentioned extra ticker-like symbols outside the requested scope: ALL"],
+            missing_data=[],
+            allowed_tickers=["BABA"],
+        )
+
+        result = main.finalize_agent_content(content, review)
+
+        self.assertEqual(result, content)
+        self.assertNotIn("Caveat", result)
+        self.assertNotIn("extra ticker-like symbols", result)
 
     def test_comparison_fallback_explains_profitability_cash_and_leverage_tradeoffs(self):
         facts = {

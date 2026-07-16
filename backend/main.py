@@ -2756,7 +2756,7 @@ def company_analysis_profile(facts: Dict[str, Any]) -> Dict[str, Any]:
         "market_metrics": STANDARD_MARKET_METRICS,
         "fundamental_metrics": STANDARD_FUNDAMENTAL_METRICS,
         "show_coverage": True,
-        "bottom_line": "Use the valuation, growth, profitability, cash-flow, and leverage measures together; no single metric is a complete investment verdict.",
+        "bottom_line": "",
     }
 
 
@@ -2931,13 +2931,8 @@ def build_company_facts_fallback(query: str, facts: Dict[str, Any], fallback_rea
         )
 
 
-    lines.extend(
-        [
-            "",
-            "**Verdict**",
-            analysis_profile["bottom_line"] + " A stronger investment call would require comparing these figures against multi-year growth, segment margins, free-cash-flow durability, and peers.",
-        ]
-    )
+    if analysis_profile["bottom_line"]:
+        lines.extend(["", "**Verdict**", analysis_profile["bottom_line"]])
     return "\n".join(lines)
 
 
@@ -3660,11 +3655,9 @@ def run_agent_risk_review(route: Dict[str, Any], facts: Any, content: str) -> Ag
 
 def finalize_agent_content(content: str, review: AgentRiskReview, preserve_methodology: bool = False) -> str:
     content = remove_default_methodology(content, preserve_methodology)
-    notes: List[str] = []
-    if review.missing_data:
-        notes.extend(review.missing_data)
-    if review.warnings:
-        notes.extend(review.warnings)
+    # Risk-review warnings are diagnostic signals for server-side session logs.
+    # Only genuine data gaps should be shown to users as answer caveats.
+    notes = list(review.missing_data)
     if not notes:
         return content
     note_block = "\n".join(f"- {note}" for note in notes)
