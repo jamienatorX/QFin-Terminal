@@ -2746,6 +2746,8 @@ def build_company_facts_fallback(query: str, facts: Dict[str, Any], fallback_rea
     ticker = facts.get("ticker") or "Unknown ticker"
     company_name = clean_text(str(facts.get("company_name") or ticker))
     historical_financials = facts.get("historical_financials") or {}
+    market_data = facts.get("market_data") or {}
+    financial_metrics = facts.get("financial_metrics") or {}
 
     analysis_profile = company_analysis_profile(facts)
     market_metrics = analysis_profile["market_metrics"]
@@ -2761,14 +2763,71 @@ def build_company_facts_fallback(query: str, facts: Dict[str, Any], fallback_rea
         fundamental_metrics,
     )
 
-    lines = [
-        "**Direct answer**",
-        f"Here is a fact-grounded financial snapshot for {company_name} ({ticker}), using the latest connected market and fundamental data.",
+    def metric(section: Dict[str, Any], key: str) -> Optional[str]:
+        value = section.get(key)
+        if value in (None, "", [], {}):
+            return None
+        return clean_text(str(value))
+
+    def table_row(label: str, value: Optional[str], interpretation: str) -> Optional[str]:
+        if not value:
+            return None
+        return f"| {label} | {value} | {interpretation} |"
+
+    market_rows = [
+        table_row("Last price", metric(market_data, "last_price"), "Use as current market context, not a standalone valuation signal."),
+        table_row("Market cap", metric(market_data, "market_cap"), "Shows the scale investors currently assign to the equity."),
+        table_row("Enterprise value", metric(market_data, "enterprise_value"), "Useful when comparing operating value across firms with different balance sheets."),
+        table_row("Price/book", metric(market_data, "price_to_book"), "Helpful for asset-heavy or financial businesses; less complete for platform businesses."),
+        table_row("Price/sales", metric(market_data, "price_to_sales"), "Frames how much investors pay for each dollar of revenue."),
+        table_row("Dividend yield", metric(market_data, "dividend_yield"), "Adds income context, but payout durability matters more than headline yield."),
     ]
-    if market_lines:
-        lines.extend(["", "**Market snapshot**", *market_lines])
-    if fundamental_lines:
-        lines.extend(["", "**Fundamentals**", *fundamental_lines])
+    market_rows = [row for row in market_rows if row]
+
+    fundamental_rows = [
+        table_row("Revenue", metric(financial_metrics, "total_revenue"), "Top-line scale; compare against growth and margin direction."),
+        table_row("Gross margin", metric(financial_metrics, "gross_margin"), "Indicates product/service economics before operating costs."),
+        table_row("Operating margin", metric(financial_metrics, "operating_margin"), "Shows how much revenue converts into operating profit."),
+        table_row("Net margin", metric(financial_metrics, "net_margin"), "Captures the final profit after all costs, financing, and tax effects."),
+        table_row("Operating cash flow", metric(financial_metrics, "operating_cashflow"), "A cleaner view of cash generation than accounting profit alone."),
+        table_row("Free cash flow", metric(financial_metrics, "free_cashflow"), "Important for reinvestment capacity, buybacks, dividends, and debt reduction."),
+        table_row("Total debt", metric(financial_metrics, "total_debt"), "Debt load matters most relative to cash flow and cash reserves."),
+        table_row("Cash", metric(financial_metrics, "cash"), "Liquidity cushion for downturns, investments, and shareholder returns."),
+        table_row("Debt/equity", metric(financial_metrics, "debt_to_equity"), "A quick leverage gauge; lower usually means more balance-sheet flexibility."),
+    ]
+    fundamental_rows = [row for row in fundamental_rows if row]
+
+    thesis_bits: List[str] = []
+    revenue = metric(financial_metrics, "total_revenue")
+    operating_margin = metric(financial_metrics, "operating_margin")
+    free_cash_flow = metric(financial_metrics, "free_cashflow")
+    debt_to_equity = metric(financial_metrics, "debt_to_equity")
+    if revenue:
+        thesis_bits.append(f"large reported revenue base ({revenue})")
+    if operating_margin:
+        thesis_bits.append(f"operating margin of {operating_margin}")
+    if free_cash_flow:
+        thesis_bits.append(f"free cash flow of {free_cash_flow}")
+    if debt_to_equity:
+        thesis_bits.append(f"debt/equity of {debt_to_equity}")
+    thesis = (
+        f"{company_name} ({ticker}) should be judged as a scale business where margin quality, cash conversion, and valuation matter more than the latest price move."
+        if not thesis_bits
+        else f"{company_name} ({ticker}) shows {', '.join(thesis_bits[:3])}; the key question is whether profitability and cash conversion justify the current market valuation."
+    )
+
+    lines = [
+        "**Investment view**",
+        thesis,
+    ]
+    if market_rows:
+        lines.extend(["", "**Valuation and market signal**", "| Metric | Connected value | Read-through |", "|---|---:|---|", *market_rows])
+    elif market_lines:
+        lines.extend(["", "**Valuation and market signal**", *market_lines])
+    if fundamental_rows:
+        lines.extend(["", "**Financial health**", "| Metric | Connected value | What it means |", "|---|---:|---|", *fundamental_rows])
+    elif fundamental_lines:
+        lines.extend(["", "**Financial health**", *fundamental_lines])
 
     annual_revenue = historical_financials.get("annual_revenue") or {}
     annual_net_income = historical_financials.get("annual_net_income") or {}
@@ -2776,7 +2835,7 @@ def build_company_facts_fallback(query: str, facts: Dict[str, Any], fallback_rea
         lines.extend(
             [
                 "",
-                "**History available**",
+                "**Historical context**",
                 *([f"- Annual revenue periods: {display_periods(annual_revenue)}"] if annual_revenue else []),
                 *([f"- Annual net income periods: {display_periods(annual_net_income)}"] if annual_net_income else []),
             ]
@@ -2784,7 +2843,7 @@ def build_company_facts_fallback(query: str, facts: Dict[str, Any], fallback_rea
 
     signal_lines = company_signal_lines(facts, analysis_profile)
     if signal_lines:
-        lines.extend(["", "**Trend and risk signals**", *signal_lines])
+        lines.extend(["", "**Key risks and watch items**", *signal_lines])
 
     if not fundamental_lines and not annual_revenue and not annual_net_income:
         lines.extend(
@@ -2800,8 +2859,8 @@ def build_company_facts_fallback(query: str, facts: Dict[str, Any], fallback_rea
     lines.extend(
         [
             "",
-            "**Bottom line**",
-            analysis_profile["bottom_line"],
+            "**Verdict**",
+            analysis_profile["bottom_line"] + " A stronger investment call would require comparing these figures against multi-year growth, segment margins, free-cash-flow durability, and peers.",
         ]
     )
     return "\n".join(lines)
