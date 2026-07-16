@@ -15,15 +15,21 @@ services:
       - key: AI_PROVIDER_BASE_URL
         value: https://dashscope-intl.aliyuncs.com/compatible-mode/v1
       - key: AI_PROVIDER_MODEL_DEEP
-        value: glm-5.2
+        value: qwen3.7-max-2026-05-20
       - key: AI_PROVIDER_MODEL_FAST
-        value: glm-5.2
+        value: qwen3.7-plus-2026-05-26
       - key: AI_PROVIDER_MODEL_FLASH
         value: glm-5.1
       - key: AI_PROVIDER_MODEL_VISION
-        value: glm-5.2
+        value: qwen-vl-plus-latest
       - key: AI_PROVIDER_NEWS_MODEL
-        value: glm-5.2
+        value: qwen3.7-plus-2026-05-26
+      - key: AI_PROVIDER_FALLBACK_MODELS
+        value: qwen3.7-max-2026-05-17,deepseek-v4-pro,glm-5.2,glm-5.1
+      - key: AI_PROVIDER_FALLBACK_MODELS_VISION
+        value: qwen3-vl-plus,glm-5.2
+      - key: AI_PROVIDER_QUOTA_COOLDOWN_SECONDS
+        value: "21600"
       - key: AI_PROVIDER_MAX_TOKENS_FAST
         value: "6000"
       - key: AI_PROVIDER_MAX_TOKENS_DEEP

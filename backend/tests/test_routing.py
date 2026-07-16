@@ -397,12 +397,12 @@ class FinanceEnrichmentTests(unittest.IsolatedAsyncioTestCase):
 
 
 class QwenModelRoutingTests(unittest.TestCase):
-    def test_general_questions_use_flash_profile_first(self):
+    def test_general_questions_use_active_dated_qwen_profile_first(self):
         messages = main.build_general_prompt("Explain photosynthesis simply.")
         self.assertEqual(qwen_client._detect_task_type(messages), "general")
-        self.assertEqual(qwen_client._model_chain("general")[0], "glm-5.1")
+        self.assertEqual(qwen_client._model_chain("general")[0], "qwen3.7-plus-2026-05-26")
 
-    def test_default_model_profile_uses_active_glm_models(self):
+    def test_default_model_profile_uses_active_dated_models(self):
         with patch.dict(
             qwen_client.os.environ,
             {
@@ -417,11 +417,11 @@ class QwenModelRoutingTests(unittest.TestCase):
         ):
             profile = qwen_client._model_profile()
 
-        self.assertEqual(profile["fast"], "glm-5.2")
-        self.assertEqual(profile["deep"], "glm-5.2")
+        self.assertEqual(profile["fast"], "qwen3.7-plus-2026-05-26")
+        self.assertEqual(profile["deep"], "qwen3.7-max-2026-05-20")
         self.assertEqual(profile["flash"], "glm-5.1")
-        self.assertEqual(profile["vision"], "glm-5.2")
-        self.assertEqual(profile["news"], "glm-5.2")
+        self.assertEqual(profile["vision"], "qwen-vl-plus-latest")
+        self.assertEqual(profile["news"], "qwen3.7-plus-2026-05-26")
 
     def test_stale_render_model_overrides_are_replaced(self):
         with patch.dict(
@@ -436,10 +436,24 @@ class QwenModelRoutingTests(unittest.TestCase):
         ):
             profile = qwen_client._model_profile()
 
-        self.assertEqual(profile["fast"], "glm-5.2")
-        self.assertEqual(profile["deep"], "glm-5.2")
+        self.assertEqual(profile["fast"], "qwen3.7-plus-2026-05-26")
+        self.assertEqual(profile["deep"], "qwen3.7-max-2026-05-20")
         self.assertEqual(profile["flash"], "glm-5.1")
         self.assertNotIn("qwen3.7-plus", qwen_client._model_chain("general"))
+
+    def test_text_failover_chain_uses_exact_active_models_then_glm(self):
+        with patch.dict(qwen_client.os.environ, {}, clear=True):
+            self.assertEqual(
+                qwen_client._model_chain("deep"),
+                [
+                    "qwen3.7-max-2026-05-20",
+                    "qwen3.7-max-2026-05-17",
+                    "deepseek-v4-pro",
+                    "glm-5.2",
+                    "glm-5.1",
+                    "qwen3.7-plus-2026-05-26",
+                ],
+            )
 
     def test_standard_company_analysis_uses_fast_profile(self):
         messages = main.build_finance_prompt(
@@ -514,6 +528,20 @@ class QwenModelRoutingTests(unittest.TestCase):
         self.assertFalse(qwen_client._model_is_available("fast", "qwen3.6-flash", now=250))
         self.assertTrue(qwen_client._model_is_available("general", "qwen3.6-flash", now=250))
         self.assertTrue(qwen_client._model_is_available("fast", "qwen3.6-flash", now=400))
+
+    def test_quota_cooldown_skips_model_for_every_task(self):
+        qwen_client.MODEL_COOLDOWNS.clear()
+        qwen_client._defer_model("quota", "qwen3.7-plus-2026-05-26", 300, now=100)
+
+        self.assertFalse(qwen_client._model_is_available("fast", "qwen3.7-plus-2026-05-26", now=250))
+        self.assertFalse(qwen_client._model_is_available("news", "qwen3.7-plus-2026-05-26", now=250))
+        self.assertTrue(qwen_client._model_is_available("fast", "qwen3.7-plus-2026-05-26", now=400))
+
+    def test_quota_errors_are_detected_without_treating_other_403s_as_quota(self):
+        self.assertTrue(qwen_client._is_quota_error(403, "AllocationQuota exhausted"))
+        self.assertTrue(qwen_client._is_quota_error(400, "AllocationQuota exhausted"))
+        self.assertTrue(qwen_client._is_quota_error(429, "insufficient_quota"))
+        self.assertFalse(qwen_client._is_quota_error(403, "Model access denied"))
 
 
 class FinancialDataConcurrencyTests(unittest.IsolatedAsyncioTestCase):

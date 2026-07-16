@@ -9,17 +9,23 @@ import httpx
 logger = logging.getLogger("qfin.ai_provider")
 MODEL_COOLDOWNS: Dict[str, float] = {}
 
-DEFAULT_FAST_MODEL = "glm-5.2"
-DEFAULT_DEEP_MODEL = "glm-5.2"
+DEFAULT_FAST_MODEL = "qwen3.7-plus-2026-05-26"
+DEFAULT_DEEP_MODEL = "qwen3.7-max-2026-05-20"
 DEFAULT_FLASH_MODEL = "glm-5.1"
-DEFAULT_VISION_MODEL = "glm-5.2"
+DEFAULT_VISION_MODEL = "qwen-vl-plus-latest"
+DEFAULT_TEXT_FALLBACK_MODELS = [
+    "qwen3.7-max-2026-05-17",
+    "deepseek-v4-pro",
+    "glm-5.2",
+    "glm-5.1",
+]
+DEFAULT_VISION_FALLBACK_MODELS = ["qwen3-vl-plus", "glm-5.2"]
 STALE_MODEL_REPLACEMENTS = {
     "qwen3.7-plus": DEFAULT_FAST_MODEL,
     "qwen3.7-max": DEFAULT_DEEP_MODEL,
     "qwen3.6-flash": DEFAULT_FLASH_MODEL,
     "qwen-plus-latest": DEFAULT_FAST_MODEL,
     "qwen-flash": DEFAULT_FLASH_MODEL,
-    "qwen3.7-max-2026-05-20": DEFAULT_DEEP_MODEL,
     "qwen-plus": DEFAULT_FAST_MODEL,
     "qwen-turbo": DEFAULT_FLASH_MODEL,
 }
@@ -84,8 +90,8 @@ def _model_profile() -> Dict[str, str]:
     """
     QFin model routing profile.
 
-    Keep deeper analysis on GLM 5.2, but avoid using the strongest route for
-    every request so quick summaries stay faster and cheaper.
+    Use exact dated Qwen snapshots with active allocations. Provider-neutral
+    fallbacks are configured separately so exhausted quotas fail over cleanly.
     """
     fast_model = _model_override(
         os.getenv("AI_PROVIDER_MODEL_FAST")
@@ -101,6 +107,20 @@ def _model_profile() -> Dict[str, str]:
         "vision": _model_override(os.getenv("AI_PROVIDER_MODEL_VISION") or os.getenv("DASHSCOPE_MODEL_VISION"), DEFAULT_VISION_MODEL),
         "news": _model_override(os.getenv("AI_PROVIDER_NEWS_MODEL") or os.getenv("DASHSCOPE_NEWS_MODEL"), fast_model),
     }
+
+
+def _configured_fallback_models(task_type: str) -> List[str]:
+    task_value = os.getenv(f"AI_PROVIDER_FALLBACK_MODELS_{task_type.upper()}")
+    configured = task_value or os.getenv("AI_PROVIDER_FALLBACK_MODELS")
+    if configured:
+        return [
+            _model_override(model, model)
+            for model in configured.split(",")
+            if model.strip()
+        ]
+    if task_type == "vision":
+        return list(DEFAULT_VISION_FALLBACK_MODELS)
+    return list(DEFAULT_TEXT_FALLBACK_MODELS)
 
 
 def _content_to_text(content: Any) -> str:
@@ -216,8 +236,10 @@ def _cooldown_key(task_type: str, model_name: str) -> str:
 
 
 def _model_is_available(task_type: str, model_name: str, now: Optional[float] = None) -> bool:
-    expires_at = MODEL_COOLDOWNS.get(_cooldown_key(task_type, model_name), 0.0)
-    return (time.monotonic() if now is None else now) >= expires_at
+    current_time = time.monotonic() if now is None else now
+    task_expiry = MODEL_COOLDOWNS.get(_cooldown_key(task_type, model_name), 0.0)
+    quota_expiry = MODEL_COOLDOWNS.get(_cooldown_key("quota", model_name), 0.0)
+    return current_time >= max(task_expiry, quota_expiry)
 
 
 def _defer_model(task_type: str, model_name: str, seconds: float, now: Optional[float] = None) -> None:
@@ -230,15 +252,29 @@ def _model_chain(task_type: str, explicit_model: Optional[str] = None) -> List[s
         return [explicit_model]
 
     profile = _model_profile()
+    fallbacks = _configured_fallback_models(task_type)
     if task_type == "deep":
-        return _dedupe_models([profile["deep"], profile["fast"], profile["flash"]])
+        return _dedupe_models([profile["deep"], *fallbacks, profile["fast"], profile["flash"]])
     if task_type == "vision":
-        return _dedupe_models([profile["vision"], profile["fast"], profile["flash"]])
+        return _dedupe_models([profile["vision"], *fallbacks])
     if task_type == "news":
-        return _dedupe_models([profile["news"], profile["fast"], profile["flash"]])
+        return _dedupe_models([profile["news"], *fallbacks, profile["fast"], profile["flash"]])
     if task_type == "general":
-        return _dedupe_models([profile["flash"], profile["fast"]])
-    return _dedupe_models([profile["fast"], profile["flash"]])
+        return _dedupe_models([profile["fast"], *fallbacks, profile["flash"]])
+    return _dedupe_models([profile["fast"], *fallbacks, profile["flash"]])
+
+
+def _is_quota_error(status_code: int, response_text: str) -> bool:
+    text = response_text.lower()
+    quota_markers = ("allocationquota", "insufficient_quota", "quota exhausted", "quota_exhausted")
+    return status_code >= 400 and any(marker in text for marker in quota_markers)
+
+
+def _quota_cooldown_seconds() -> float:
+    try:
+        return max(900.0, float(os.getenv("AI_PROVIDER_QUOTA_COOLDOWN_SECONDS", "21600")))
+    except Exception:
+        return 21600.0
 
 
 async def call_qwen(
@@ -327,10 +363,10 @@ async def call_qwen(
             # next approved model before falling back to deterministic guidance.
             if _is_terminal_api_status(response.status_code):
                 raise error
-            if response.status_code == 403 and "AllocationQuota" in response.text:
-                # Quota failures will not recover immediately; prefer QFin's
-                # connected-data fallback until this model can be retried.
-                _defer_model(task_type, model_name, 900.0)
+            if _is_quota_error(response.status_code, response.text):
+                # Allocation exhaustion applies to the model, not one route.
+                # Skip it globally for several hours before checking again.
+                _defer_model("quota", model_name, _quota_cooldown_seconds())
             last_error = error
             # Keep the provider's bounded error detail in server logs only. The caller
             # still returns a safe deterministic answer rather than exposing it to users.
