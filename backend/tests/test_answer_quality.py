@@ -124,6 +124,37 @@ class AnswerQualityContractTests(unittest.TestCase):
         self.assertIn("## Q&A for investors", investor_qa)
         self.assertEqual(already_structured.count("## Investment view"), 1)
 
+    def test_inline_provider_headings_become_scannable_sections(self):
+        answer = normalize_finance_answer(
+            "**Direct answer** Alibaba has improving earnings quality.\n\n"
+            "**Market snapshot:** Valuation is below its recent peak.\n\n"
+            "**Fundamentals** Revenue growth is positive while free cash flow remains uneven.\n\n"
+            "**Key risks:** Competition and capital intensity remain material.",
+            "company",
+        )
+
+        self.assertTrue(answer.startswith("## Investment view\n\n"), answer)
+        self.assertIn("## Market snapshot\n\nValuation is below its recent peak.", answer)
+        self.assertIn(
+            "## Fundamentals\n\nRevenue growth is positive while free cash flow remains uneven.",
+            answer,
+        )
+        self.assertIn(
+            "## Key risks\n\nCompetition and capital intensity remain material.",
+            answer,
+        )
+        self.assertNotIn("**Market snapshot:**", answer)
+
+    def test_empty_sections_are_removed_after_boilerplate_cleanup(self):
+        answer = normalize_finance_answer(
+            "## Investment view\n\nAlibaba remains profitable.\n\n"
+            "**Verdict** Use the valuation, growth, profitability, cash-flow, and leverage "
+            "measures together; no single metric is a complete investment verdict.",
+            "company",
+        )
+
+        self.assertEqual(answer, "## Investment view\n\nAlibaba remains profitable.")
+
 
 if __name__ == "__main__":
     unittest.main()

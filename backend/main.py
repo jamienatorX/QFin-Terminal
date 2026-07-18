@@ -189,6 +189,9 @@ Finance answer contract:
 - Put a blank line between every heading, paragraph, table, and list. Keep one idea per paragraph.
 - Preserve the supplied currency, units, reporting period, and ticker exactly. Never reinterpret IDR values as USD or annual data as quarterly data.
 - Distinguish facts from interpretation. Do not present a generic checklist as if it were company-specific analysis.
+- Use a decision hierarchy: operating trajectory, earnings and cash quality, balance-sheet resilience, valuation, then catalysts and risks.
+- Build each analytical section as signal, evidence, interpretation: state the conclusion first, support it with the strongest supplied figures, then explain why it matters.
+- Separate level from trend, and make the verdict state the bull case, bear case, and what would invalidate the thesis.
 - Never guess a missing metric. Omit nonessential missing rows and summarize material coverage gaps once.
 - Never add methodology, sources, or internal-system sections unless the user explicitly asks how the data was obtained.
 """.strip()

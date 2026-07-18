@@ -22,6 +22,8 @@ KNOWN_HEADINGS = (
     "In plain English|How it works|Formula|Example|How to use it|Executive summary|"
     "Performance|Financial position|Investor takeaways|Key changes|Financial trends|"
     "Interpretation|Profitability|Historical context|Financial health|Valuation and market signal|"
+    "Market snapshot|Fundamentals|History available|Trend and risk signals|"
+    "Earnings quality|Liquidity and leverage|Catalysts|Scenario analysis|Monitoring points|"
     "Key risks and watch items|Coverage gap|Attachment received and parsed|Key extracted disclosures|"
     "Data limitations|Methodology|Caveat"
 )
@@ -177,6 +179,32 @@ def _remove_generic_verdict_boilerplate(content: str) -> str:
     return cleaned.strip()
 
 
+def _normalize_known_heading_markup(content: str) -> str:
+    """Repair common provider heading variants without rewriting their claims."""
+    bold_heading = re.compile(
+        rf"(?mi)^\s*\*\*({KNOWN_HEADINGS})\s*:?\*\*\s*:?\s*(.*)$"
+    )
+    atx_heading = re.compile(
+        rf"(?mi)^\s*#{{1,6}}\s+({KNOWN_HEADINGS})\s*:?\s*(.*)$"
+    )
+
+    def replace(match: re.Match[str]) -> str:
+        heading = match.group(1).strip()
+        body = match.group(2).strip()
+        return f"## {heading}" + (f"\n\n{body}" if body else "")
+
+    return atx_heading.sub(replace, bold_heading.sub(replace, content))
+
+
+def _remove_empty_sections(content: str) -> str:
+    cleaned = re.sub(
+        r"(?ms)^##\s+[^\n]+(?:\n\s*)?(?=^##\s+|\Z)",
+        "",
+        content,
+    )
+    return re.sub(r"\n{3,}", "\n\n", cleaned).strip()
+
+
 def _opening_heading(route_kind: str) -> str:
     return OPENING_HEADINGS.get(route_kind, "Answer")
 
@@ -222,16 +250,12 @@ def normalize_finance_answer(
         flags=re.I,
     )
 
-    normalized = re.sub(
-        rf"(?m)^\*\*({KNOWN_HEADINGS})\*\*\s*$",
-        r"## \1",
-        normalized,
-        flags=re.I,
-    )
+    normalized = _normalize_known_heading_markup(normalized)
     normalized = _canonicalize_data_limitation_headings(normalized)
     normalized = re.sub(r"(?m)([^\n])\n(##\s+)", r"\1\n\n\2", normalized)
     normalized = re.sub(r"(?m)^(##\s+[^\n]+)\n(?!\n)", r"\1\n\n", normalized)
     normalized = re.sub(r"\n{3,}", "\n\n", normalized).strip()
+    normalized = _remove_empty_sections(normalized)
     normalized = _consolidate_data_limitations(normalized)
 
     structured_routes = {
@@ -256,5 +280,6 @@ def finalize_finance_answer(
     finalized = _remove_methodology(_clean_text(content), preserve_methodology)
     finalized = _remove_internal_diagnostics(finalized)
     finalized = _remove_generic_verdict_boilerplate(finalized)
+    finalized = _remove_empty_sections(finalized)
 
     return _consolidate_data_limitations(finalized, missing_data)

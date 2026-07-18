@@ -506,6 +506,18 @@ class QwenModelRoutingTests(unittest.TestCase):
         )
         self.assertEqual(qwen_client._detect_task_type(messages), "fast")
 
+    def test_company_prompt_requires_evidence_first_investment_reasoning(self):
+        messages = main.build_finance_prompt(
+            "Analyze AAPL",
+            {"kind": "company", "ticker": "AAPL", "detail": "standard"},
+            {"ticker": "AAPL", "fundamentals": {"revenue": "100"}},
+        )
+
+        system_prompt = messages[0]["content"]
+        self.assertIn("decision hierarchy", system_prompt.lower())
+        self.assertIn("signal, evidence, interpretation", system_prompt.lower())
+        self.assertIn("what would invalidate", system_prompt.lower())
+
     def test_backend_fact_words_do_not_promote_standard_analysis_to_deep(self):
         messages = main.build_finance_prompt(
             "Analyze AAPL",
