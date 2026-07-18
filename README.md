@@ -1,225 +1,176 @@
 # QFin Terminal
 
-QFin Terminal is an AI finance learning platform built with Codex for OpenAI Build Week. It helps users understand companies, markets, reports, and trading models through chat, file analysis, community discussion, and an interactive model builder.
+**Learn finance by asking, uploading, comparing, building, and discussing.**
 
-The app has four main layers:
+[Live app](https://q-fin-terminal.vercel.app/) · [API status](https://qfin-terminal.onrender.com/health) · [Hackathon submission](docs/HACKATHON_SUBMISSION.md)
 
-```text
-Frontend: React / Vite website deployed on Vercel
-Backend: FastAPI service deployed on Render
-AI: GLM 5.2 / GLM 5.1 through a provider-compatible backend route
-Database: Supabase Postgres behind the backend
+QFin Terminal is an AI-powered finance learning and research workspace built with Codex and GPT-5.6 for OpenAI Build Week. It combines grounded company analysis, document understanding, market news, community discussions, and interactive trading-model education in one approachable interface.
+
+QFin gathers financial evidence before generating an explanation. Its provider-compatible backend applies the same answer structure across configured models and keeps private credentials away from the browser.
+
+> QFin is an educational research tool, not financial advice or a brokerage service.
+
+## What You Can Do
+
+| Feature | Description |
+| --- | --- |
+| Ask QFin | Research companies, compare investments, and learn finance concepts through structured answers. |
+| Analyze files | Upload PDF, XLSX, XLS, CSV, DOCX, or financial images for evidence-grounded analysis. |
+| Follow markets | Browse categorized news for stocks, crypto, bonds, ETFs, and other markets. |
+| Join the community | Publish discussions, vote on ideas, and comment on forum threads. |
+| Explore models | Learn from community trading models, including Monte Carlo simulations. |
+| Build models | Write, run, save privately, or publish a model from the browser. |
+| Save research | Keep conversations, watchlist topics, private models, and model runs in Reports & Watchlist. |
+
+## Architecture
+
+```mermaid
+flowchart LR
+    user["User"] --> web["React + TypeScript<br/>Vercel"]
+    web --> api["FastAPI<br/>Render"]
+    api --> router["Finance router<br/>Evidence + answer contract"]
+    api --> files["Document ingestion<br/>PDF, Office, CSV, images"]
+    api --> market["Market and financial data APIs"]
+    api --> db["Supabase Postgres<br/>RLS-protected persistence"]
+    files --> router
+    market --> router
+    router --> ai["Configurable AI providers<br/>Task-specific model routing"]
+    router --> web
 ```
 
-## Repository structure
+All AI, financial-data, and Supabase service-role requests run through the backend. The frontend receives only public application data.
 
-```text
-QFin-Terminal
-├── backend
-├── frontend
-├── supabase
-├── README.md
-├── render.yaml
-├── vercel.json
-├── .gitignore
-└── LICENSE
+## Technology
+
+| Layer | Stack |
+| --- | --- |
+| Frontend | React 19, TypeScript, Vite |
+| Backend | Python, FastAPI, Pydantic, HTTPX |
+| Data | Supabase Postgres, row-level security, financial-data APIs |
+| Files | pypdf, pdfplumber, pandas, openpyxl, python-docx |
+| Hosting | Vercel frontend, Render backend |
+| AI | OpenAI-compatible provider client with task-specific routing and fallbacks |
+
+## Quick Start
+
+### 1. Clone the repository
+
+```bash
+git clone https://github.com/jamienatorX/QFin-Terminal.git
+cd QFin-Terminal
 ```
 
-## What works
+### 2. Start the backend
 
-- Frontend opens locally at `http://localhost:5173`
-- Frontend fallback backend is `https://qfin-terminal.onrender.com`
-- Chat and company analysis call FastAPI `POST /agent/chat/stream`
-- The frontend reads chat responses as plain text with `response.text()`
-- Community news calls `/community/news/{category}` and falls back to `/news/{category}`
-- Community forum threads, votes, and builder models persist through Supabase when configured
-- Backend opens locally at `http://127.0.0.1:8000`
-- `/`, `/health`, `/docs`, `/agent/chat/stream`, `/community/news/{category}`, `/community/forum`, and `/community/models` work
-- The AI provider and Supabase are called only from the backend
-- Reports & Watchlist lets users save conversations, topics, private models, and private model runs
-- Builder models can be saved privately, run privately, or published to the public model gallery
-
-## AI model routing
-
-QFin does not use the strongest model for every request. The backend routes requests by task so the app stays faster and cheaper:
-
-```text
-Deep financial report / analyst agent  -> GLM 5.2
-Quick summary / cheaper backup         -> GLM 5.1
-News and general chat                   -> GLM 5.2 with GLM 5.1 fallback
-```
-
-If the primary model times out or returns a temporary API error, the backend automatically tries faster backup models. Authentication errors still stop immediately because they mean the API key or base URL is wrong.
-
-## Local backend setup
-
-```powershell
+```bash
 cd backend
 python -m venv .venv
-.\.venv\Scripts\activate
+```
+
+Activate the environment:
+
+```powershell
+# Windows PowerShell
+.\.venv\Scripts\Activate.ps1
+```
+
+```bash
+# macOS or Linux
+source .venv/bin/activate
+```
+
+Install dependencies, copy the configuration template, and start FastAPI:
+
+```bash
 pip install -r requirements.txt
+cp .env.example .env
 uvicorn main:app --reload
 ```
 
-Open:
+On Windows Command Prompt, use `copy .env.example .env` instead of `cp`.
 
-```text
-http://127.0.0.1:8000/health
-http://127.0.0.1:8000/docs
-```
+The backend runs at `http://127.0.0.1:8000`. Open [the health endpoint](http://127.0.0.1:8000/health) or [API documentation](http://127.0.0.1:8000/docs) to verify it.
 
-## Backend environment variables
+### 3. Start the frontend
 
-Create this file locally:
+In a second terminal:
 
-```text
-backend/.env
-```
-
-Add:
-
-```env
-AI_PROVIDER_API_KEY=your_provider_api_key
-AI_PROVIDER_BASE_URL=https://dashscope-intl.aliyuncs.com/compatible-mode/v1
-AI_PROVIDER_MODEL_DEEP=glm-5.2
-AI_PROVIDER_MODEL_FAST=glm-5.2
-AI_PROVIDER_MODEL_FLASH=glm-5.1
-AI_PROVIDER_MODEL_VISION=glm-5.2
-AI_PROVIDER_NEWS_MODEL=glm-5.2
-AI_PROVIDER_TIMEOUT_SECONDS=45
-AI_PROVIDER_TOTAL_TIMEOUT_SECONDS=75
-SUPABASE_URL=your_supabase_project_url
-SUPABASE_SERVICE_ROLE_KEY=your_supabase_secret_or_service_role_key
-FINNHUB_API_KEY=your_finnhub_api_key
-FMP_API_KEY=your_fmp_api_key
-NEWSAPI_KEY=your_newsapi_key
-```
-
-Do not commit `.env` to GitHub.
-
-## Supabase setup
-
-Run the SQL in:
-
-```text
-supabase/schema.sql
-```
-
-This creates the forum and builder persistence tables:
-
-- `public.qfin_forum_threads`
-- `public.qfin_builder_models`
-- `public.qfin_reports`
-
-The backend uses the Supabase service role key, so the browser never talks to these tables directly.
-
-## Local frontend setup
-
-```powershell
+```bash
 cd frontend
 npm install
+cp .env.example .env.local
 npm run dev
 ```
 
-Open:
+Set `VITE_API_BASE_URL=http://127.0.0.1:8000` in `frontend/.env.local` when using the local backend. The app runs at `http://localhost:5173`.
+
+## Configuration
+
+Use [backend/.env.example](backend/.env.example) and [frontend/.env.example](frontend/.env.example) as the source of truth. The main groups are:
+
+| Variables | Purpose |
+| --- | --- |
+| `AI_PROVIDER_*` | Provider endpoint, API key, model routing, token budgets, and timeouts. |
+| `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY` | Persistent reports, watchlists, forum content, models, and financial warehouse data. |
+| `FMP_API_KEY`, `FINNHUB_API_KEY`, `NEWSAPI_KEY` | Optional market, fundamental, and news enrichment. |
+| `ALLOWED_ORIGINS` | Frontend origins permitted by backend CORS policy. |
+| `VITE_API_BASE_URL` | Public backend URL used by the frontend. |
+
+Never commit `.env`, `.env.local`, API keys, or service-role credentials.
+
+## Database
+
+Run [supabase/schema.sql](supabase/schema.sql) in the Supabase SQL editor. It creates the community, reports, watchlist, model, symbol, and financial-warehouse tables together with row-level security policies.
+
+Browser clients never receive the Supabase service-role key. Public and owner-specific access is enforced by backend authorization and database policies.
+
+## Verification
+
+Run the backend suite:
+
+```bash
+cd backend
+python -m unittest discover -s tests -v
+```
+
+Build the production frontend:
+
+```bash
+cd frontend
+npm install
+npm run build
+```
+
+The current release passes **102 backend tests** covering routing, answer formatting, company and comparison analysis, uploads, persistence, provider fallbacks, and API security.
+
+## Deployment
+
+- [vercel.json](vercel.json) configures the React production build on Vercel.
+- [render.yaml](render.yaml) configures the FastAPI service on Render.
+- Pushes to `main` trigger the connected production deployments.
+- Set production secrets in the provider dashboards, never in GitHub.
+
+See [Render and Vercel deployment](docs/RENDER_VERCEL_BACKEND.md) for the complete environment and hosting checklist.
+
+## Repository Guide
 
 ```text
-http://localhost:5173
+QFin-Terminal/
+├── backend/          FastAPI routes, finance engine, AI client, and file ingestion
+├── frontend/         React application and typed API/domain boundaries
+├── supabase/         Postgres schema and security policies
+├── docs/             Architecture, security, deployment, and submission material
+├── render.yaml       Render service configuration
+└── vercel.json       Vercel build configuration
 ```
 
-To connect the frontend to a deployed backend, create:
+Useful references:
 
-```text
-frontend/.env.local
-```
-
-Add:
-
-```env
-VITE_API_BASE_URL=https://qfin-terminal.onrender.com
-```
-
-Restart the frontend after changing `.env.local`.
-
-## Vercel frontend deployment
-
-This repo includes `vercel.json` so Vercel can build the app from the repository root.
-
-Use these settings if configuring manually:
-
-```text
-Install Command: cd frontend && npm install
-Build Command: cd frontend && npm run build
-Output Directory: frontend/dist
-```
-
-Set this environment variable in Vercel:
-
-```env
-VITE_API_BASE_URL=https://qfin-terminal.onrender.com
-```
-
-## Render backend deployment
-
-This repo includes `render.yaml`.
-
-For manual Render setup, use:
-
-```text
-Root Directory: backend
-Build Command: pip install -r requirements.txt
-Start Command: uvicorn main:app --host 0.0.0.0 --port $PORT
-```
-
-Set these environment variables in Render:
-
-```env
-AI_PROVIDER_API_KEY=your_provider_api_key
-AI_PROVIDER_BASE_URL=https://dashscope-intl.aliyuncs.com/compatible-mode/v1
-AI_PROVIDER_MODEL_DEEP=glm-5.2
-AI_PROVIDER_MODEL_FAST=glm-5.2
-AI_PROVIDER_MODEL_FLASH=glm-5.1
-AI_PROVIDER_MODEL_VISION=glm-5.2
-AI_PROVIDER_NEWS_MODEL=glm-5.2
-AI_PROVIDER_TIMEOUT_SECONDS=45
-AI_PROVIDER_TOTAL_TIMEOUT_SECONDS=75
-SUPABASE_URL=your_supabase_project_url
-SUPABASE_SERVICE_ROLE_KEY=your_supabase_secret_or_service_role_key
-FINNHUB_API_KEY=your_finnhub_api_key
-FMP_API_KEY=your_fmp_api_key
-NEWSAPI_KEY=your_newsapi_key
-```
-
-After deployment, test:
-
-```text
-https://qfin-terminal.onrender.com/health
-```
-
-Expected response:
-
-```json
-{
-  "status": "ok",
-  "service": "qfin-terminal-api",
-  "ai_configured": true,
-  "supabase_configured": true
-}
-```
-
-## Security
-
-Never expose these in frontend code or GitHub:
-
-```text
-AI_PROVIDER_API_KEY
-SUPABASE_SERVICE_ROLE_KEY
-.env
-.env.local
-```
-
-The browser frontend should only call the Render backend URL. Supabase service-role access stays on the backend.
+- [Security hardening](docs/SECURITY_HARDENING.md)
+- [Agent architecture research](docs/agent-architecture-research.md)
+- [Financial data warehouse](docs/FINANCIAL_DATA_WAREHOUSE.md)
+- [Public API registry](docs/agent-public-api-registry.md)
 
 ## License
 
-MIT License.
+[MIT](LICENSE)
