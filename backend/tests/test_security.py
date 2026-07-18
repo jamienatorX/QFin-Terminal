@@ -53,6 +53,28 @@ class ApiSecurityTests(unittest.TestCase):
         self.assertEqual(response.status_code, 429)
         self.assertEqual(response.headers["retry-after"], "60")
 
+    def test_chat_response_keeps_internal_agent_diagnostics_server_side(self):
+        stub_result = {
+            "route": {"kind": "company", "ticker": "AAPL"},
+            "content": "## Investment view\n\nApple remains profitable.",
+            "facts": {"revenue": "sensitive internal payload"},
+            "used_live_data": True,
+            "evidence": {"trace_id": "internal-trace"},
+            "risk_review": {"warnings": ["internal warning"]},
+        }
+
+        with patch("main.generate_agent_reply", new=AsyncMock(return_value=stub_result)):
+            response = self.client.post("/agent/chat", json={"message": "Analyze Apple"})
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["content"], stub_result["content"])
+        self.assertEqual(payload["data"], {"used_live_data": True})
+        self.assertNotIn("facts", payload["data"])
+        self.assertNotIn("evidence", payload["data"])
+        self.assertNotIn("risk_review", payload["data"])
+        self.assertNotIn("route", payload["data"])
+
     def test_unconfigured_admin_endpoint_is_not_public(self):
         with patch.dict(os.environ, {"ADMIN_API_KEY": ""}):
             response = self.client.get("/agent/sessions/recent")

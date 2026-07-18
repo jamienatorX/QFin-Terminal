@@ -59,7 +59,9 @@ class DocumentIngestionTests(unittest.TestCase):
         content = main.build_spreadsheet_attachment_fallback(attachment)
 
         self.assertIn("Financial statement analysis", content)
+        self.assertIn("Derived as (current - prior) / |prior|", content)
         self.assertIn("Total revenue: 81,273.00 in FY26 Q2 vs 69,632.00 in FY25 Q2 (+16.7% YoY)", content)
+        self.assertIn("Derived as Operating income / revenue", content)
         self.assertIn("Operating margin: 47.1% vs 45.5% (+1.6 percentage points)", content)
         self.assertIn("Free cash flow: 30,125.00 in FY26 Q2 vs 22,000.00 in FY25 Q2 (+36.9% YoY)", content)
         self.assertIn("Free-cash-flow movement should be compared with profit growth", content)
@@ -146,6 +148,13 @@ class AttachmentEndpointTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["content"], "Attachment analysis complete.")
+        self.assertEqual(
+            response.json()["data"],
+            {
+                "used_live_data": False,
+                "attachment": {"filename": "report.csv"},
+            },
+        )
         attachment = generate.await_args.args[1]
         self.assertEqual(attachment["kind"], "spreadsheet")
         self.assertIn("Revenue", attachment["text"])
