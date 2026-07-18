@@ -15,17 +15,59 @@ OPENING_HEADINGS = {
     "document_analysis": "Executive summary",
 }
 
-KNOWN_HEADINGS = (
-    "Investment view|Business and growth|Profitability and cash flow|"
-    "Balance sheet and valuation|Key risks|Verdict|Bottom line|Side-by-side|"
-    "What decides it|Market read|What happened|Why it matters|Watch next|"
-    "In plain English|How it works|Formula|Example|How to use it|Executive summary|"
-    "Performance|Financial position|Investor takeaways|Key changes|Financial trends|"
-    "Interpretation|Profitability|Historical context|Financial health|Valuation and market signal|"
-    "Market snapshot|Fundamentals|History available|Trend and risk signals|"
-    "Earnings quality|Liquidity and leverage|Catalysts|Scenario analysis|Monitoring points|"
-    "Key risks and watch items|Coverage gap|Attachment received and parsed|Key extracted disclosures|"
-    "Data limitations|Methodology|Caveat"
+CANONICAL_HEADINGS = (
+    "Investment view",
+    "Business and growth",
+    "Profitability and cash flow",
+    "Balance sheet and valuation",
+    "Key risks and watch items",
+    "Key risks",
+    "Verdict",
+    "Bottom line",
+    "Side-by-side",
+    "What decides it",
+    "Market read",
+    "What happened",
+    "Why it matters",
+    "Watch next",
+    "In plain English",
+    "How it works",
+    "Formula",
+    "Example",
+    "How to use it",
+    "Executive summary",
+    "Performance",
+    "Financial position",
+    "Investor takeaways",
+    "Key changes",
+    "Financial trends",
+    "Interpretation",
+    "Profitability",
+    "Historical context",
+    "Financial health",
+    "Valuation and market signal",
+    "Market snapshot",
+    "Fundamentals",
+    "History available",
+    "Trend and risk signals",
+    "Earnings quality",
+    "Liquidity and leverage",
+    "Catalysts",
+    "Scenario analysis",
+    "Monitoring points",
+    "Coverage gap",
+    "Attachment received and parsed",
+    "Key extracted disclosures",
+    "Data limitations",
+    "Methodology",
+    "Caveat",
+)
+
+CANONICAL_HEADING_BY_KEY = {
+    heading.casefold(): heading for heading in CANONICAL_HEADINGS
+}
+KNOWN_HEADINGS = "|".join(
+    re.escape(heading) for heading in sorted(CANONICAL_HEADINGS, key=len, reverse=True)
 )
 
 GENERIC_VERDICT_PATTERNS = (
@@ -37,8 +79,8 @@ GENERIC_VERDICT_PATTERNS = (
 )
 
 INTERNAL_DIAGNOSTIC_PATTERNS = (
-    r"Model answer mentioned extra ticker-like symbols outside the requested scope:[^\n]*\.??",
-    r"Deterministic finance guidance was used to keep the response grounded and time-bounded\.??",
+    r"Model answer mentioned extra ticker-like symbols outside the requested scope:[^\n]*",
+    r"Deterministic finance guidance was used to keep the response grounded and time-bounded\.?",
     r"Finance narrative fallback:[^\n]*",
 )
 
@@ -154,7 +196,13 @@ def _consolidate_data_limitations(
 def _remove_internal_diagnostics(content: str) -> str:
     cleaned = content
     for pattern in INTERNAL_DIAGNOSTIC_PATTERNS:
+        cleaned = re.sub(
+            rf"(?mi)^[ \t]*(?:[-*]\s*)?(?:{pattern})[ \t]*$",
+            "",
+            cleaned,
+        )
         cleaned = re.sub(pattern, "", cleaned, flags=re.I)
+    cleaned = re.sub(r"(?m)^\s*[-*]\s*\.?\s*$", "", cleaned)
 
     # Remove a now-empty provider-generated caveat block rather than showing an
     # implementation heading to the user.
@@ -189,11 +237,62 @@ def _normalize_known_heading_markup(content: str) -> str:
     )
 
     def replace(match: re.Match[str]) -> str:
-        heading = match.group(1).strip()
+        raw_heading = match.group(1).strip()
+        heading = CANONICAL_HEADING_BY_KEY.get(raw_heading.casefold(), raw_heading)
         body = match.group(2).strip()
         return f"## {heading}" + (f"\n\n{body}" if body else "")
 
     return atx_heading.sub(replace, bold_heading.sub(replace, content))
+
+
+def _merge_duplicate_known_sections(content: str) -> str:
+    """Merge provider-repeated QFin sections while preserving distinct evidence."""
+    section_matches = list(re.finditer(r"(?m)^##\s+([^\n]+?)\s*$", content))
+    if not section_matches:
+        return content
+
+    prefix = content[: section_matches[0].start()].strip()
+    sections: list[dict[str, object]] = []
+    known_index: dict[str, int] = {}
+
+    for index, match in enumerate(section_matches):
+        body_end = (
+            section_matches[index + 1].start()
+            if index + 1 < len(section_matches)
+            else len(content)
+        )
+        raw_heading = match.group(1).strip()
+        canonical = CANONICAL_HEADING_BY_KEY.get(raw_heading.casefold())
+        heading = canonical or raw_heading
+        body = content[match.end() : body_end].strip()
+
+        if canonical:
+            key = canonical.casefold()
+            existing_index = known_index.get(key)
+            if existing_index is not None:
+                existing_bodies = sections[existing_index]["bodies"]
+                assert isinstance(existing_bodies, list)
+                body_key = re.sub(r"\s+", " ", body).strip().casefold()
+                existing_keys = {
+                    re.sub(r"\s+", " ", str(item)).strip().casefold()
+                    for item in existing_bodies
+                }
+                if body and body_key not in existing_keys:
+                    existing_bodies.append(body)
+                continue
+            known_index[key] = len(sections)
+
+        sections.append({"heading": heading, "bodies": [body] if body else []})
+
+    blocks = [prefix] if prefix else []
+    for section in sections:
+        bodies = section["bodies"]
+        assert isinstance(bodies, list)
+        block = f"## {section['heading']}"
+        if bodies:
+            block += "\n\n" + "\n\n".join(str(body) for body in bodies)
+        blocks.append(block)
+    return "\n\n".join(blocks).strip()
 
 
 def _remove_empty_sections(content: str) -> str:
@@ -252,6 +351,7 @@ def normalize_finance_answer(
 
     normalized = _normalize_known_heading_markup(normalized)
     normalized = _canonicalize_data_limitation_headings(normalized)
+    normalized = _merge_duplicate_known_sections(normalized)
     normalized = re.sub(r"(?m)([^\n])\n(##\s+)", r"\1\n\n\2", normalized)
     normalized = re.sub(r"(?m)^(##\s+[^\n]+)\n(?!\n)", r"\1\n\n", normalized)
     normalized = re.sub(r"\n{3,}", "\n\n", normalized).strip()

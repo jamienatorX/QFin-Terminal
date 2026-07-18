@@ -48,13 +48,117 @@ class AgentRoutingTests(unittest.TestCase):
         content = main.build_company_facts_fallback("Analyze TEST", facts, "unused")
 
         self.assertIn("**Key risks and watch items**", content)
-        self.assertIn("Growth: revenue growth of 25.00% is strong", content)
-        self.assertIn("Cash conversion: free cash flow equals 80.0%", content)
-        self.assertIn("Balance-sheet risk: debt/equity of 15.00% indicates low", content)
+        self.assertIn("Growth: reported revenue growth is 25.00%", content)
+        self.assertIn("Derived cash conversion: free cash flow / operating cash flow = 80.0%", content)
+        self.assertIn("Balance sheet: reported debt/equity is 15.00%", content)
         self.assertIn("Valuation expectation: forward P/E of 20.00x is below trailing P/E", content)
+        self.assertNotIn("is strong", content)
+        self.assertNotIn("indicates low", content)
         self.assertNotIn("Coverage note", content)
         self.assertNotIn("no single metric is a complete investment verdict", content)
         self.assertNotIn("A stronger investment call would require", content)
+
+    def test_company_fallback_does_not_call_single_period_metrics_large_or_high(self):
+        content = main.build_company_facts_fallback(
+            "Analyze TEST",
+            {
+                "ticker": "TEST",
+                "company_name": "Test Company",
+                "market_data": {},
+                "financial_metrics": {
+                    "total_revenue": "USD 10.00B",
+                    "operating_margin": "35.00%",
+                },
+            },
+            "unused",
+        )
+
+        self.assertIn("reported revenue of USD 10.00B", content)
+        self.assertIn("reported operating margin is 35.00%", content)
+        self.assertNotIn("large reported revenue", content)
+        self.assertNotIn("margin of 35.00% is high", content)
+
+    def test_company_fallback_calculates_auditable_multi_period_changes(self):
+        content = main.build_company_facts_fallback(
+            "Analyze TEST",
+            {
+                "ticker": "TEST",
+                "company_name": "Test Company",
+                "market_data": {},
+                "financial_metrics": {},
+                "historical_financials": {
+                    "annual_revenue": {"2025": "USD 1.20B", "2024": "USD 900.00M"},
+                    "annual_net_income": {"2025": "USD 120.00M", "2024": "USD 150.00M"},
+                },
+            },
+            "unused",
+        )
+
+        self.assertIn("Derived annual revenue change", content)
+        self.assertIn("= +33.3% (2025 vs 2024)", content)
+        self.assertIn("Derived annual net income change", content)
+        self.assertIn("= -20.0% (2025 vs 2024)", content)
+
+    def test_company_fallback_orders_periods_before_calculating_changes(self):
+        content = main.build_company_facts_fallback(
+            "Analyze TEST",
+            {
+                "ticker": "TEST",
+                "company_name": "Test Company",
+                "market_data": {},
+                "financial_metrics": {},
+                "historical_financials": {
+                    "annual_revenue": {"2024": "USD 900.00M", "2025": "USD 1.20B"},
+                },
+            },
+            "unused",
+        )
+
+        self.assertIn("= +33.3% (2025 vs 2024)", content)
+
+    def test_company_fallback_does_not_invent_a_trend_from_one_period(self):
+        content = main.build_company_facts_fallback(
+            "Analyze TEST",
+            {
+                "ticker": "TEST",
+                "company_name": "Test Company",
+                "market_data": {},
+                "financial_metrics": {},
+                "historical_financials": {
+                    "annual_revenue": {"2025": "USD 1.20B"},
+                },
+            },
+            "unused",
+        )
+
+        self.assertIn("Annual revenue periods: 2025", content)
+        self.assertNotIn("Derived annual revenue change", content)
+
+    def test_operating_company_fallback_ends_with_fact_grounded_bull_and_bear_case(self):
+        content = main.build_company_facts_fallback(
+            "Analyze TEST",
+            {
+                "ticker": "TEST",
+                "company_name": "Test Company",
+                "market_data": {},
+                "financial_metrics": {
+                    "revenue_growth": "10.00%",
+                    "operating_margin": "8.00%",
+                    "free_cashflow": "USD -50.00M",
+                    "cash": "USD 170.00M",
+                    "total_debt": "USD 86.00M",
+                },
+            },
+            "unused",
+        )
+
+        self.assertIn("**Verdict**", content)
+        self.assertIn("Bull case:", content)
+        self.assertIn("reported revenue growth is positive at 10.00%", content)
+        self.assertIn("reported cash exceeds debt", content)
+        self.assertIn("Bear case:", content)
+        self.assertIn("free cash flow is negative at USD -50.00M", content)
+        self.assertIn("What would change the view:", content)
 
     def test_internal_ticker_scope_warning_is_not_shown_in_answer(self):
         content = "**Investment view**\nAlibaba has improving operating momentum."
@@ -101,6 +205,142 @@ class AgentRoutingTests(unittest.TestCase):
         self.assertIn("RIGHT has the higher operating margin", content)
         self.assertIn("LEFT reports the higher free cash flow", content)
         self.assertIn("RIGHT has the lower reported debt/equity", content)
+
+    def test_comparison_fallback_reports_ties_without_inventing_a_leader(self):
+        facts = {
+            "LEFT": {
+                "financial_metrics": {
+                    "operating_margin": "20.00%",
+                    "free_cashflow": "USD 100.00M",
+                    "debt_to_equity": "40.00%",
+                },
+                "market_data": {"price_to_book": "3.00x"},
+            },
+            "RIGHT": {
+                "financial_metrics": {
+                    "operating_margin": "20.00%",
+                    "free_cashflow": "USD 100.00M",
+                    "debt_to_equity": "40.00%",
+                },
+                "market_data": {"price_to_book": "3.00x"},
+            },
+        }
+
+        content = main.build_comparison_facts_fallback(
+            "Compare LEFT and RIGHT",
+            {"tickers": ["LEFT", "RIGHT"]},
+            facts,
+            "unused",
+        )
+
+        self.assertIn("both report the same operating margin", content)
+        self.assertIn("both report the same free cash flow", content)
+        self.assertIn("both report the same debt/equity", content)
+        self.assertIn("both have the same price/book multiple", content)
+        self.assertNotIn("has the higher", content)
+        self.assertNotIn("has the lower", content)
+
+    def test_comparison_fallback_does_not_rank_absolute_values_across_currencies(self):
+        facts = {
+            "USCO": {
+                "currency": "USD",
+                "market_data": {"last_price": "USD 100", "market_cap": "USD 2.00B", "forward_pe": "20.00x"},
+                "financial_metrics": {"total_revenue": "USD 1.00B", "free_cashflow": "USD 100.00M", "operating_margin": "20.00%"},
+            },
+            "IDCO.JK": {
+                "currency": "IDR",
+                "market_data": {"last_price": "IDR 1,000", "market_cap": "IDR 20.00T", "forward_pe": "15.00x"},
+                "financial_metrics": {"total_revenue": "IDR 10.00T", "free_cashflow": "IDR 2.00T", "operating_margin": "25.00%"},
+            },
+        }
+
+        content = main.build_comparison_facts_fallback(
+            "Compare USCO and IDCO.JK",
+            {"tickers": ["USCO", "IDCO.JK"]},
+            facts,
+            "unused",
+        )
+
+        self.assertNotIn("| Last price |", content)
+        self.assertNotIn("| Market cap |", content)
+        self.assertNotIn("| Revenue |", content)
+        self.assertNotIn("| Free cash flow |", content)
+        self.assertIn("| Forward P/E |", content)
+        self.assertIn("| Operating margin |", content)
+        self.assertNotIn("reports the higher free cash flow", content)
+        self.assertIn("**Data limitations**", content)
+        self.assertIn("USD", content)
+        self.assertIn("IDR", content)
+
+    def test_metric_number_respects_financial_scale_suffixes(self):
+        payload = {
+            "financial_metrics": {
+                "millions": "USD 900.00M",
+                "billions": "USD 1.20B",
+                "trillions": "IDR 2.00T",
+            }
+        }
+
+        self.assertEqual(main.metric_number(payload, "financial_metrics", "millions"), 900_000_000)
+        self.assertEqual(main.metric_number(payload, "financial_metrics", "billions"), 1_200_000_000)
+        self.assertEqual(main.metric_number(payload, "financial_metrics", "trillions"), 2_000_000_000_000)
+
+    def test_comparison_fallback_ranks_same_currency_values_with_different_units(self):
+        facts = {
+            "SMALL": {
+                "currency": "USD",
+                "financial_metrics": {"free_cashflow": "USD 900.00M"},
+                "market_data": {},
+            },
+            "LARGE": {
+                "currency": "USD",
+                "financial_metrics": {"free_cashflow": "USD 1.20B"},
+                "market_data": {},
+            },
+        }
+
+        content = main.build_comparison_facts_fallback(
+            "Compare SMALL and LARGE",
+            {"tickers": ["SMALL", "LARGE"]},
+            facts,
+            "unused",
+        )
+
+        self.assertIn("LARGE reports the higher free cash flow", content)
+        self.assertNotIn("SMALL reports the higher free cash flow", content)
+
+    def test_comparison_fallback_verdict_names_the_measured_leader(self):
+        facts = {
+            "LEFT": {
+                "currency": "USD",
+                "financial_metrics": {
+                    "revenue_growth": "8.00%",
+                    "operating_margin": "12.00%",
+                    "debt_to_equity": "60.00%",
+                },
+                "market_data": {"forward_pe": "24.00x"},
+            },
+            "RIGHT": {
+                "currency": "USD",
+                "financial_metrics": {
+                    "revenue_growth": "6.00%",
+                    "operating_margin": "20.00%",
+                    "debt_to_equity": "30.00%",
+                },
+                "market_data": {"forward_pe": "18.00x"},
+            },
+        }
+
+        content = main.build_comparison_facts_fallback(
+            "Compare LEFT and RIGHT",
+            {"tickers": ["LEFT", "RIGHT"]},
+            facts,
+            "unused",
+        )
+
+        self.assertIn("RIGHT leads 3 of 4 measured criteria", content)
+        self.assertIn("LEFT leads on revenue growth", content)
+        self.assertNotIn("Use the trade-offs together", content)
 
     def test_plain_english_or_does_not_create_a_false_ticker_scope_warning(self):
         review = main.run_agent_risk_review(
@@ -517,6 +757,22 @@ class QwenModelRoutingTests(unittest.TestCase):
         self.assertIn("decision hierarchy", system_prompt.lower())
         self.assertIn("signal, evidence, interpretation", system_prompt.lower())
         self.assertIn("what would invalidate", system_prompt.lower())
+        self.assertIn("one-period", system_prompt.lower())
+        self.assertIn("comparison basis", system_prompt.lower())
+        self.assertIn("derived calculation", system_prompt.lower())
+
+    def test_document_prompt_requires_traceable_calculations_and_period_labels(self):
+        messages = main.build_finance_prompt(
+            "Analyze the attached annual report",
+            {"kind": "document_analysis", "detail": "deep"},
+            {"filename": "annual-report.pdf", "pages": 120},
+        )
+
+        system_prompt = messages[0]["content"].lower()
+        self.assertIn("reported facts", system_prompt)
+        self.assertIn("derived calculations", system_prompt)
+        self.assertIn("page, sheet, or table", system_prompt)
+        self.assertIn("reporting period", system_prompt)
 
     def test_backend_fact_words_do_not_promote_standard_analysis_to_deep(self):
         messages = main.build_finance_prompt(

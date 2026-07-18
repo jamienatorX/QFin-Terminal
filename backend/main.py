@@ -189,6 +189,9 @@ Finance answer contract:
 - Put a blank line between every heading, paragraph, table, and list. Keep one idea per paragraph.
 - Preserve the supplied currency, units, reporting period, and ticker exactly. Never reinterpret IDR values as USD or annual data as quarterly data.
 - Distinguish facts from interpretation. Do not present a generic checklist as if it were company-specific analysis.
+- Treat values supplied by the backend or file as reported facts. Label every derived calculation and show its inputs or formula briefly enough to audit.
+- A one-period value is a level, not a trend. Use words such as improving, deteriorating, accelerating, or slowing only when at least two comparable periods are supplied.
+- State the comparison basis for relative claims. Do not call a valuation cheap or expensive, or a margin strong or weak, without a supplied peer, history, target, or explicit benchmark.
 - Use a decision hierarchy: operating trajectory, earnings and cash quality, balance-sheet resilience, valuation, then catalysts and risks.
 - Build each analytical section as signal, evidence, interpretation: state the conclusion first, support it with the strongest supplied figures, then explain why it matters.
 - Separate level from trend, and make the verdict state the bull case, bear case, and what would invalidate the thesis.
@@ -237,7 +240,7 @@ Required document-analysis shape:
 ## Financial position - liquidity, debt, assets, liabilities, and equity when present.
 ## Key risks - anomalies, deteriorating trends, concentration, leverage, and data limitations.
 ## Investor takeaways - what is encouraging, what needs verification, and what to monitor next.
-Reference page, sheet, or table labels when available. Clearly label calculations derived from reported values.
+Identify the reporting period for every material comparison. Separate reported facts from derived calculations, and label the latter explicitly. Reference page, sheet, or table labels when available.
 """,
 }
 
@@ -2605,17 +2608,73 @@ def available_metric_lines(
     return lines, missing
 
 
-def metric_number(payload: Dict[str, Any], section: str, key: str) -> Optional[float]:
-    value = metric_from_payload(payload, section, key)
-    if value is None:
+def scaled_number_from_text(value: Any) -> Optional[float]:
+    if value in (None, ""):
         return None
-    match = re.search(r"-?[0-9]+(?:,[0-9]{3})*(?:\.[0-9]+)?", value)
-    return as_float(match.group(0).replace(",", "")) if match else None
-    match = re.search(r"-?[0-9]+(?:,[0-9]{3})*(?:\.[0-9]+)?", value)
-    return as_float(match.group(0).replace(",", "")) if match else None
+    match = re.search(
+        r"(-?[0-9]+(?:,[0-9]{3})*(?:\.[0-9]+)?)\s*([KMBT])?",
+        str(value),
+        flags=re.I,
+    )
+    if not match:
+        return None
+    number = as_float(match.group(1).replace(",", ""))
+    if number is None:
+        return None
+    scale = {
+        "K": 1_000,
+        "M": 1_000_000,
+        "B": 1_000_000_000,
+        "T": 1_000_000_000_000,
+    }.get((match.group(2) or "").upper(), 1)
+    return number * scale
 
 
-def comparison_leader_line(
+def metric_number(payload: Dict[str, Any], section: str, key: str) -> Optional[float]:
+    return scaled_number_from_text(metric_from_payload(payload, section, key))
+
+
+def historical_period_sort_key(period: Any) -> tuple[int, int, int, str]:
+    text = str(period).strip()
+    year_match = re.search(r"\b((?:19|20)\d{2})\b", text)
+    year = int(year_match.group(1)) if year_match else -1
+    quarter_match = re.search(r"\bQ([1-4])\b", text, re.IGNORECASE)
+    date_match = re.search(r"\b(?:19|20)\d{2}-(\d{1,2})-(\d{1,2})\b", text)
+    if date_match:
+        month, day = int(date_match.group(1)), int(date_match.group(2))
+    elif quarter_match:
+        month, day = int(quarter_match.group(1)) * 3, 31
+    else:
+        month, day = 12, 31
+    return year, month, day, text.casefold()
+
+
+def sorted_historical_items(series: Dict[str, Any]) -> List[tuple[Any, Any]]:
+    return sorted(series.items(), key=lambda item: historical_period_sort_key(item[0]), reverse=True)
+
+
+def historical_change_line(label: str, series: Dict[str, Any]) -> str:
+    items = sorted_historical_items(series)
+    periods = ", ".join(str(period).split(" ", 1)[0] for period, _ in items)
+    if len(items) < 2:
+        return f"- {label} periods: {periods}"
+
+    (latest_period, latest_value), (prior_period, prior_value) = items[:2]
+    latest_number = scaled_number_from_text(latest_value)
+    prior_number = scaled_number_from_text(prior_value)
+    if latest_number is None or prior_number in (None, 0):
+        return f"- {label} periods: {periods}"
+
+    change = (latest_number - prior_number) / abs(prior_number) * 100
+    latest_label = str(latest_period).split(" ", 1)[0]
+    prior_label = str(prior_period).split(" ", 1)[0]
+    return (
+        f"- Derived {label.lower()} change: ({latest_value} - {prior_value}) / "
+        f"{prior_value} = {change:+.1f}% ({latest_label} vs {prior_label})."
+    )
+
+
+def comparison_metric_result(
     label: str,
     left_ticker: str,
     left: Dict[str, Any],
@@ -2625,7 +2684,7 @@ def comparison_leader_line(
     key: str,
     *,
     prefer_lower: bool = False,
-) -> Optional[str]:
+) -> Optional[tuple[str, str]]:
     left_number = metric_number(left, section, key)
     right_number = metric_number(right, section, key)
     if left_number is None or right_number is None or left_number == right_number:
@@ -2634,7 +2693,8 @@ def comparison_leader_line(
     winner = left_ticker if left_wins else right_ticker
     left_text = metric_from_payload(left, section, key)
     right_text = metric_from_payload(right, section, key)
-    return f"- {label}: {winner} leads ({left_ticker} {left_text} vs {right_ticker} {right_text})."
+    line = f"- {label}: {winner} leads ({left_ticker} {left_text} vs {right_ticker} {right_text})."
+    return line, winner
 
 
 def is_bank_company(facts: Dict[str, Any]) -> bool:
@@ -2667,7 +2727,7 @@ def is_insurer_company(facts: Dict[str, Any]) -> bool:
 
 
 def display_periods(series: Dict[str, Any]) -> str:
-    return ", ".join(str(period).split(" ", 1)[0] for period in series.keys())
+    return ", ".join(str(period).split(" ", 1)[0] for period, _ in sorted_historical_items(series))
 
 
 STANDARD_MARKET_METRICS = [
@@ -2780,27 +2840,76 @@ def company_signal_lines(facts: Dict[str, Any], analysis_profile: Dict[str, Any]
     forward_pe = metric_number(facts, "market_data", "forward_pe")
 
     if growth is not None:
-        if growth >= 20:
-            signals.append(f"- Growth: revenue growth of {growth:.2f}% is strong, but raises the bar for continued execution.")
-        elif growth < 0:
-            signals.append(f"- Growth risk: revenue growth of {growth:.2f}% indicates contraction that merits closer review.")
+        if growth < 0:
+            signals.append(f"- Growth risk: reported revenue growth is {growth:.2f}%, indicating contraction for the supplied period.")
         else:
-            signals.append(f"- Growth: revenue growth is {growth:.2f}%; assess whether margins and cash flow are keeping pace.")
+            signals.append(f"- Growth: reported revenue growth is {growth:.2f}% for the supplied period; assess whether margins and cash flow moved in the same direction.")
     if operating_margin is not None and analysis_profile["kind"] == "operating_company":
-        margin_note = "high" if operating_margin >= 25 else "modest" if operating_margin < 10 else "positive"
-        signals.append(f"- Profitability: operating margin of {operating_margin:.2f}% is {margin_note}; compare it with peers and the company's own history.")
+        signals.append(f"- Profitability: reported operating margin is {operating_margin:.2f}%; a peer or historical comparison is needed to judge its relative strength.")
     if operating_cashflow and free_cashflow is not None and operating_cashflow > 0:
         conversion = free_cashflow / operating_cashflow * 100
-        signals.append(f"- Cash conversion: free cash flow equals {conversion:.1f}% of operating cash flow; capital intensity and working-capital needs remain key watch items.")
+        signals.append(f"- Derived cash conversion: free cash flow / operating cash flow = {conversion:.1f}%; capital intensity and working-capital needs remain key watch items.")
     if debt_to_equity is not None:
-        leverage_note = "elevated" if debt_to_equity >= 100 else "moderate" if debt_to_equity >= 40 else "low"
-        signals.append(f"- Balance-sheet risk: debt/equity of {debt_to_equity:.2f}% indicates {leverage_note} reported leverage.")
+        signals.append(f"- Balance sheet: reported debt/equity is {debt_to_equity:.2f}%; sector norms, debt maturities, and cash-flow coverage determine whether that leverage is conservative or aggressive.")
     if trailing_pe and forward_pe:
         if forward_pe < trailing_pe:
             signals.append(f"- Valuation expectation: forward P/E of {forward_pe:.2f}x is below trailing P/E of {trailing_pe:.2f}x, implying expected earnings growth in the supplied valuation data.")
         else:
             signals.append(f"- Valuation expectation: forward P/E of {forward_pe:.2f}x is at or above trailing P/E of {trailing_pe:.2f}x, so the valuation case depends on sustained earnings delivery.")
     return signals[:5]
+
+
+def operating_company_verdict(facts: Dict[str, Any]) -> str:
+    financial_metrics = facts.get("financial_metrics") or {}
+    growth = metric_number(facts, "financial_metrics", "revenue_growth")
+    operating_margin = metric_number(facts, "financial_metrics", "operating_margin")
+    free_cash_flow = metric_number(facts, "financial_metrics", "free_cashflow")
+    cash = metric_number(facts, "financial_metrics", "cash")
+    debt = metric_number(facts, "financial_metrics", "total_debt")
+
+    bull_points: List[str] = []
+    bear_points: List[str] = []
+
+    if growth is not None:
+        growth_text = clean_text(str(financial_metrics.get("revenue_growth") or f"{growth:.2f}%"))
+        target = bull_points if growth > 0 else bear_points
+        direction = "positive" if growth > 0 else "negative"
+        target.append(f"reported revenue growth is {direction} at {growth_text}")
+
+    if operating_margin is not None:
+        margin_text = clean_text(str(financial_metrics.get("operating_margin") or f"{operating_margin:.2f}%"))
+        target = bull_points if operating_margin > 0 else bear_points
+        direction = "positive" if operating_margin > 0 else "negative"
+        target.append(f"reported operating margin is {direction} at {margin_text}")
+
+    if free_cash_flow is not None:
+        fcf_text = clean_text(str(financial_metrics.get("free_cashflow") or free_cash_flow))
+        target = bull_points if free_cash_flow > 0 else bear_points
+        direction = "positive" if free_cash_flow > 0 else "negative"
+        target.append(f"free cash flow is {direction} at {fcf_text}")
+
+    if cash is not None and debt is not None:
+        cash_text = clean_text(str(financial_metrics.get("cash") or cash))
+        debt_text = clean_text(str(financial_metrics.get("total_debt") or debt))
+        if cash > debt:
+            bull_points.append(f"reported cash exceeds debt ({cash_text} vs {debt_text})")
+        elif debt > cash:
+            bear_points.append(f"reported debt exceeds cash ({debt_text} vs {cash_text})")
+
+    bull_case = "; ".join(bull_points) if bull_points else "the supplied facts do not yet establish a clear positive operating signal"
+    bear_case = "; ".join(bear_points) if bear_points else "the supplied facts do not yet establish a clear negative operating signal"
+
+    if free_cash_flow is not None and free_cash_flow < 0:
+        change_trigger = "sustained positive free cash flow, supported by at least two comparable periods, would materially strengthen the thesis"
+    elif growth is not None and growth < 0:
+        change_trigger = "a return to positive revenue growth with stable cash conversion would materially strengthen the thesis"
+    else:
+        change_trigger = "a reversal in revenue direction, operating profitability, or cash conversion across comparable periods would change the thesis"
+
+    return (
+        f"Bull case: {bull_case}. Bear case: {bear_case}. "
+        f"What would change the view: {change_trigger}."
+    )
 
 
 def build_company_facts_fallback(query: str, facts: Dict[str, Any], fallback_reason: str) -> str:
@@ -2886,7 +2995,7 @@ def build_company_facts_fallback(query: str, facts: Dict[str, Any], fallback_rea
     free_cash_flow = metric(financial_metrics, "free_cashflow")
     debt_to_equity = metric(financial_metrics, "debt_to_equity")
     if revenue:
-        thesis_bits.append(f"large reported revenue base ({revenue})")
+        thesis_bits.append(f"reported revenue of {revenue}")
     if operating_margin:
         thesis_bits.append(f"operating margin of {operating_margin}")
     if free_cash_flow:
@@ -2919,8 +3028,8 @@ def build_company_facts_fallback(query: str, facts: Dict[str, Any], fallback_rea
             [
                 "",
                 "**Historical context**",
-                *([f"- Annual revenue periods: {display_periods(annual_revenue)}"] if annual_revenue else []),
-                *([f"- Annual net income periods: {display_periods(annual_net_income)}"] if annual_net_income else []),
+                *([historical_change_line("Annual revenue", annual_revenue)] if annual_revenue else []),
+                *([historical_change_line("Annual net income", annual_net_income)] if annual_net_income else []),
             ]
         )
 
@@ -2939,8 +3048,11 @@ def build_company_facts_fallback(query: str, facts: Dict[str, Any], fallback_rea
         )
 
 
-    if analysis_profile["bottom_line"]:
-        lines.extend(["", "**Verdict**", analysis_profile["bottom_line"]])
+    verdict = analysis_profile["bottom_line"]
+    if analysis_profile["kind"] == "operating_company":
+        verdict = operating_company_verdict(facts)
+    if verdict:
+        lines.extend(["", "**Verdict**", verdict])
     return "\n".join(lines)
 
 
@@ -2954,7 +3066,23 @@ def build_comparison_facts_fallback(
     left = facts.get(tickers[0]) or {}
     right = facts.get(tickers[1]) or {}
 
-    def row_line(label: str, section: str, key: str) -> Optional[str]:
+    left_currency = clean_text(str(left.get("currency") or "")).upper()
+    right_currency = clean_text(str(right.get("currency") or "")).upper()
+    currencies_differ = bool(
+        left_currency
+        and right_currency
+        and left_currency != right_currency
+    )
+
+    def row_line(
+        label: str,
+        section: str,
+        key: str,
+        *,
+        currency_sensitive: bool = False,
+    ) -> Optional[str]:
+        if currency_sensitive and currencies_differ:
+            return None
         left_value = metric_from_payload(left, section, key)
         right_value = metric_from_payload(right, section, key)
         if left_value is None or right_value is None:
@@ -2962,68 +3090,142 @@ def build_comparison_facts_fallback(
         return f"| {label} | {left_value} | {right_value} |"
 
     comparison_rows = [
-        row_line("Last price", "market_data", "last_price"),
-        row_line("Market cap", "market_data", "market_cap"),
+        row_line("Last price", "market_data", "last_price", currency_sensitive=True),
+        row_line("Market cap", "market_data", "market_cap", currency_sensitive=True),
         row_line("Trailing P/E", "market_data", "trailing_pe"),
         row_line("Forward P/E", "market_data", "forward_pe"),
         row_line("Price/book", "market_data", "price_to_book"),
         row_line("EV/EBITDA", "market_data", "ev_ebitda"),
-        row_line("Revenue", "financial_metrics", "total_revenue"),
+        row_line("Revenue", "financial_metrics", "total_revenue", currency_sensitive=True),
         row_line("Revenue growth", "financial_metrics", "revenue_growth"),
         row_line("Gross margin", "financial_metrics", "gross_margin"),
         row_line("Operating margin", "financial_metrics", "operating_margin"),
         row_line("Net margin", "financial_metrics", "net_margin"),
-        row_line("Free cash flow", "financial_metrics", "free_cashflow"),
+        row_line("Free cash flow", "financial_metrics", "free_cashflow", currency_sensitive=True),
         row_line("Debt/equity", "financial_metrics", "debt_to_equity"),
         row_line("Return on equity", "financial_metrics", "return_on_equity"),
     ]
     comparison_rows = [row for row in comparison_rows if row]
-    leader_lines = [
-        comparison_leader_line("Revenue growth", tickers[0], left, tickers[1], right, "financial_metrics", "revenue_growth"),
-        comparison_leader_line("Operating margin", tickers[0], left, tickers[1], right, "financial_metrics", "operating_margin"),
-        comparison_leader_line("Forward P/E valuation", tickers[0], left, tickers[1], right, "market_data", "forward_pe", prefer_lower=True),
-        comparison_leader_line("Balance-sheet leverage", tickers[0], left, tickers[1], right, "financial_metrics", "debt_to_equity", prefer_lower=True),
+    criterion_specs = [
+        ("Revenue growth", "financial_metrics", "revenue_growth", False),
+        ("Operating margin", "financial_metrics", "operating_margin", False),
+        ("Forward P/E valuation", "market_data", "forward_pe", True),
+        ("Balance-sheet leverage", "financial_metrics", "debt_to_equity", True),
     ]
-    leader_lines = [line for line in leader_lines if line]
+    leader_results = [
+        (label, result)
+        for label, section, key, prefer_lower in criterion_specs
+        if (
+            result := comparison_metric_result(
+                label,
+                tickers[0],
+                left,
+                tickers[1],
+                right,
+                section,
+                key,
+                prefer_lower=prefer_lower,
+            )
+        )
+    ]
+    leader_lines = [result[0] for _, result in leader_results]
+    winner_counts = {
+        ticker: sum(1 for _, result in leader_results if result[1] == ticker)
+        for ticker in tickers
+    }
+
+    measured_summary = ""
+    if leader_results:
+        left_count = winner_counts[tickers[0]]
+        right_count = winner_counts[tickers[1]]
+        if left_count == right_count:
+            measured_summary = (
+                f"The supplied comparison is split {left_count}-{right_count} across "
+                f"{len(leader_results)} measured criteria."
+            )
+        else:
+            measured_leader = tickers[0] if left_count > right_count else tickers[1]
+            measured_count = winner_counts[measured_leader]
+            measured_summary = (
+                f"{measured_leader} leads {measured_count} of {len(leader_results)} measured criteria"
+            )
+            counterpoints = [
+                label.casefold()
+                for label, result in leader_results
+                if result[1] != measured_leader
+            ]
+            if counterpoints:
+                other = tickers[1] if measured_leader == tickers[0] else tickers[0]
+                measured_summary += f", while {other} leads on {', '.join(counterpoints)}"
+            measured_summary += "."
 
     interpretation_lines: List[str] = []
 
     left_margin = metric_number(left, "financial_metrics", "operating_margin")
     right_margin = metric_number(right, "financial_metrics", "operating_margin")
     if left_margin is not None and right_margin is not None:
-        leader = tickers[0] if left_margin > right_margin else tickers[1]
-        spread = abs(left_margin - right_margin)
-        interpretation_lines.append(
-            f"- Profitability: {leader} has the higher operating margin by {spread:.2f} percentage points, which provides a larger operating cushion if revenue slows."
-        )
+        if left_margin == right_margin:
+            interpretation_lines.append(
+                f"- Profitability: both report the same operating margin ({left_margin:.2f}%) in the connected data."
+            )
+        else:
+            leader = tickers[0] if left_margin > right_margin else tickers[1]
+            spread = abs(left_margin - right_margin)
+            interpretation_lines.append(
+                f"- Profitability: {leader} has the higher operating margin by {spread:.2f} percentage points, which provides a larger operating cushion if revenue slows."
+            )
 
     left_fcf = metric_number(left, "financial_metrics", "free_cashflow")
     right_fcf = metric_number(right, "financial_metrics", "free_cashflow")
-    if left_fcf is not None and right_fcf is not None:
-        leader = tickers[0] if left_fcf > right_fcf else tickers[1]
-        interpretation_lines.append(
-            f"- Cash generation: {leader} reports the higher free cash flow in the connected data; compare that advantage with reinvestment needs and the durability of operating margins."
-        )
+    if not currencies_differ and left_fcf is not None and right_fcf is not None:
+        if left_fcf == right_fcf:
+            interpretation_lines.append(
+                "- Cash generation: both report the same free cash flow in the connected data; durability and reinvestment needs remain the differentiators."
+            )
+        else:
+            leader = tickers[0] if left_fcf > right_fcf else tickers[1]
+            interpretation_lines.append(
+                f"- Cash generation: {leader} reports the higher free cash flow in the connected data; compare that advantage with reinvestment needs and the durability of operating margins."
+            )
 
     left_debt = metric_number(left, "financial_metrics", "debt_to_equity")
     right_debt = metric_number(right, "financial_metrics", "debt_to_equity")
     if left_debt is not None and right_debt is not None:
-        leader = tickers[0] if left_debt < right_debt else tickers[1]
-        interpretation_lines.append(
-            f"- Balance sheet: {leader} has the lower reported debt/equity, leaving more flexibility if rates stay high or cash flow weakens."
-        )
+        if left_debt == right_debt:
+            interpretation_lines.append(
+                f"- Balance sheet: both report the same debt/equity ({left_debt:.2f}%); maturities and cash-flow coverage become the key differentiators."
+            )
+        else:
+            leader = tickers[0] if left_debt < right_debt else tickers[1]
+            interpretation_lines.append(
+                f"- Balance sheet: {leader} has the lower reported debt/equity, leaving more flexibility if rates stay high or cash flow weakens."
+            )
 
     left_pb = metric_number(left, "market_data", "price_to_book")
     right_pb = metric_number(right, "market_data", "price_to_book")
     if left_pb is not None and right_pb is not None:
-        lower = tickers[0] if left_pb < right_pb else tickers[1]
-        interpretation_lines.append(
-            f"- Valuation: {lower} has the lower price/book multiple in this snapshot. For asset-light companies, treat book value as one valuation input rather than a stand-alone verdict."
+        if left_pb == right_pb:
+            interpretation_lines.append(
+                f"- Valuation: both have the same price/book multiple ({left_pb:.2f}x) in this snapshot, so this metric does not distinguish them."
+            )
+        else:
+            lower = tickers[0] if left_pb < right_pb else tickers[1]
+            interpretation_lines.append(
+                f"- Valuation: {lower} has the lower price/book multiple in this snapshot. For asset-light companies, treat book value as one valuation input rather than a stand-alone verdict."
+            )
+
+    limitation_lines: List[str] = []
+    if currencies_differ:
+        limitation_lines.append(
+            f"- Absolute monetary values were omitted because {tickers[0]} reports in {left_currency} "
+            f"while {tickers[1]} reports in {right_currency}. Convert both to one currency and align "
+            "reporting periods before ranking scale or cash flow."
         )
 
     lines = [
         "**Bottom line**",
-        f"Here is a fact-grounded comparison of {tickers[0]} and {tickers[1]} using directly comparable connected data.",
+        measured_summary
+        or f"Here is a fact-grounded comparison of {tickers[0]} and {tickers[1]} using directly comparable connected data.",
         "",
         "**Side-by-side**",
         f"| Metric | {tickers[0]} | {tickers[1]} |",
@@ -3034,11 +3236,11 @@ def build_comparison_facts_fallback(
         "",
         "**Verdict**",
         (
-            "The supplied metrics favor the measured leaders above, but the investment choice depends on whether you prioritize stronger margins and lower leverage, higher cash generation, or the valuation multiple you consider most decision-useful. "
-            "Use the trade-offs together rather than treating any one ratio as a complete investment verdict."
+            f"{measured_summary} The preferred profile depends on which supplied criterion is most relevant to the investor's thesis; confirm the result against company-specific risks and comparable reporting periods."
             if leader_lines
             else "Use this table as the reliable side-by-side baseline. Metrics missing for both companies were omitted rather than guessed."
         ),
+        *(["", "**Data limitations**", *limitation_lines] if limitation_lines else []),
     ]
     return "\n".join(lines)
 
@@ -3859,7 +4061,10 @@ def format_statement_change(row: Dict[str, Any], current_label: str, prior_label
     prior = row["prior"]
     change_pct = ((current - prior) / abs(prior) * 100) if prior else None
     change_text = f" ({change_pct:+.1f}% YoY)" if change_pct is not None else ""
-    return f"- {row['metric']}: {current:,.2f} in {current_label} vs {prior:,.2f} in {prior_label}{change_text}."
+    return (
+        f"- {row['metric']}: {current:,.2f} in {current_label} vs {prior:,.2f} in {prior_label}{change_text}. "
+        "Derived as (current - prior) / |prior|."
+    )
 
 
 def build_statement_attachment_analysis(
@@ -3886,14 +4091,15 @@ def build_statement_attachment_analysis(
             current_margin = row["current"] / revenue["current"] * 100
             prior_margin = row["prior"] / revenue["prior"] * 100
             margin_lines.append(
-                f"- {label}: {current_margin:.1f}% vs {prior_margin:.1f}% ({current_margin - prior_margin:+.1f} percentage points)."
+                f"- {label}: {current_margin:.1f}% vs {prior_margin:.1f}% ({current_margin - prior_margin:+.1f} percentage points). "
+                f"Derived as {row['metric']} / revenue."
             )
 
     interpretation: List[str] = []
     if revenue:
         revenue_change = ((revenue["current"] - revenue["prior"]) / abs(revenue["prior"]) * 100) if revenue["prior"] else None
         if revenue_change is not None:
-            interpretation.append(f"- Revenue {'grew' if revenue_change >= 0 else 'declined'} {abs(revenue_change):.1f}% year over year.")
+            interpretation.append(f"- Derived revenue trend: Revenue {'grew' if revenue_change >= 0 else 'declined'} {abs(revenue_change):.1f}% year over year.")
     if operating_income and net_income:
         interpretation.append("- Compare operating-income and net-income growth to separate core operating performance from below-the-line effects.")
     if free_cashflow:

@@ -71,6 +71,17 @@ class AnswerQualityContractTests(unittest.TestCase):
         self.assertNotIn("ALL", answer)
         self.assertNotIn("## Caveat", answer)
 
+    def test_internal_fallback_bullet_does_not_leave_an_empty_limitation_section(self):
+        answer = normalize_finance_answer(
+            "**Market read**\nMarkets are mixed.\n\n"
+            "**Caveat**\n- Deterministic finance guidance was used to keep the response grounded and time-bounded.",
+            "news",
+        )
+
+        self.assertEqual(answer, "## Market read\n\nMarkets are mixed.")
+        self.assertNotIn("Data limitations", answer)
+        self.assertNotIn("\n-\n", answer)
+
     def test_empty_provider_output_returns_safe_route_specific_message(self):
         answer = normalize_finance_answer("   ", "company")
 
@@ -154,6 +165,45 @@ class AnswerQualityContractTests(unittest.TestCase):
         )
 
         self.assertEqual(answer, "## Investment view\n\nAlibaba remains profitable.")
+
+    def test_known_headings_use_canonical_qfin_casing(self):
+        answer = normalize_finance_answer(
+            "## INVESTMENT VIEW\n\nRevenue growth is improving.\n\n"
+            "**KEY RISKS:** Competition remains intense.\n\n"
+            "### verdict\n\nThe risk-reward is balanced.",
+            "company",
+        )
+
+        self.assertIn("## Investment view", answer)
+        self.assertIn("## Key risks", answer)
+        self.assertIn("## Verdict", answer)
+        self.assertNotIn("## INVESTMENT VIEW", answer)
+        self.assertNotIn("## KEY RISKS", answer)
+
+    def test_duplicate_known_sections_are_merged_without_losing_distinct_evidence(self):
+        answer = normalize_finance_answer(
+            "## Investment view\n\nAlibaba has improving earnings quality.\n\n"
+            "## Key risks\n\n- Competition could pressure margins.\n\n"
+            "**Key risks:** Regulatory changes could raise compliance costs.\n\n"
+            "## Verdict\n\nThe risk-reward is balanced.",
+            "company",
+        )
+
+        self.assertEqual(answer.count("## Key risks"), 1)
+        self.assertIn("Competition could pressure margins.", answer)
+        self.assertIn("Regulatory changes could raise compliance costs.", answer)
+        self.assertLess(answer.index("## Key risks"), answer.index("## Verdict"))
+
+    def test_duplicate_section_does_not_repeat_identical_body(self):
+        answer = normalize_finance_answer(
+            "## Bottom line\n\nAAPL leads on cash generation.\n\n"
+            "## BOTTOM LINE\n\nAAPL leads on cash generation.\n\n"
+            "## Side-by-side\n\n| Metric | AAPL | MSFT |\n|---|---:|---:|\n| FCF | 1 | 2 |",
+            "comparison",
+        )
+
+        self.assertEqual(answer.count("## Bottom line"), 1)
+        self.assertEqual(answer.count("AAPL leads on cash generation."), 1)
 
 
 if __name__ == "__main__":
