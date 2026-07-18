@@ -146,6 +146,13 @@ class AttachmentEndpointTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["content"], "Attachment analysis complete.")
+        self.assertEqual(
+            response.json()["data"],
+            {
+                "used_live_data": False,
+                "attachment": {"filename": "report.csv"},
+            },
+        )
         attachment = generate.await_args.args[1]
         self.assertEqual(attachment["kind"], "spreadsheet")
         self.assertIn("Revenue", attachment["text"])

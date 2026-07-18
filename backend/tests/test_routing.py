@@ -71,6 +71,24 @@ class AgentRoutingTests(unittest.TestCase):
         self.assertNotIn("Caveat", result)
         self.assertNotIn("extra ticker-like symbols", result)
 
+    def test_finalizer_delegates_real_gaps_to_the_qfin_data_limitations_section(self):
+        review = main.AgentRiskReview(
+            status="review",
+            warnings=["Internal model diagnostic that must remain server-side."],
+            missing_data=["Historical margin data for BABA is unavailable."],
+            allowed_tickers=["BABA"],
+        )
+
+        result = main.finalize_agent_content(
+            "## Investment view\n\nAlibaba remains profitable.",
+            review,
+        )
+
+        self.assertIn("## Data limitations", result)
+        self.assertIn("Historical margin data for BABA is unavailable.", result)
+        self.assertNotIn("Internal model diagnostic", result)
+        self.assertNotIn("**Caveat**", result)
+
     def test_comparison_fallback_explains_profitability_cash_and_leverage_tradeoffs(self):
         facts = {
             "LEFT": {"financial_metrics": {"operating_margin": "20.00%", "free_cashflow": "120", "debt_to_equity": "70.00%"}, "market_data": {"price_to_book": "10.00x"}},

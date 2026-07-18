@@ -1,130 +1,21 @@
 import React, { useEffect, useState } from 'react';
 import ReactDOM from 'react-dom/client';
+import { qfinApi } from './api/qfinApi';
+import type {
+  BuilderResult,
+  BuilderTemplate,
+  ChatMessage,
+  CommunityModel,
+  CommunityTab,
+  ForumComment,
+  ForumThread,
+  NewsItem,
+  PersonalShelfItem,
+  ShelfItemKind,
+  View
+} from './domain/types';
+import { readPersonalShelf, writePersonalShelf } from './lib/personalShelf';
 import './styles.css';
-
-type View = 'home' | 'community' | 'reports';
-type CommunityTab = 'news' | 'forum' | 'models' | 'builder';
-
-type ChatMessage = {
-  id: string;
-  role: 'user' | 'assistant';
-  content: string;
-  error?: boolean;
-};
-
-type NewsItem = {
-  id?: string;
-  headline?: string;
-  sentiment?: string;
-  teaser?: string;
-  stale?: boolean;
-  explanation?: {
-    what_happened?: string;
-    why_it_matters?: string;
-    market_reaction?: string;
-  };
-  source?: {
-    name?: string;
-    url?: string;
-  };
-};
-
-type ForumThread = {
-  id: string;
-  title: string;
-  body: string;
-  author: string;
-  created_at: string;
-  score: number;
-  upvotes: number;
-  downvotes: number;
-  comment_count?: number;
-  comments?: ForumComment[];
-};
-
-type ForumComment = {
-  id: string;
-  thread_id: string;
-  body: string;
-  author: string;
-  created_at: string;
-};
-
-type CommunityModel = {
-  id: string;
-  name: string;
-  author: string;
-  summary: string;
-  score: number;
-  created_at: string;
-  tags: string[];
-  stats: Record<string, string>;
-  code: string;
-  ticker?: string;
-  profile?: Record<string, string>;
-  series?: Array<{
-    label: string;
-    equity: number;
-    benchmark: number;
-    drawdown: number;
-  }>;
-  highlights?: string[];
-  status?: string;
-};
-
-type BuilderResult = {
-  name: string;
-  author: string;
-  summary: string;
-  ticker?: string;
-  stats: Record<string, string>;
-  profile?: Record<string, string>;
-  series?: Array<{
-    label: string;
-    equity: number;
-    benchmark: number;
-    drawdown: number;
-  }>;
-  highlights?: string[];
-  validation?: Array<{
-    label: string;
-    status: string;
-    detail: string;
-  }>;
-  notes?: string[];
-  status?: string;
-};
-
-type BuilderTemplate = {
-  name: string;
-  description: string;
-  summary: string;
-  tags: string[];
-  benchmark: string;
-  status: string;
-  previewStats: Record<string, string>;
-  previewProfile: Record<string, string>;
-  code: string;
-};
-
-type ShelfItemKind = 'conversation' | 'watchlist' | 'model' | 'model_run';
-
-type PersonalShelfItem = {
-  id: string;
-  kind: ShelfItemKind;
-  title: string;
-  subtitle: string;
-  body: string;
-  topic?: string;
-  created_at: string;
-  tags?: string[];
-  stats?: Record<string, string>;
-};
-
-const API_BASE_URL =
-  import.meta.env.VITE_API_BASE_URL || 'https://qfin-terminal.onrender.com';
-const AGENT_REQUEST_TIMEOUT_MS = Number(import.meta.env.VITE_AGENT_TIMEOUT_MS || 120000);
-const PERSONAL_SHELF_KEY = 'qfin.reports-watchlist.v1';
 
 const FAILURE_MESSAGE =
   'QFin could not complete that reply just now. The backend may still be waking up or the current route failed. Please retry in a moment.';
@@ -260,20 +151,6 @@ function makeId() {
   return Math.random().toString(36).slice(2) + Date.now().toString(36);
 }
 
-function readPersonalShelf(): PersonalShelfItem[] {
-  try {
-    const raw = window.localStorage.getItem(PERSONAL_SHELF_KEY);
-    const parsed = raw ? JSON.parse(raw) : [];
-    return Array.isArray(parsed) ? parsed : [];
-  } catch {
-    return [];
-  }
-}
-
-function writePersonalShelf(items: PersonalShelfItem[]) {
-  window.localStorage.setItem(PERSONAL_SHELF_KEY, JSON.stringify(items.slice(0, 80)));
-}
-
 function shelfKindLabel(kind: ShelfItemKind) {
   if (kind === 'model_run') return 'Private run';
   return kind.replace('_', ' ');
@@ -281,69 +158,6 @@ function shelfKindLabel(kind: ShelfItemKind) {
 
 function latestAssistantAnswer(messages: ChatMessage[]) {
   return [...messages].reverse().find((message) => message.role === 'assistant' && !message.error);
-}
-
-function fetchWithTimeout(url: string, options: RequestInit = {}, timeoutMs?: number | null) {
-  if (!timeoutMs || timeoutMs <= 0) {
-    return fetch(url, options);
-  }
-
-  const controller = new AbortController();
-  const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
-
-  return fetch(url, {
-    ...options,
-    signal: controller.signal
-  }).finally(() => window.clearTimeout(timeoutId));
-}
-
-function sanitizeAssistantText(text: string) {
-  return text
-    .split('\n')
-    .filter((line) => line.trim() !== '---')
-    .join('\n')
-    .replace(/[ \t]{2,}/g, ' ')
-    .trim();
-}
-
-async function requestAgentReply(cleanInput: string, attachment?: File | null) {
-  if (attachment) {
-    const formData = new FormData();
-    formData.append('message', cleanInput);
-    formData.append('file', attachment);
-    const uploadResponse = await fetchWithTimeout(
-      `${API_BASE_URL}/agent/chat/upload`,
-      { method: 'POST', body: formData },
-      AGENT_REQUEST_TIMEOUT_MS
-    );
-    if (!uploadResponse.ok) {
-      const errorPayload = await uploadResponse.json().catch(() => ({}));
-      throw new Error(errorPayload?.detail || `Upload failed: ${uploadResponse.status}`);
-    }
-    const payload = await uploadResponse.json();
-    const content =
-      payload?.content || payload?.answer || payload?.data?.content || payload?.data?.answer || '';
-    return sanitizeAssistantText(String(content || ''));
-  }
-
-  const jsonResponse = await fetchWithTimeout(
-    `${API_BASE_URL}/agent/chat`,
-    {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ message: cleanInput })
-    },
-    AGENT_REQUEST_TIMEOUT_MS
-  );
-
-  if (!jsonResponse.ok) {
-    throw new Error(`Backend returned ${jsonResponse.status}`);
-  }
-
-  const payload = await jsonResponse.json();
-  const content =
-    payload?.content || payload?.answer || payload?.data?.content || payload?.data?.answer || '';
-  return sanitizeAssistantText(String(content || ''));
 }
 
 function renderInlineMarkdown(text: string) {
@@ -1115,10 +929,7 @@ function App() {
 
   async function checkBackend() {
     try {
-      const response = await fetchWithTimeout(`${API_BASE_URL}/health`, {}, 7000);
-      const data = await response.json();
-
-      if (response.ok && data.status === 'ok') {
+      if (await qfinApi.checkHealth()) {
         setBackendOnline(true);
         setBackendStatus('QFin backend connected');
       } else {
@@ -1227,7 +1038,7 @@ function App() {
     setLoading(true);
 
     try {
-      const finalText = (await requestAgentReply(effectiveInput, attachment)) || FAILURE_MESSAGE;
+      const finalText = (await qfinApi.requestAgentReply(effectiveInput, attachment)) || FAILURE_MESSAGE;
 
       setMessages((current) =>
         current.map((message) =>
@@ -1254,31 +1065,8 @@ function App() {
     setNewsError('');
     setNews([]);
 
-    const primaryUrl = `${API_BASE_URL}/community/news/${encodeURIComponent(category)}`;
-    const fallbackUrl = `${API_BASE_URL}/news/${encodeURIComponent(category)}`;
-
     try {
-      const readNews = async (url: string) => {
-        const response = await fetchWithTimeout(url, {}, 30000);
-        if (!response.ok) {
-          throw new Error(`News request failed: ${response.status}`);
-        }
-        const data = await response.json();
-        return Array.isArray(data.news) ? data.news.slice(0, 5) : [];
-      };
-
-      const results = await Promise.allSettled([readNews(primaryUrl), readNews(fallbackUrl)]);
-      const items =
-        results.find(
-          (result): result is PromiseFulfilledResult<NewsItem[]> =>
-            result.status === 'fulfilled' && result.value.length > 0
-        )?.value || [];
-
-      if (!items.length) {
-        throw new Error('Backend returned no news array.');
-      }
-
-      setNews(items);
+      setNews(await qfinApi.getNews(category));
     } catch {
       setNewsError('News unavailable. Please retry.');
     } finally {
@@ -1289,10 +1077,9 @@ function App() {
   async function loadForum() {
     setForumLoading(true);
     try {
-      const response = await fetchWithTimeout(`${API_BASE_URL}/community/forum`, {}, 20000);
-      const data = await response.json();
-      setForumThreads(Array.isArray(data.threads) ? data.threads : []);
-      setTopThreads(Array.isArray(data.top_today) ? data.top_today : []);
+      const data = await qfinApi.getForum();
+      setForumThreads(data.threads);
+      setTopThreads(data.topToday);
     } finally {
       setForumLoading(false);
     }
@@ -1300,49 +1087,25 @@ function App() {
 
   async function postThread() {
     if (!threadTitle.trim() || !threadBody.trim()) return;
-    await fetchWithTimeout(
-      `${API_BASE_URL}/community/forum`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          title: threadTitle,
-          body: threadBody,
-          author: threadAuthor
-        })
-      },
-      20000
-    );
+    await qfinApi.createThread({
+      title: threadTitle,
+      body: threadBody,
+      author: threadAuthor
+    });
     setThreadTitle('');
     setThreadBody('');
     loadForum();
   }
 
   async function voteThread(threadId: string, direction: 'up' | 'down') {
-    await fetchWithTimeout(
-      `${API_BASE_URL}/community/forum/${threadId}/vote`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ direction })
-      },
-      15000
-    );
+    await qfinApi.voteThread(threadId, direction);
     loadForum();
   }
 
   async function postComment(threadId: string) {
     const body = (commentDrafts[threadId] || '').trim();
     if (!body) return;
-    await fetchWithTimeout(
-      `${API_BASE_URL}/community/forum/${threadId}/comments`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ body, author: commentAuthor })
-      },
-      20000
-    );
+    await qfinApi.createComment(threadId, { body, author: commentAuthor });
     setCommentDrafts((current) => ({ ...current, [threadId]: '' }));
     setExpandedThreadId(threadId);
     loadForum();
@@ -1351,33 +1114,25 @@ function App() {
   async function loadModels() {
     setModelsLoading(true);
     try {
-      const response = await fetchWithTimeout(`${API_BASE_URL}/community/models`, {}, 20000);
-      const data = await response.json();
-      setModels(Array.isArray(data.models) ? data.models : []);
+      setModels(await qfinApi.getModels());
     } finally {
       setModelsLoading(false);
     }
   }
 
+  function currentBuilderRequest() {
+    return {
+      name: builderName,
+      code: builderCode,
+      author: builderAuthor,
+      summary: builderSummary.trim() || activeTemplate.summary,
+      ticker: builderTicker.trim() || defaultTickerForTemplate(activeTemplate)
+    };
+  }
+
   async function runBuilder(mode: 'run' | 'private') {
     if (!builderName.trim() || !builderCode.trim()) return;
-    const endpoint = mode === 'private' ? '/builder/run-private' : '/builder/run';
-    const response = await fetchWithTimeout(
-      `${API_BASE_URL}${endpoint}`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          name: builderName,
-          code: builderCode,
-          author: builderAuthor,
-          summary: builderSummary.trim() || activeTemplate.summary,
-          ticker: builderTicker.trim() || defaultTickerForTemplate(activeTemplate)
-        })
-      },
-      AGENT_REQUEST_TIMEOUT_MS
-    );
-    const data = await response.json();
+    const data = await qfinApi.runBuilder(currentBuilderRequest(), mode);
 
     if (mode === 'private') {
       const result = data.result;
@@ -1411,22 +1166,7 @@ function App() {
 
   async function publishBuilderModel() {
     if (!builderName.trim() || !builderCode.trim()) return;
-    const response = await fetchWithTimeout(
-      `${API_BASE_URL}/builder/publish`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          name: builderName,
-          code: builderCode,
-          author: builderAuthor,
-          summary: builderSummary.trim() || activeTemplate.summary,
-          ticker: builderTicker.trim() || defaultTickerForTemplate(activeTemplate)
-        })
-      },
-      AGENT_REQUEST_TIMEOUT_MS
-    );
-    const data = await response.json();
+    const data = await qfinApi.publishBuilder(currentBuilderRequest());
     setBuilderResult(null);
     setBuilderOutput(
       `Published to community models.\n\nModel: ${data.model?.name || builderName}\nAuthor: ${data.model?.author || builderAuthor}\nScore: ${data.model?.score ?? 0}`
@@ -1437,22 +1177,7 @@ function App() {
 
   async function savePrivateBuilder() {
     if (!builderName.trim() || !builderCode.trim()) return;
-    const response = await fetchWithTimeout(
-      `${API_BASE_URL}/builder/save-private`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          name: builderName,
-          code: builderCode,
-          author: builderAuthor,
-          summary: builderSummary.trim() || activeTemplate.summary,
-          ticker: builderTicker.trim() || defaultTickerForTemplate(activeTemplate)
-        })
-      },
-      AGENT_REQUEST_TIMEOUT_MS
-    );
-    const data = await response.json();
+    const data = await qfinApi.savePrivateBuilder(currentBuilderRequest());
     setBuilderResult(null);
     saveModelToShelf(
       {

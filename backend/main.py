@@ -23,6 +23,11 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from api_registry import fetch_public_api_facts, list_public_api_registry
+from answer_quality import (
+    finalize_finance_answer,
+    normalize_finance_answer,
+    user_requests_methodology,
+)
 from financial_data_warehouse import (
     build_metric_coverage,
     calculate_bank_kpi_row,
@@ -3035,110 +3040,6 @@ def build_comparison_facts_fallback(
     return "\n".join(lines)
 
 
-def user_requests_methodology(query: str) -> bool:
-    normalized = normalize_user_text(query)
-    return any(
-        phrase in normalized
-        for phrase in (
-            "methodology",
-            "where did you get",
-            "where do you get",
-            "how did you get",
-            "how do you get",
-            "data source",
-            "data sources",
-        )
-    )
-
-
-def remove_default_methodology(content: str, preserve_methodology: bool = False) -> str:
-    """Keep internal fallback mechanics out of otherwise complete user-facing answers."""
-    if not preserve_methodology:
-        content = re.sub(
-            r"(?ims)(?:\A|\n{2})(?:#{1,6}\s+|\*\*)?Methodology(?:\*\*)?\s*:?\s*(?:\n|$).*?(?=\n{2}(?:#{1,6}\s+|\*\*)[A-Z]|\Z)",
-            "\n",
-            content,
-        )
-    return re.sub(
-        r"\n{2}\*\*Caveat\*\*\n- Deterministic finance guidance was used to keep the response grounded and time-bounded\.",
-        "",
-        content,
-        flags=re.I,
-    ).strip()
-
-
-def remove_generic_verdict_boilerplate(content: str) -> str:
-    patterns = (
-        r"Use the valuation, growth, profitability, cash-flow, and leverage measures together; no single metric is a complete investment verdict\.\s*",
-        r"A stronger investment call would require comparing these figures against multi-year growth, segment margins, free-cash-flow durability, and peers\.\s*",
-        r"No single metric is a complete investment verdict\.\s*",
-    )
-    cleaned = content
-    for pattern in patterns:
-        cleaned = re.sub(pattern, "", cleaned, flags=re.I)
-    cleaned = re.sub(r"(?mi)^\s*(?:##|\*\*)\s*Verdict\*?\*?\s*$\n(?=\s*(?:##|\Z))", "", cleaned)
-    return cleaned.strip()
-
-
-def normalize_finance_answer(content: str, route_kind: str, preserve_methodology: bool = False) -> str:
-    """Repair common model formatting drift without changing financial claims."""
-    normalized = remove_generic_verdict_boilerplate(
-        remove_default_methodology(clean_text(content), preserve_methodology)
-    )
-    normalized = re.sub(
-        r"\A\s*(?:(?:#{1,6}\s+)?Q(?=\s*(?::|-|\n|$))|\*\*Q\*\*)\s*[:\-]?\s*",
-        "",
-        normalized,
-        flags=re.I,
-    )
-
-    opening_heading = {
-        "company": "Investment view",
-        "comparison": "Bottom line",
-        "news": "Market read",
-        "headlines": "Market read",
-        "finance_concept": "In plain English",
-        "document_analysis": "Executive summary",
-    }.get(route_kind, "Answer")
-    opening_labels = "Direct answer|Answer"
-    if route_kind == "document_analysis":
-        opening_labels += "|Attachment analysis|Financial statement analysis"
-    normalized = re.sub(
-        rf"\A\s*#{{1,6}}\s+(?:{opening_labels})\s*(?:[:\-]\s*)?(?:\n+|$)",
-        f"## {opening_heading}\n\n",
-        normalized,
-        flags=re.I,
-    )
-    normalized = re.sub(
-        rf"\A\s*(?:\*\*(?:{opening_labels})\*\*|(?:{opening_labels})\b)\s*[:\-]?\s*",
-        f"## {opening_heading}\n\n",
-        normalized,
-        flags=re.I,
-    )
-
-    heading_names = (
-        "Investment view|Business and growth|Profitability and cash flow|"
-        "Balance sheet and valuation|Key risks|Verdict|Bottom line|Side-by-side|"
-        "What decides it|Market read|What happened|Why it matters|Watch next|"
-        "In plain English|How it works|Example|How to use it|Executive summary|"
-        "Performance|Financial position|Investor takeaways|Key changes|Financial trends|"
-        "Interpretation|Profitability|Historical context|Financial health|Valuation and market signal|"
-        "Key risks and watch items|Coverage gap|Attachment received and parsed|Key extracted disclosures"
-    )
-    normalized = re.sub(
-        rf"(?m)^\*\*({heading_names})\*\*\s*$",
-        r"## \1",
-        normalized,
-        flags=re.I,
-    )
-    normalized = re.sub(r"(?m)([^\n])\n(##\s+)", r"\1\n\n\2", normalized)
-    normalized = re.sub(r"(?m)^(##\s+[^\n]+)\n(?!\n)", r"\1\n\n", normalized)
-    normalized = re.sub(r"\n{3,}", "\n\n", normalized)
-    if route_kind in {"company", "comparison", "news", "headlines", "finance_concept", "document_analysis"} and not normalized.startswith("## "):
-        normalized = f"## {opening_heading}\n\n{normalized}"
-    return normalized.strip()
-
-
 def build_finance_concept_fallback(query: str, fallback_reason: str) -> str:
     normalized = normalize_user_text(query)
     if "emergency fund" in normalized:
@@ -3497,13 +3398,14 @@ def build_finance_concept_fallback(query: str, fallback_reason: str) -> str:
 
     for signals, answer in concepts:
         if any(re.search(rf"\b{re.escape(normalize_user_text(signal))}\b", normalized) for signal in signals):
-            return remove_default_methodology(answer)
+            return normalize_finance_answer(answer, "finance_concept")
 
-    return remove_default_methodology(
+    return normalize_finance_answer(
         "**Direct answer**\n"
         "I can still help, but the model-written finance explainer is unavailable right now. Ask about a specific concept such as free cash flow yield, P/E, EV/EBITDA, ROE, WACC, or DCF and I can return a grounded fallback definition.\n\n"
         "**Caveat**\n"
-        f"- {fallback_reason}"
+        f"- {fallback_reason}",
+        "finance_concept",
     )
 
 
@@ -3669,18 +3571,13 @@ def run_agent_risk_review(route: Dict[str, Any], facts: Any, content: str) -> Ag
 
 
 def finalize_agent_content(content: str, review: AgentRiskReview, preserve_methodology: bool = False) -> str:
-    content = remove_generic_verdict_boilerplate(
-        remove_default_methodology(content, preserve_methodology)
-    )
     # Risk-review warnings are diagnostic signals for server-side session logs.
-    # Only genuine data gaps should be shown to users as answer caveats.
-    notes = list(review.missing_data)
-    if not notes:
-        return content
-    note_block = "\n".join(f"- {note}" for note in notes)
-    if "Caveat" in content or "caveat" in content:
-        return content
-    return f"{content}\n\n**Caveat**\n{note_block}"
+    # Only genuine evidence gaps belong in the user-facing answer.
+    return finalize_finance_answer(
+        content,
+        missing_data=review.missing_data,
+        preserve_methodology=preserve_methodology,
+    )
 
 
 def remember_agent_session(
@@ -4963,6 +4860,24 @@ def agent_recent_sessions(request: Request):
     return {"sessions": AGENT_SESSION_LOGS[:10], "count": len(AGENT_SESSION_LOGS)}
 
 
+def public_agent_result(result: Dict[str, Any]) -> Dict[str, Any]:
+    """Expose only metadata the browser needs; diagnostics remain server-side."""
+    public_result: Dict[str, Any] = {
+        "used_live_data": bool(result.get("used_live_data")),
+    }
+    attachment = result.get("attachment")
+    if isinstance(attachment, dict):
+        allowed_attachment_keys = ("filename", "kind", "content_type", "page_count", "sheet_names")
+        public_attachment = {
+            key: attachment[key]
+            for key in allowed_attachment_keys
+            if key in attachment
+        }
+        if public_attachment:
+            public_result["attachment"] = public_attachment
+    return public_result
+
+
 @app.post("/warehouse/ingest/{symbol}")
 async def warehouse_ingest_symbol(symbol: str, request: Request) -> Dict[str, Any]:
     require_admin(request)
@@ -4980,7 +4895,7 @@ async def agent_chat(payload: AgentChatRequest):
             "role": "assistant",
             "content": result["content"],
             "answer": result["content"],
-            "data": result,
+            "data": public_agent_result(result),
         }
     except (QwenClientError, KeyError, IndexError) as exc:
         logger.exception("QFin agent handled error: %s", type(exc).__name__)
@@ -5085,7 +5000,7 @@ async def agent_chat_upload(
         "role": "assistant",
         "content": result["content"],
         "answer": result["content"],
-        "data": result,
+        "data": public_agent_result(result),
     }
 
 
