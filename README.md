@@ -10,6 +10,21 @@ QFin gathers financial evidence before generating an explanation. Its provider-c
 
 > QFin is an educational research tool, not financial advice or a brokerage service.
 
+## Built with Codex and GPT-5.6
+
+Codex with GPT-5.6 was our development partner throughout OpenAI Build Week. We used it to inspect the existing codebase, turn product ideas into working features, diagnose failures from screenshots and deployment logs, and prepare tested changes for GitHub.
+
+The collaboration covered the full product:
+
+- **Finance intelligence:** designed QFin's evidence-first answer contract, improved company and comparison analysis, and kept responses consistent across runtime AI providers.
+- **Document analysis:** connected PDF, spreadsheet, CSV, Word, and image uploads to the chat workflow so uploaded evidence can be analyzed with the user's question.
+- **Community and models:** implemented thread comments, private model saves, publishing, model runs, and Reports & Watchlist persistence.
+- **Product experience:** improved responsive layouts, collapsible navigation, the model gallery, builder workspace, and finance-answer presentation.
+- **Reliability and security:** reviewed authentication and authorization boundaries, hardened API and deployment behavior, and expanded automated coverage for routing, uploads, persistence, fallbacks, and security.
+- **Shipping:** used test results, Render logs, Vercel behavior, and live user flows to iterate before merging production-ready GitHub changes.
+
+Codex and GPT-5.6 helped us **build and validate QFin**; they are not presented as QFin's production inference provider. The deployed backend uses a configurable, OpenAI-compatible provider layer so runtime models can be changed without rewriting the product experience.
+
 ## What You Can Do
 
 | Feature | Description |
